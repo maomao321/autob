@@ -54,21 +54,48 @@ class FiveMinuteBreakoutStrategy(Strategy):
             return 0
         return self._trades_by_day.get(self._daily_bar.open_time, 0)
 
+    @property
+    def current_day_key(self) -> int | None:
+        if self._daily_bar is None:
+            return None
+        return self._daily_bar.open_time
+
+    def restore_trade_count(self, day_key: int, count: int) -> None:
+        self._trades_by_day[day_key] = max(0, int(count))
+        self._remove_old_trade_counters(day_key)
+
     def on_bar(self, bar: Bar) -> Signal | None:
         if bar.symbol.upper() != self.symbol:
             return None
         self.last_price = bar.close
         if bar.interval == "1d":
+            if self._daily_bar is not None and bar.open_time < self._daily_bar.open_time:
+                return None
+            if self._daily_bar is None or bar.open_time > self._daily_bar.open_time:
+                self._bars.clear()
+                self._last_evaluated_open_time = None
+                self.ma_value = None
             self._daily_bar = bar
             self._remove_old_trade_counters(bar.open_time)
             return None
         if bar.interval != "5m" or not bar.closed:
             return None
-        if self._last_evaluated_open_time == bar.open_time:
+        if self._daily_bar is None:
+            return None
+        if not (
+            self._daily_bar.open_time
+            <= bar.open_time
+            <= self._daily_bar.close_time
+        ):
+            return None
+        if (
+            self._last_evaluated_open_time is not None
+            and bar.open_time <= self._last_evaluated_open_time
+        ):
             return None
         self._last_evaluated_open_time = bar.open_time
         self._append_closed_bar(bar)
-        if len(self._bars) < self.warmup_required or self._daily_bar is None:
+        if len(self._bars) < self.warmup_required:
             return None
 
         bars = list(self._bars)
@@ -136,4 +163,3 @@ class FiveMinuteBreakoutStrategy(Strategy):
     @staticmethod
     def _mean_close(bars: list[Bar]) -> Decimal:
         return sum((bar.close for bar in bars), Decimal("0")) / Decimal(len(bars))
-

@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_REST_URL = "https://api.binance.com"
 DEFAULT_WS_URL = "wss://nbstream.binance.com/equity"
+ALLOWED_REST_HOSTS = {
+    "api.binance.com",
+    "api-gcp.binance.com",
+    "api1.binance.com",
+    "api2.binance.com",
+    "api3.binance.com",
+    "api4.binance.com",
+}
+ALLOWED_WS_HOSTS = {"nbstream.binance.com"}
+SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,9}", re.ASCII)
 
 
 @dataclass(slots=True)
@@ -58,24 +70,32 @@ class AppConfig:
             ("卖出数量", self.sell_quantity),
         ):
             try:
-                if Decimal(value) <= 0:
+                number = Decimal(value)
+                if not number.is_finite() or number <= 0:
                     raise ValueError
             except (InvalidOperation, ValueError):
                 raise ValueError(f"{label}必须是正数") from None
-        if not self.rest_base_url.startswith("https://"):
-            raise ValueError("REST 地址必须使用 https://")
-        if not self.websocket_base_url.startswith("wss://"):
-            raise ValueError("WebSocket 地址必须使用 wss://")
+        rest_url = urlparse(self.rest_base_url)
+        if rest_url.scheme != "https" or rest_url.hostname not in ALLOWED_REST_HOSTS:
+            raise ValueError("REST 地址必须是 Binance 官方 HTTPS 地址")
+        websocket_url = urlparse(self.websocket_base_url)
+        if (
+            websocket_url.scheme != "wss"
+            or websocket_url.hostname not in ALLOWED_WS_HOSTS
+        ):
+            raise ValueError("WebSocket 地址必须是 Binance 官方 WSS 地址")
 
 
 def normalize_symbols(symbols: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for raw_symbol in symbols:
+        if not isinstance(raw_symbol, str):
+            raise ValueError("股票代码必须是字符串")
         symbol = raw_symbol.strip().upper()
         if not symbol:
             continue
-        if not symbol.replace(".", "").replace("-", "").isalnum():
+        if SYMBOL_PATTERN.fullmatch(symbol) is None:
             raise ValueError(f"股票代码格式不正确: {symbol}")
         if symbol not in seen:
             seen.add(symbol)

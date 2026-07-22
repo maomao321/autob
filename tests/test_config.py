@@ -31,7 +31,20 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "买入金额"):
             config.validate()
 
+    def test_non_finite_amount_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "买入金额"):
+            AppConfig(symbols=["AAPL"], buy_notional="Infinity").validate()
+
+    def test_unicode_symbol_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "股票代码格式"):
+            normalize_symbols(["ＡＡＰＬ"])
+
+    def test_non_binance_api_host_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Binance 官方"):
+            AppConfig(
+                symbols=["AAPL"], rest_base_url="https://example.com"
+            ).validate()
+
 
 if __name__ == "__main__":
     unittest.main()
-

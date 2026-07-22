@@ -24,8 +24,37 @@ class ProviderError(RuntimeError):
     """A safe, user-facing provider failure."""
 
 
+class OrderValidationError(ProviderError):
+    """The order is invalid and was not sent."""
+
+
+class ProviderHTTPError(ProviderError):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        exchange_code: int | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.exchange_code = exchange_code
+
+
+class ProviderTransportError(ProviderError):
+    """No conclusive response was received from the exchange."""
+
+
+class OrderRejectedError(ProviderError):
+    """The exchange conclusively rejected the order."""
+
+
+class OrderStatusUnknownError(ProviderError):
+    """The order may have reached the exchange, so its state is unknown."""
+
+
 class BinanceStocksProvider(TradingProvider):
     name = "binance_stocks"
+    supports_short = False
 
     def __init__(
         self,
@@ -45,6 +74,7 @@ class BinanceStocksProvider(TradingProvider):
         self.recv_window = recv_window
         self.request_timeout = request_timeout
         self._server_time_offset_ms = 0
+        self._symbol_info: dict[str, dict[str, Any]] = {}
 
     def stream_bars(
         self,
@@ -68,6 +98,8 @@ class BinanceStocksProvider(TradingProvider):
             messages: queue.Queue[tuple[str, Any]] = queue.Queue()
 
             def on_open(_ws: Any) -> None:
+                nonlocal reconnect_delay
+                reconnect_delay = 1.0
                 messages.put(("status", "行情 WebSocket 已连接"))
 
             def on_message(_ws: Any, raw_message: str) -> None:
@@ -144,25 +176,37 @@ class BinanceStocksProvider(TradingProvider):
             )
 
         self._require_credentials()
-        client_order_id = f"aq{uuid.uuid4().hex}"
+        client_order_id = order.client_order_id or f"aq{uuid.uuid4().hex}"
         params: dict[str, Any] = {
             "symbol": order.symbol.upper(),
             "side": order.side.value,
             "orderType": "MARKET",
             "clientOrderId": client_order_id,
         }
-        if order.side is Side.BUY:
-            params["notional"] = self._decimal_string(
-                order.buy_notional.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
-            )
-        else:
-            params["quantity"] = self._decimal_string(order.sell_quantity)
+        try:
+            params.update(self._format_order_size(order))
+        except OrderValidationError:
+            raise
+        except (ArithmeticError, ValueError) as exc:
+            raise OrderValidationError(f"订单数量格式无效: {exc}") from exc
 
-        payload = self._signed_request(
-            "POST", "/sapi/v1/equity/order/place", params
-        )
+        try:
+            payload = self._signed_request(
+                "POST", "/sapi/v1/equity/order/place", params
+            )
+        except ProviderHTTPError as exc:
+            execution_unknown = exc.exchange_code in {-1006, -1007}
+            if 400 <= exc.status_code < 500 and not execution_unknown:
+                raise OrderRejectedError(str(exc)) from exc
+            raise OrderStatusUnknownError(str(exc)) from exc
+        except ProviderTransportError as exc:
+            raise OrderStatusUnknownError(str(exc)) from exc
         accepted = payload.get("status") == "S"
         order_id = str(payload.get("orderId", ""))
+        if accepted and not order_id:
+            raise OrderStatusUnknownError(
+                "Binance 已确认接收订单，但响应缺少 orderId"
+            )
         return OrderResult(
             accepted=accepted,
             order_id=order_id,
@@ -213,7 +257,17 @@ class BinanceStocksProvider(TradingProvider):
             if not supported:
                 raise ProviderError(f"{symbol.upper()} 当前未启用 Binance 股票交易")
             info["tokenizationEnabled"] = True
+        self._symbol_info[symbol.upper()] = info
         return info
+
+    def get_order_detail(self, order_id: str) -> dict:
+        self._require_credentials()
+        payload = self._signed_request(
+            "GET",
+            "/sapi/v1/equity/order/detail",
+            {"orderId": order_id},
+        )
+        return payload
 
     def sync_server_time(self) -> int:
         payload = self._request_json("GET", "/api/v3/time", {}, signed=False)
@@ -285,7 +339,7 @@ class BinanceStocksProvider(TradingProvider):
             url = f"{url}?{query}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.1",
+            "User-Agent": "AutoQuant/0.1.1",
         }
         if self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key
@@ -295,9 +349,13 @@ class BinanceStocksProvider(TradingProvider):
                 body = response.read().decode("utf-8")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise ProviderError(self._error_message(exc.code, body)) from exc
+            raise ProviderHTTPError(
+                exc.code,
+                self._error_message(exc.code, body),
+                self._exchange_error_code(body),
+            ) from exc
         except (URLError, TimeoutError, OSError) as exc:
-            raise ProviderError(f"Binance 请求失败: {exc}") from exc
+            raise ProviderTransportError(f"Binance 请求失败: {exc}") from exc
         if not body.strip():
             return {}
         try:
@@ -316,6 +374,102 @@ class BinanceStocksProvider(TradingProvider):
     def _require_credentials(self) -> None:
         if not self.api_key or not self.api_secret:
             raise ProviderError("实盘交易必须填写 API Key 和 API Secret")
+
+    def _format_order_size(self, order: OrderRequest) -> dict[str, str]:
+        info = self._symbol_info.get(order.symbol.upper(), {})
+        if order.side is Side.BUY:
+            notional = order.buy_notional.quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            )
+            self._require_positive_finite(notional, "买入金额")
+            self._validate_range(
+                notional,
+                self._rule(info, "minNotional", "NOTIONAL", "MIN_NOTIONAL"),
+                self._rule(info, "maxNotional", "NOTIONAL"),
+                "买入金额",
+            )
+            return {"notional": self._decimal_string(notional)}
+
+        quantity = order.sell_quantity
+        self._require_positive_finite(quantity, "卖出数量")
+        step_size = self._rule(
+            info, "stepSize", "MARKET_LOT_SIZE", "LOT_SIZE"
+        )
+        if step_size is not None and step_size > 0:
+            quantity = (
+                (quantity / step_size).to_integral_value(rounding=ROUND_DOWN)
+                * step_size
+            )
+            if quantity <= 0:
+                raise OrderValidationError(f"卖出数量小于最小步长 {step_size}")
+        self._validate_range(
+            quantity,
+            self._rule(info, "minQty", "MARKET_LOT_SIZE", "LOT_SIZE"),
+            self._rule(info, "maxQty", "MARKET_LOT_SIZE", "LOT_SIZE"),
+            "卖出数量",
+        )
+        estimated_notional = quantity * order.reference_price
+        self._validate_range(
+            estimated_notional,
+            self._rule(info, "minNotional", "NOTIONAL", "MIN_NOTIONAL"),
+            self._rule(info, "maxNotional", "NOTIONAL"),
+            "预计卖出金额",
+        )
+        return {"quantity": self._decimal_string(quantity)}
+
+    @staticmethod
+    def _rule(
+        info: dict[str, Any],
+        field: str,
+        *filter_types: str,
+    ) -> Decimal | None:
+        value = info.get(field)
+        if value not in (None, ""):
+            try:
+                parsed = Decimal(str(value))
+                return parsed if parsed.is_finite() else None
+            except (ArithmeticError, ValueError):
+                return None
+        filters = info.get("filters", [])
+        for filter_type in filter_types:
+            for item in filters:
+                if not isinstance(item, dict):
+                    continue
+                if (
+                    str(item.get("filterType", "")).upper()
+                    != filter_type.upper()
+                ):
+                    continue
+                value = item.get(field)
+                if value in (None, ""):
+                    continue
+                try:
+                    parsed = Decimal(str(value))
+                    return parsed if parsed.is_finite() else None
+                except (ArithmeticError, ValueError):
+                    return None
+        return None
+
+    @staticmethod
+    def _require_positive_finite(value: Decimal, label: str) -> None:
+        if not value.is_finite() or value <= 0:
+            raise OrderValidationError(f"{label}必须是有限正数")
+
+    @staticmethod
+    def _validate_range(
+        value: Decimal,
+        minimum: Decimal | None,
+        maximum: Decimal | None,
+        label: str,
+    ) -> None:
+        if minimum is not None and minimum > 0 and value < minimum:
+            raise OrderValidationError(
+                f"{label} {value} 小于交易所最小值 {minimum}"
+            )
+        if maximum is not None and maximum > 0 and value > maximum:
+            raise OrderValidationError(
+                f"{label} {value} 大于交易所最大值 {maximum}"
+            )
 
     @staticmethod
     def _decimal_string(value: Decimal) -> str:
@@ -336,8 +490,20 @@ class BinanceStocksProvider(TradingProvider):
     def _error_message(status_code: int, body: str) -> str:
         try:
             payload = json.loads(body)
+            if not isinstance(payload, dict):
+                return f"Binance HTTP {status_code}: {body[:300]}"
             code = payload.get("code", status_code)
             message = payload.get("msg", payload.get("message", body))
             return f"Binance 错误 {code}: {message}"
         except json.JSONDecodeError:
             return f"Binance HTTP {status_code}: {body[:300]}"
+
+    @staticmethod
+    def _exchange_error_code(body: str) -> int | None:
+        try:
+            payload = json.loads(body)
+            if not isinstance(payload, dict) or "code" not in payload:
+                return None
+            return int(payload["code"])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None

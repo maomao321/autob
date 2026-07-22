@@ -60,6 +60,7 @@ class OrderRequest:
     reference_price: Decimal
     buy_notional: Decimal
     sell_quantity: Decimal
+    client_order_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,4 +84,3 @@ class RuntimeSnapshot:
     trades_today: int = 0
     message: str = "未启动"
     updated_at: int = 0
-

@@ -32,7 +32,6 @@ class AutoQuantApp:
         self.root.minsize(980, 650)
         self.store = config_store or ConfigStore()
         self.events: queue.Queue[tuple] = queue.Queue()
-        self._real_confirmed = False
         self.config = self._load_config()
 
         self.provider_var = StringVar(value=self.config.provider)
@@ -55,7 +54,6 @@ class AutoQuantApp:
             ),
         )
         self._build_ui()
-        self.mode_var.trace_add("write", self._reset_live_confirmation)
         for symbol in self.config.symbols:
             self._insert_symbol(symbol)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -65,7 +63,13 @@ class AutoQuantApp:
         try:
             return self.store.load()
         except ValueError as exc:
-            self.root.after(0, lambda: messagebox.showwarning("配置警告", str(exc)))
+            message = str(exc)
+            self.root.after(
+                0,
+                lambda message=message: messagebox.showwarning(
+                    "配置警告", message
+                ),
+            )
             return AppConfig()
 
     def _build_ui(self) -> None:
@@ -144,8 +148,8 @@ class AutoQuantApp:
         )
 
         warning = (
-            "默认 PAPER 只记录模拟订单。REAL 会真实下单；SELL 能否建立空头取决于账户与产品能力，"
-            "普通持仓不足时会被 Binance 拒绝。API Secret 仅驻留内存且不会保存。"
+            "默认 PAPER 只记录模拟订单。REAL 会真实下单；当前 Binance Stocks 接口不支持"
+            "策略建立空头，因此实盘 SELL 信号会被安全阻止。API Secret 仅驻留内存且不会保存。"
         )
         ttk.Label(settings, text=warning, foreground="#9a5b00", wraplength=1100).grid(
             row=3, column=0, columnspan=8, sticky="w", pady=(9, 0)
@@ -325,23 +329,17 @@ class AutoQuantApp:
         self.controller.stop_all()
 
     def _confirm_real_mode(self) -> bool:
-        if self._real_confirmed:
-            return True
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
             messagebox.showerror("缺少凭据", "REAL 模式必须填写 API Key 和 API Secret。")
             return False
         confirmed = messagebox.askyesno(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
-            "BUY 使用配置的 USDC 金额；SELL 使用配置的股票数量，且不保证可建立空头。\n"
+            "BUY 使用配置的 USDC 金额；策略的 SELL（建立空头）信号会被阻止。\n"
             "账户还必须已经接受 Binance 美股交易免责声明。\n\n确认继续吗？",
             icon="warning",
         )
-        self._real_confirmed = confirmed
         return confirmed
-
-    def _reset_live_confirmation(self, *_args: object) -> None:
-        self._real_confirmed = False
 
     def _save_config(self) -> None:
         try:

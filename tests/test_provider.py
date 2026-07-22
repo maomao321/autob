@@ -4,7 +4,12 @@ import unittest
 from decimal import Decimal
 
 from autoquant.models import OrderRequest, Side
-from autoquant.providers.binance_stocks import BinanceStocksProvider
+from autoquant.providers.binance_stocks import (
+    BinanceStocksProvider,
+    OrderStatusUnknownError,
+    OrderValidationError,
+    ProviderHTTPError,
+)
 
 
 class BinanceStocksProviderTests(unittest.TestCase):
@@ -75,14 +80,120 @@ class BinanceStocksProviderTests(unittest.TestCase):
             "reference_price": Decimal("180"),
             "buy_notional": Decimal("100.129"),
             "sell_quantity": Decimal("1.25"),
+            "client_order_id": "aq-known-id",
         }
         provider.place_order(OrderRequest(side=Side.BUY, **common))
         provider.place_order(OrderRequest(side=Side.SELL, **common))
 
         self.assertEqual("100.12", provider.params[0]["notional"])
+        self.assertEqual("aq-known-id", provider.params[0]["clientOrderId"])
         self.assertNotIn("quantity", provider.params[0])
         self.assertEqual("1.25", provider.params[1]["quantity"])
         self.assertNotIn("notional", provider.params[1])
+
+    def test_live_order_applies_exchange_size_filters(self) -> None:
+        class CapturingProvider(BinanceStocksProvider):
+            def __init__(self) -> None:
+                super().__init__(api_key="key", api_secret="secret", live_trading=True)
+                self.params: dict = {}
+
+            def _signed_request(self, method: str, path: str, params: dict) -> dict:
+                self.params = dict(params)
+                return {"status": "S", "orderId": "test-order"}
+
+        provider = CapturingProvider()
+        provider._symbol_info["AAPL"] = {
+            "filters": [
+                {
+                    "filterType": "LOT_SIZE",
+                    "minQty": "0.50",
+                    "maxQty": "10",
+                    "stepSize": "0.50",
+                },
+                {
+                    "filterType": "MARKET_LOT_SIZE",
+                    "minQty": "0.10",
+                    "maxQty": "10",
+                    "stepSize": "0.05",
+                },
+                {
+                    "filterType": "NOTIONAL",
+                    "minNotional": "10",
+                    "maxNotional": "10000",
+                },
+            ]
+        }
+
+        provider.place_order(
+            OrderRequest(
+                symbol="AAPL",
+                side=Side.SELL,
+                reference_price=Decimal("180"),
+                buy_notional=Decimal("100"),
+                sell_quantity=Decimal("1.27"),
+            )
+        )
+
+        self.assertEqual("1.25", provider.params["quantity"])
+
+    def test_live_order_rejects_amount_below_exchange_minimum(self) -> None:
+        provider = BinanceStocksProvider(
+            api_key="key", api_secret="secret", live_trading=True
+        )
+        provider._symbol_info["AAPL"] = {
+            "filters": [
+                {"filterType": "NOTIONAL", "minNotional": "10"},
+            ]
+        }
+
+        with self.assertRaises(OrderValidationError):
+            provider.place_order(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("180"),
+                    buy_notional=Decimal("9.99"),
+                    sell_quantity=Decimal("1"),
+                )
+            )
+
+    def test_binance_timeout_error_is_treated_as_unknown(self) -> None:
+        class TimeoutProvider(BinanceStocksProvider):
+            def _signed_request(self, method: str, path: str, params: dict) -> dict:
+                raise ProviderHTTPError(400, "timeout", -1007)
+
+        provider = TimeoutProvider(
+            api_key="key", api_secret="secret", live_trading=True
+        )
+        with self.assertRaises(OrderStatusUnknownError):
+            provider.place_order(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("180"),
+                    buy_notional=Decimal("100"),
+                    sell_quantity=Decimal("1"),
+                )
+            )
+
+    def test_success_response_without_order_id_is_unknown(self) -> None:
+        class MissingIdProvider(BinanceStocksProvider):
+            def _signed_request(self, method: str, path: str, params: dict) -> dict:
+                return {"status": "S"}
+
+        provider = MissingIdProvider(
+            api_key="key", api_secret="secret", live_trading=True
+        )
+        with self.assertRaises(OrderStatusUnknownError):
+            provider.place_order(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("180"),
+                    buy_notional=Decimal("100"),
+                    sell_quantity=Decimal("1"),
+                )
+            )
 
 
 if __name__ == "__main__":

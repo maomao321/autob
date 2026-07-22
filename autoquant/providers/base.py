@@ -12,6 +12,7 @@ StatusCallback = Callable[[str], None]
 
 class TradingProvider(ABC):
     name: str
+    supports_short: bool = False
 
     @abstractmethod
     def stream_bars(
@@ -30,3 +31,5 @@ class TradingProvider(ABC):
     def check_symbol(self, symbol: str) -> dict:
         """Return exchange information for one symbol."""
 
+    def get_order_detail(self, order_id: str) -> dict:
+        raise NotImplementedError("当前行情源不支持订单状态查询")
