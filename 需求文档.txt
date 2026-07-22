@@ -1,0 +1,6 @@
+1. 使用python实现可视化程序，可在电脑上运行，可配置参数，股票，按照股票启动停止量化
+2. 可选择运行不同的量化程序
+3. 可接入不同的api供应商
+4. 本次只实现接入binance stock trading
+https://developers.binance.com/zh-CN/docs/products/stocks/introduction
+5. 本次只实现日内五分钟突破策略：日bar判断当日方向做多还是做空，五分钟bar向上突破MA5时并且突破前bar最高价做多，做空则相反

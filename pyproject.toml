@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-stocks-autoquant"
+version = "0.1.0"
+description = "Binance Stocks desktop quantitative trading controller"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "websocket-client>=1.8,<2",
+]
+
+[project.scripts]
+autoquant = "autoquant.app:main"
+
+[tool.setuptools.packages.find]
+include = ["autoquant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
