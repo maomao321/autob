@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
+from decimal import Decimal
 from threading import Event
 
 from autoquant.models import Bar, OrderRequest, OrderResult
@@ -33,3 +34,9 @@ class TradingProvider(ABC):
 
     def get_order_detail(self, order_id: str) -> dict:
         raise NotImplementedError("当前行情源不支持订单状态查询")
+
+    def get_account_total(self, quote_asset: str = "USDC") -> Decimal:
+        raise NotImplementedError("当前供应商不支持账户总金额查询")
+
+    def get_latest_price(self, symbol: str) -> Decimal:
+        raise NotImplementedError("当前供应商不支持最新报价查询")

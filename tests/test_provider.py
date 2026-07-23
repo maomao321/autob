@@ -195,6 +195,45 @@ class BinanceStocksProviderTests(unittest.TestCase):
                 )
             )
 
+    def test_account_total_sums_active_wallets_in_usdc(self) -> None:
+        class AccountProvider(BinanceStocksProvider):
+            def __init__(self) -> None:
+                super().__init__(api_key="key", api_secret="secret")
+                self.params: dict = {}
+
+            def _ensure_server_time(self) -> None:
+                return
+
+            def _signed_request_payload(
+                self, method: str, path: str, params: dict
+            ) -> list[dict]:
+                self.params = dict(params)
+                return [
+                    {"activate": True, "balance": "100.50", "walletName": "Spot"},
+                    {"activate": True, "balance": "2.25", "walletName": "Funding"},
+                    {"activate": False, "balance": "50", "walletName": "Unused"},
+                ]
+
+        provider = AccountProvider()
+
+        self.assertEqual(Decimal("102.75"), provider.get_account_total("usdc"))
+        self.assertEqual("USDC", provider.params["quoteAsset"])
+
+    def test_latest_price_uses_bid_ask_midpoint(self) -> None:
+        class QuoteProvider(BinanceStocksProvider):
+            def _request_json(
+                self, method: str, path: str, params: dict, signed: bool
+            ) -> dict:
+                return {
+                    "symbol": "AAPL",
+                    "bidPrice": "180.50",
+                    "askPrice": "180.54",
+                }
+
+        provider = QuoteProvider(api_key="key", api_secret="secret")
+
+        self.assertEqual(Decimal("180.52"), provider.get_latest_price("AAPL"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,12 @@ from autoquant.providers.binance_stocks import (
     OrderRejectedError,
     OrderValidationError,
 )
-from autoquant.state import OrderLedger, OrderRecord, RiskLimitError
+from autoquant.state import (
+    OrderLedger,
+    OrderRecord,
+    PortfolioPerformance,
+    RiskLimitError,
+)
 from autoquant.strategies.base import Strategy
 from autoquant.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
 
@@ -426,10 +431,12 @@ class SymbolRunner:
             )
             average_price = self._detail_decimal(
                 detail,
+                "avgFilledPrice",
                 "avgPrice",
                 "averagePrice",
                 "price",
             )
+            fee = self._detail_decimal(detail, "fee", "commission")
             quote_quantity = self._detail_decimal(
                 detail,
                 "cummulativeQuoteQty",
@@ -453,6 +460,7 @@ class SymbolRunner:
                 f"从 Binance 同步为 {status}",
                 filled_quantity=filled_quantity,
                 average_price=average_price,
+                fee=fee,
             )
             self._log("INFO", f"订单 {record.order_id} 状态已同步为 {status}")
         except ValueError as exc:
@@ -633,3 +641,17 @@ class TradingController:
         if self.is_running(symbol):
             raise RuntimeError("请先停止该股票，再解除未知订单锁")
         return self.ledger.resolve_unknown(symbol.upper(), paper=False)
+
+    def open_position_symbols(self, *, paper: bool) -> list[str]:
+        return self.ledger.open_position_symbols(paper=paper)
+
+    def portfolio_performance(
+        self,
+        *,
+        paper: bool,
+        market_prices: dict[str, Decimal],
+    ) -> PortfolioPerformance:
+        return self.ledger.portfolio_performance(
+            paper=paper,
+            market_prices=market_prices,
+        )

@@ -93,8 +93,9 @@ class FilledLiveProvider(FakeProvider):
     def get_order_detail(self, order_id: str) -> dict:
         return {
             "status": "FILLED",
-            "executedQty": "0.5",
-            "avgPrice": "200",
+            "filledQty": "0.5",
+            "avgFilledPrice": "200",
+            "fee": "0.25",
         }
 
 
@@ -323,6 +324,9 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual(Decimal("0.5"), position.quantity)
             self.assertEqual(Decimal("200"), position.average_price)
             self.assertEqual(0, ledger.pending_count("AAPL", paper=False))
+            record = ledger.get_record(provider.orders[0].client_order_id)
+            self.assertIsNotNone(record)
+            self.assertEqual(Decimal("0.25"), record.fee)
 
     def test_unverifiable_fill_hard_locks_live_runner(self) -> None:
         snapshots = []

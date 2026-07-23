@@ -204,6 +204,60 @@ class OrderLedgerTests(unittest.TestCase):
             self.assertEqual(1, ledger.resolve_unknown("AAPL", paper=False))
             self.assertEqual(0, ledger.unknown_count("AAPL", paper=False))
 
+    def test_portfolio_performance_includes_fees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                order("aq-buy", buy_notional="200"), 123, paper=False
+            )
+            ledger.mark_lifecycle(
+                "aq-buy",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("100"),
+                fee=Decimal("2"),
+            )
+            ledger.record_submitting(
+                order("aq-sell", side=Side.SELL, sell_quantity="1"),
+                123,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-sell",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("120"),
+                fee=Decimal("1"),
+            )
+
+            performance = ledger.portfolio_performance(
+                paper=False,
+                market_prices={"AAPL": Decimal("110")},
+            )
+
+            self.assertEqual(Decimal("18"), performance.realized_pnl)
+            self.assertEqual(Decimal("9"), performance.unrealized_pnl)
+            self.assertEqual(["AAPL"], ledger.open_position_symbols(paper=False))
+
+    def test_unrealized_pnl_is_unavailable_when_quote_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order("aq-buy"), 123, paper=True)
+            ledger.mark_lifecycle(
+                "aq-buy",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("100"),
+            )
+
+            performance = ledger.portfolio_performance(
+                paper=True,
+                market_prices={},
+            )
+
+            self.assertIsNone(performance.unrealized_pnl)
+            self.assertEqual(("AAPL",), performance.missing_price_symbols)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -79,6 +79,7 @@ class BinanceStocksProvider(TradingProvider):
         self._server_time_offset_ms = 0
         self._symbol_info: dict[str, dict[str, Any]] = {}
         self._symbol_info_cached_at: dict[str, float] = {}
+        self._latest_price_cache: dict[str, tuple[float, Decimal]] = {}
         self._server_time_synced_at = 0.0
 
     def stream_bars(
@@ -305,6 +306,70 @@ class BinanceStocksProvider(TradingProvider):
         )
         return payload
 
+    def get_account_total(self, quote_asset: str = "USDC") -> Decimal:
+        self._require_credentials()
+        self._ensure_server_time()
+        normalized_quote = quote_asset.strip().upper()
+        if (
+            not 2 <= len(normalized_quote) <= 12
+            or not normalized_quote.isascii()
+            or not normalized_quote.isalnum()
+        ):
+            raise ProviderError("账户折算资产格式无效")
+        payload = self._signed_request_payload(
+            "GET",
+            "/sapi/v1/asset/wallet/balance",
+            {"quoteAsset": normalized_quote},
+        )
+        if not isinstance(payload, list):
+            raise ProviderError("Binance 钱包余额返回结构不符合预期")
+        total = Decimal("0")
+        for item in payload:
+            if not isinstance(item, dict) or not self._as_bool(
+                item.get("activate", True)
+            ):
+                continue
+            try:
+                balance = Decimal(str(item["balance"]))
+            except (KeyError, ArithmeticError, ValueError) as exc:
+                raise ProviderError("Binance 钱包余额包含无效金额") from exc
+            if not balance.is_finite() or balance < 0:
+                raise ProviderError("Binance 钱包余额包含无效金额")
+            total += balance
+        return total
+
+    def get_latest_price(self, symbol: str) -> Decimal:
+        self._require_credentials()
+        symbol = symbol.strip().upper()
+        cached = self._latest_price_cache.get(symbol)
+        if cached is not None and time.monotonic() - cached[0] < 5:
+            return cached[1]
+        payload = self._request_json(
+            "GET",
+            "/sapi/v1/equity/market/quote",
+            {"symbol": symbol},
+            signed=False,
+        )
+        if not isinstance(payload, dict) or not payload:
+            raise ProviderError(f"{symbol} 当前没有可用报价")
+        prices: list[Decimal] = []
+        for field in ("bidPrice", "askPrice"):
+            try:
+                value = Decimal(str(payload.get(field, "0")))
+            except (ArithmeticError, ValueError):
+                continue
+            if value.is_finite() and value > 0:
+                prices.append(value)
+        if not prices:
+            raise ProviderError(f"{symbol} 当前没有有效买卖报价")
+        result = sum(prices, Decimal("0")) / Decimal(len(prices))
+        self._latest_price_cache[symbol] = (time.monotonic(), result)
+        return result
+
+    def _ensure_server_time(self) -> None:
+        if time.monotonic() - self._server_time_synced_at >= 60:
+            self.sync_server_time()
+
     def sync_server_time(self) -> int:
         payload = self._request_json("GET", "/api/v3/time", {}, signed=False)
         if not isinstance(payload, dict):
@@ -350,6 +415,14 @@ class BinanceStocksProvider(TradingProvider):
     def _signed_request(
         self, method: str, path: str, params: dict[str, Any]
     ) -> dict[str, Any]:
+        payload = self._signed_request_payload(method, path, params)
+        if not isinstance(payload, dict):
+            raise ProviderError("Binance 交易接口返回结构不符合预期")
+        return payload
+
+    def _signed_request_payload(
+        self, method: str, path: str, params: dict[str, Any]
+    ) -> Any:
         self._require_credentials()
         signed_params = dict(params)
         signed_params["recvWindow"] = self.recv_window
@@ -358,10 +431,7 @@ class BinanceStocksProvider(TradingProvider):
         )
         query = urlencode(signed_params)
         signed_params["signature"] = self._signature(query)
-        payload = self._request_json(method, path, signed_params, signed=True)
-        if not isinstance(payload, dict):
-            raise ProviderError("Binance 交易接口返回结构不符合预期")
-        return payload
+        return self._request_json(method, path, signed_params, signed=True)
 
     def _request_json(
         self,
@@ -376,7 +446,7 @@ class BinanceStocksProvider(TradingProvider):
             url = f"{url}?{query}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.2.0",
+            "User-Agent": "AutoQuant/0.3.0",
         }
         if self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key

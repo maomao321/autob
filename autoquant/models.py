@@ -88,3 +88,14 @@ class RuntimeSnapshot:
     daily_buy_notional: Decimal = Decimal("0")
     message: str = "未启动"
     updated_at: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class AccountOverview:
+    total_balance: Decimal | None = None
+    realized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal | None = None
+    currency: str = "USDC"
+    missing_price_symbols: tuple[str, ...] = ()
+    message: str = "尚未刷新"
+    updated_at: int = 0

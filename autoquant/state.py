@@ -51,12 +51,20 @@ class OrderRecord:
     requested_quantity: Decimal
     filled_quantity: Decimal
     average_price: Decimal
+    fee: Decimal
 
 
 @dataclass(frozen=True, slots=True)
 class PositionSummary:
     quantity: Decimal = Decimal("0")
     average_price: Decimal = Decimal("0")
+
+
+@dataclass(frozen=True, slots=True)
+class PortfolioPerformance:
+    realized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal | None = Decimal("0")
+    missing_price_symbols: tuple[str, ...] = ()
 
 
 class RiskLimitError(RuntimeError):
@@ -95,7 +103,8 @@ class OrderLedger:
                     requested_notional TEXT NOT NULL DEFAULT '0',
                     requested_quantity TEXT NOT NULL DEFAULT '0',
                     filled_quantity TEXT NOT NULL DEFAULT '0',
-                    average_price TEXT NOT NULL DEFAULT '0'
+                    average_price TEXT NOT NULL DEFAULT '0',
+                    fee TEXT NOT NULL DEFAULT '0'
                 )
                 """
             )
@@ -127,6 +136,11 @@ class OrderLedger:
                           'FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'EXPIRED'
                       )
                     """
+                )
+            if "fee" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE orders ADD COLUMN fee "
+                    "TEXT NOT NULL DEFAULT '0'"
                 )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_orders_symbol_day "
@@ -268,6 +282,7 @@ class OrderLedger:
         message: str = "",
         filled_quantity: Decimal | None = None,
         average_price: Decimal | None = None,
+        fee: Decimal | None = None,
     ) -> None:
         normalized = status.strip().upper()
         if normalized:
@@ -278,6 +293,7 @@ class OrderLedger:
                 message,
                 filled_quantity,
                 average_price,
+                fee,
             )
 
     def _update(
@@ -288,6 +304,7 @@ class OrderLedger:
         message: str,
         filled_quantity: Decimal | None = None,
         average_price: Decimal | None = None,
+        fee: Decimal | None = None,
     ) -> None:
         now = int(time.time() * 1000)
         with self._lock, closing(self._connect()) as connection, connection:
@@ -296,7 +313,7 @@ class OrderLedger:
                     """
                     UPDATE orders
                     SET status = ?, updated_at = ?, message = ?,
-                        filled_quantity = ?, average_price = ?
+                        filled_quantity = ?, average_price = ?, fee = ?
                     WHERE client_order_id = ?
                     """,
                     (
@@ -305,6 +322,7 @@ class OrderLedger:
                         message,
                         str(filled_quantity),
                         str(average_price or 0),
+                        str(fee or 0),
                         client_order_id,
                     ),
                 )
@@ -452,6 +470,79 @@ class OrderLedger:
             ).fetchall()
         return self._position_summary_from_rows(rows)
 
+    def open_position_symbols(self, *, paper: bool) -> list[str]:
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                """
+                SELECT symbol, side, filled_quantity, average_price
+                FROM orders
+                WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
+                ORDER BY symbol, created_at, client_order_id
+                """,
+                (int(paper),),
+            ).fetchall()
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["symbol"], []).append(row)
+        return sorted(
+            symbol
+            for symbol, symbol_rows in grouped.items()
+            if self._position_summary_from_rows(symbol_rows).quantity > 0
+        )
+
+    def portfolio_performance(
+        self,
+        *,
+        paper: bool,
+        market_prices: dict[str, Decimal],
+    ) -> PortfolioPerformance:
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                """
+                SELECT symbol, side, filled_quantity, average_price, fee
+                FROM orders
+                WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
+                ORDER BY created_at, client_order_id
+                """,
+                (int(paper),),
+            ).fetchall()
+        positions: dict[str, tuple[Decimal, Decimal]] = {}
+        realized = Decimal("0")
+        for row in rows:
+            symbol = str(row["symbol"])
+            quantity, cost = positions.get(
+                symbol, (Decimal("0"), Decimal("0"))
+            )
+            filled = Decimal(row["filled_quantity"])
+            price = Decimal(row["average_price"])
+            fee = Decimal(row["fee"])
+            if row["side"] == Side.BUY.value:
+                quantity += filled
+                cost += filled * price + fee
+            elif quantity > 0:
+                sold = min(filled, quantity)
+                average_cost = cost / quantity
+                realized += sold * price - sold * average_cost - fee
+                quantity -= sold
+                cost -= sold * average_cost
+            positions[symbol] = (quantity, cost)
+
+        missing: list[str] = []
+        unrealized = Decimal("0")
+        for symbol, (quantity, cost) in positions.items():
+            if quantity <= 0:
+                continue
+            price = market_prices.get(symbol)
+            if price is None or not price.is_finite() or price <= 0:
+                missing.append(symbol)
+                continue
+            unrealized += quantity * price - cost
+        return PortfolioPerformance(
+            realized_pnl=realized,
+            unrealized_pnl=None if missing else unrealized,
+            missing_price_symbols=tuple(sorted(missing)),
+        )
+
     @staticmethod
     def _position_summary_from_rows(
         rows: list[sqlite3.Row],
@@ -491,4 +582,5 @@ class OrderLedger:
             requested_quantity=Decimal(row["requested_quantity"]),
             filled_quantity=Decimal(row["filled_quantity"]),
             average_price=Decimal(row["average_price"]),
+            fee=Decimal(row["fee"]),
         )

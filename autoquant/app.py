@@ -4,13 +4,19 @@ import os
 import queue
 import re
 import threading
+import time
+from dataclasses import replace
 from datetime import datetime
+from decimal import Decimal
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, messagebox
 from tkinter import ttk
 
 from autoquant.config import MAX_SYMBOLS, AppConfig, ConfigStore, normalize_symbols
 from autoquant.engine import RunnerConfig, TradingController, create_provider
-from autoquant.models import RunState, RuntimeSnapshot
+from autoquant.models import AccountOverview, RunState, RuntimeSnapshot
+
+
+ACCOUNT_REFRESH_MS = 30_000
 
 
 STATE_TEXT = {
@@ -57,6 +63,13 @@ class AutoQuantApp:
             value=str(self.config.max_signal_age_seconds)
         )
         self.symbol_var = StringVar()
+        self.account_total_var = StringVar(value="—")
+        self.realized_pnl_var = StringVar(value="0.00 USDC")
+        self.unrealized_pnl_var = StringVar(value="0.00 USDC")
+        self.account_status_var = StringVar(value="等待首次刷新")
+        self._latest_prices: dict[str, Decimal] = {}
+        self._account_refresh_inflight = False
+        self._closed = False
 
         self.controller = TradingController(
             snapshot_callback=lambda snapshot: self._enqueue_event(
@@ -71,6 +84,7 @@ class AutoQuantApp:
             self._insert_symbol(symbol)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(100, self._drain_events)
+        self.root.after(500, self._account_refresh_tick)
 
     def _load_config(self) -> AppConfig:
         try:
@@ -87,11 +101,96 @@ class AutoQuantApp:
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(2, weight=1)
-        self.root.rowconfigure(4, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
-        settings = ttk.LabelFrame(self.root, text="运行配置", padding=10)
-        settings.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        self.main_page = ttk.Frame(self.notebook)
+        self.config_page = ttk.Frame(self.notebook)
+        self.notebook.add(self.main_page, text="交易监控")
+        self.notebook.add(self.config_page, text="运行配置")
+
+        self.main_page.columnconfigure(0, weight=1)
+        self.main_page.rowconfigure(2, weight=1)
+        self.main_page.rowconfigure(4, weight=1)
+        self.config_page.columnconfigure(0, weight=1)
+
+        style = ttk.Style(self.root)
+        style.configure("AccountValue.TLabel", font=("Segoe UI", 22, "bold"))
+        style.configure(
+            "AccountPositive.TLabel",
+            font=("Segoe UI", 22, "bold"),
+            foreground="#087830",
+        )
+        style.configure(
+            "AccountNegative.TLabel",
+            font=("Segoe UI", 22, "bold"),
+            foreground="#b00020",
+        )
+
+        overview = ttk.LabelFrame(
+            self.main_page, text="账户与程序盈亏概览", padding=10
+        )
+        overview.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        for column in range(4):
+            overview.columnconfigure(column, weight=1)
+
+        total_card = ttk.Frame(overview, padding=10, relief="ridge")
+        total_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        ttk.Label(total_card, text="Binance 账户总金额").pack(anchor="w")
+        self.account_total_label = ttk.Label(
+            total_card,
+            textvariable=self.account_total_var,
+            style="AccountValue.TLabel",
+        )
+        self.account_total_label.pack(anchor="w", pady=(4, 0))
+        ttk.Label(total_card, text="全部激活钱包折算为 USDC").pack(anchor="w")
+
+        realized_card = ttk.Frame(overview, padding=10, relief="ridge")
+        realized_card.grid(row=0, column=1, sticky="nsew", padx=6)
+        ttk.Label(realized_card, text="已实现盈亏金额（程序）").pack(anchor="w")
+        self.realized_pnl_label = ttk.Label(
+            realized_card,
+            textvariable=self.realized_pnl_var,
+            style="AccountValue.TLabel",
+        )
+        self.realized_pnl_label.pack(anchor="w", pady=(4, 0))
+        ttk.Label(realized_card, text="已确认成交，包含已记录手续费").pack(anchor="w")
+
+        unrealized_card = ttk.Frame(overview, padding=10, relief="ridge")
+        unrealized_card.grid(row=0, column=2, sticky="nsew", padx=6)
+        ttk.Label(unrealized_card, text="未实现盈亏金额（程序）").pack(anchor="w")
+        self.unrealized_pnl_label = ttk.Label(
+            unrealized_card,
+            textvariable=self.unrealized_pnl_var,
+            style="AccountValue.TLabel",
+        )
+        self.unrealized_pnl_label.pack(anchor="w", pady=(4, 0))
+        ttk.Label(unrealized_card, text="程序持仓按最新买卖中间价估算").pack(anchor="w")
+
+        refresh_card = ttk.Frame(overview, padding=10)
+        refresh_card.grid(row=0, column=3, sticky="nsew", padx=(6, 0))
+        ttk.Button(
+            refresh_card,
+            text="立即刷新",
+            command=lambda: self._refresh_account_overview(manual=True),
+        ).pack(anchor="e")
+        ttk.Button(
+            refresh_card,
+            text="打开运行配置",
+            command=lambda: self.notebook.select(self.config_page),
+        ).pack(anchor="e", pady=(8, 0))
+        ttk.Label(
+            overview,
+            textvariable=self.account_status_var,
+            foreground="#5f6b76",
+            wraplength=1100,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+        settings = ttk.LabelFrame(
+            self.config_page, text="运行配置", padding=14
+        )
+        settings.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
         for column in (1, 3, 5, 7):
             settings.columnconfigure(column, weight=1)
 
@@ -195,7 +294,7 @@ class AutoQuantApp:
             row=4, column=0, columnspan=8, sticky="w", pady=(9, 0)
         )
 
-        symbols = ttk.Frame(self.root, padding=(10, 5))
+        symbols = ttk.Frame(self.main_page, padding=(10, 5))
         symbols.grid(row=1, column=0, sticky="ew")
         ttk.Label(symbols, text="股票代码").pack(side=LEFT)
         entry = ttk.Entry(symbols, textvariable=self.symbol_var, width=30)
@@ -223,7 +322,7 @@ class AutoQuantApp:
             side=RIGHT, padx=6
         )
 
-        table_frame = ttk.Frame(self.root, padding=(10, 0))
+        table_frame = ttk.Frame(self.main_page, padding=(10, 0))
         table_frame.grid(row=2, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
@@ -297,10 +396,10 @@ class AutoQuantApp:
         self.tree.tag_configure("running", foreground="#087830")
         self.tree.tag_configure("signal", foreground="#0856a8")
 
-        ttk.Label(self.root, text="运行日志", padding=(10, 7, 10, 2)).grid(
+        ttk.Label(self.main_page, text="运行日志", padding=(10, 7, 10, 2)).grid(
             row=3, column=0, sticky="w"
         )
-        log_frame = ttk.Frame(self.root, padding=(10, 0, 10, 10))
+        log_frame = ttk.Frame(self.main_page, padding=(10, 0, 10, 10))
         log_frame.grid(row=4, column=0, sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
@@ -467,6 +566,7 @@ class AutoQuantApp:
             self.config = self._current_config()
             self.store.save(self.config)
             messagebox.showinfo("已保存", f"配置已保存到:\n{self.store.path}")
+            self._refresh_account_overview(manual=True)
         except (OSError, ValueError, TypeError) as exc:
             messagebox.showerror("保存失败", str(exc))
 
@@ -493,11 +593,171 @@ class AutoQuantApp:
                 )
                 self._enqueue_event(("dialog", "info", "连接检查", message))
                 self._enqueue_event(("log", "INFO", symbol, message))
+                self._enqueue_event(("account_refresh",))
             except Exception as exc:
                 self._enqueue_event(("dialog", "error", "连接失败", str(exc)))
                 self._enqueue_event(("log", "ERROR", symbol, str(exc)))
 
         threading.Thread(target=check, name="api-check", daemon=True).start()
+
+    def _account_runner_config(self) -> RunnerConfig:
+        account_config = replace(
+            self.config,
+            trading_mode=self.mode_var.get().strip().upper(),
+        )
+        account_config.validate()
+        return RunnerConfig(
+            app=account_config,
+            api_key=self.api_key_var.get().strip(),
+            api_secret=self.api_secret_var.get().strip(),
+        )
+
+    def _account_refresh_tick(self) -> None:
+        if self._closed:
+            return
+        self._refresh_account_overview()
+        self.root.after(ACCOUNT_REFRESH_MS, self._account_refresh_tick)
+
+    def _refresh_account_overview(self, manual: bool = False) -> None:
+        if self._account_refresh_inflight:
+            if manual:
+                self.account_status_var.set("账户数据正在刷新，请稍候")
+            return
+        try:
+            runner_config = self._account_runner_config()
+        except (TypeError, ValueError) as exc:
+            self.account_status_var.set(f"账户概览配置无效：{exc}")
+            return
+        paper = runner_config.app.trading_mode != "REAL"
+        prices = dict(self._latest_prices)
+        if not runner_config.api_key or not runner_config.api_secret:
+            performance = self.controller.portfolio_performance(
+                paper=paper,
+                market_prices=prices,
+            )
+            ledger_name = "模拟" if paper else "实盘"
+            message = (
+                "请在“运行配置”页填写 API Key 和 Secret，"
+                f"才能查询 Binance 账户总金额；盈亏来自{ledger_name}订单账本"
+            )
+            self._apply_account_overview(
+                AccountOverview(
+                    total_balance=None,
+                    realized_pnl=performance.realized_pnl,
+                    unrealized_pnl=performance.unrealized_pnl,
+                    missing_price_symbols=performance.missing_price_symbols,
+                    message=message,
+                    updated_at=int(time.time() * 1000),
+                )
+            )
+            return
+
+        self._account_refresh_inflight = True
+        self.account_status_var.set("正在刷新 Binance 钱包余额和程序盈亏…")
+
+        def refresh() -> None:
+            total_balance: Decimal | None = None
+            errors: list[str] = []
+            try:
+                provider = create_provider(runner_config)
+                try:
+                    total_balance = provider.get_account_total("USDC")
+                except Exception as exc:
+                    errors.append(f"账户总金额不可用：{exc}")
+                for symbol in self.controller.open_position_symbols(paper=paper):
+                    try:
+                        prices[symbol] = provider.get_latest_price(symbol)
+                    except Exception as exc:
+                        prices.pop(symbol, None)
+                        errors.append(f"{symbol} 报价不可用：{exc}")
+                performance = self.controller.portfolio_performance(
+                    paper=paper,
+                    market_prices=prices,
+                )
+                message = (
+                    "；".join(errors)
+                    if errors
+                    else (
+                        "账户总金额来自 Binance 全部激活钱包的 USDC 折算；"
+                        f"盈亏仅统计本程序{'模拟' if paper else '实盘'}订单"
+                    )
+                )
+                overview = AccountOverview(
+                    total_balance=total_balance,
+                    realized_pnl=performance.realized_pnl,
+                    unrealized_pnl=performance.unrealized_pnl,
+                    missing_price_symbols=performance.missing_price_symbols,
+                    message=message,
+                    updated_at=int(time.time() * 1000),
+                )
+            except Exception as exc:
+                performance = self.controller.portfolio_performance(
+                    paper=paper,
+                    market_prices=prices,
+                )
+                overview = AccountOverview(
+                    total_balance=None,
+                    realized_pnl=performance.realized_pnl,
+                    unrealized_pnl=performance.unrealized_pnl,
+                    missing_price_symbols=performance.missing_price_symbols,
+                    message=f"账户概览刷新失败：{exc}",
+                    updated_at=int(time.time() * 1000),
+                )
+            self._enqueue_event(("account", overview))
+
+        threading.Thread(
+            target=refresh,
+            name="account-overview-refresh",
+            daemon=True,
+        ).start()
+
+    def _apply_account_overview(self, overview: AccountOverview) -> None:
+        self._account_refresh_inflight = False
+        self.account_total_var.set(
+            "不可用"
+            if overview.total_balance is None
+            else f"{overview.total_balance:,.2f} {overview.currency}"
+        )
+        self._set_pnl_value(
+            self.realized_pnl_var,
+            self.realized_pnl_label,
+            overview.realized_pnl,
+            overview.currency,
+        )
+        self._set_pnl_value(
+            self.unrealized_pnl_var,
+            self.unrealized_pnl_label,
+            overview.unrealized_pnl,
+            overview.currency,
+        )
+        detail = overview.message
+        if overview.missing_price_symbols:
+            detail += "；缺少持仓报价：" + ", ".join(
+                overview.missing_price_symbols
+            )
+        timestamp = datetime.fromtimestamp(
+            overview.updated_at / 1000
+        ).strftime("%H:%M:%S")
+        self.account_status_var.set(f"{detail}；更新时间 {timestamp}")
+
+    @staticmethod
+    def _set_pnl_value(
+        variable: StringVar,
+        label: ttk.Label,
+        value: Decimal | None,
+        currency: str,
+    ) -> None:
+        if value is None:
+            variable.set("行情不可用")
+            label.configure(style="AccountValue.TLabel")
+            return
+        variable.set(f"{value:+,.2f} {currency}")
+        if value > 0:
+            label.configure(style="AccountPositive.TLabel")
+        elif value < 0:
+            label.configure(style="AccountNegative.TLabel")
+        else:
+            label.configure(style="AccountValue.TLabel")
 
     def _enqueue_event(self, event: tuple) -> None:
         try:
@@ -528,12 +788,18 @@ class AutoQuantApp:
                     messagebox.showerror(title, message)
                 else:
                     messagebox.showinfo(title, message)
+            elif event[0] == "account":
+                self._apply_account_overview(event[1])
+            elif event[0] == "account_refresh":
+                self._refresh_account_overview(manual=True)
         delay = 10 if not self.events.empty() else 100
         self.root.after(delay, self._drain_events)
 
     def _apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         if not self.tree.exists(snapshot.symbol):
             return
+        if snapshot.last_price is not None and snapshot.last_price > 0:
+            self._latest_prices[snapshot.symbol] = snapshot.last_price
         tag = ""
         if snapshot.state is RunState.ERROR:
             tag = "error"
@@ -573,6 +839,7 @@ class AutoQuantApp:
         return format(value, "f")
 
     def _on_close(self) -> None:
+        self._closed = True
         self.controller.stop_all()
         self.controller.join_all(timeout_per_runner=0.5)
         self.root.destroy()

@@ -32,8 +32,8 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1 -PythonExe py
 ## 使用步骤
 
 1. 首次运行保留 `PAPER` 模式。
-2. 添加一个或多个大写美股代码，例如 `AAPL`、`NVDA`、`TSLA`。
-3. 配置 MA 周期、买入金额、每日账户买入上限、止损/止盈和信号有效期。
+2. 打开“运行配置”页，配置 API、交易模式、MA 周期、买入金额、每日账户买入上限、止损/止盈和信号有效期。
+3. 返回“交易监控”页，添加一个或多个大写美股代码，例如 `AAPL`、`NVDA`、`TSLA`。
 4. 选择股票后点击“启动所选”，或点击“全部启动”。每只股票有独立运行器，可分别停止。
 5. 查看状态、程序持仓、持仓均价、未决订单、今日买入金额和日志。
 
@@ -46,6 +46,12 @@ py -m autoquant
 ```
 
 订单保护账本保存在 `%LOCALAPPDATA%\AutoQuant\orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交数量和程序持仓，不保存 API 凭据。该文件用于恢复交易次数、持仓和资金限额，不能在交易运行期间删除或修改。
+
+“交易监控”页顶部每 30 秒刷新一次账户概览，也可以手动刷新：
+
+- “Binance 账户总金额”调用官方钱包余额接口，将全部已激活钱包折算为 USDC 后汇总；需要 API Key 和 Secret，与当前选择 PAPER 或 REAL 无关。
+- “程序已实现盈亏”与“程序未实现盈亏”只统计本程序账本中能够确认的成交，不代表 Binance 全账户盈亏。已实现盈亏计入新版本记录到的交易手续费；未实现盈亏使用当前买卖报价中间价估算。
+- 旧版本订单没有保存手续费，因此升级前订单的历史盈亏可能略高于实际值。缺少持仓报价时，程序显示“行情不可用”，不会展示不完整的未实现盈亏。
 
 ## 策略定义
 
@@ -69,6 +75,7 @@ py -m autoquant
 - API Key 需要开启交易权限。股票代码还必须在 Binance Stocks 当前可交易列表中。
 - 当前版本实盘为安全优先的长仓模式：没有程序持仓时阻止 SELL；存在程序确认的多头时，策略 SELL、止损或止盈会平掉该持仓。已有多头时也会阻止重复 BUY 加仓。
 - “程序持仓”只包含本程序能够确认成交的订单，不代表 Binance 账户的全部真实持仓。若在 Binance 网页或其他客户端手工交易，必须人工核对两边状态。
+- 账户总金额与程序盈亏的统计口径不同：前者来自 Binance 全钱包余额，后者只来自本地程序订单账本，不能相减后作为全账户收益。
 - 单笔买入金额必须小于“单笔上限”；所有股票共享“每日买入上限”，资金通过 SQLite 即时事务原子预留。即使同时打开多个程序进程，同股票的未决订单、重复持仓和超量卖出也会在事务内再次拦截。股票数量最多 20 只。
 - 下单前会按交易所返回的 `stepSize`、数量上下限和金额上下限规范化或校验订单。
 - 下单接受后会查询订单详情并保存成交数量/均价；未到终态的订单会阻止同股票继续下单，并在后续行情消息及重启时继续查询。
@@ -85,6 +92,7 @@ py -m autoquant
 - 快速开始与签名下单：<https://developers.binance.com/en/docs/products/stocks/quick-start>
 - WebSocket 连接与流名称：<https://developers.binance.com/en/docs/products/stocks/websocket-streams-general-info>
 - REST API 参考：<https://developers.binance.com/en/docs/catalog/advanced-trading-stocks-trading/api/rest-api/market-data>
+- 钱包总余额：<https://developers.binance.com/docs/wallet/asset/query-user-wallet-balance>
 
 ## 项目结构与扩展
 
