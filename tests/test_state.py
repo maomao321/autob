@@ -1,21 +1,29 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from decimal import Decimal
 from pathlib import Path
 
 from autoquant.models import OrderRequest, Side
-from autoquant.state import OrderLedger
+from autoquant.state import OrderLedger, RiskLimitError
 
 
-def order(client_order_id: str = "aq-test") -> OrderRequest:
+def order(
+    client_order_id: str = "aq-test",
+    *,
+    symbol: str = "AAPL",
+    side: Side = Side.BUY,
+    buy_notional: str = "100",
+    sell_quantity: str = "1",
+) -> OrderRequest:
     return OrderRequest(
-        symbol="AAPL",
-        side=Side.BUY,
+        symbol=symbol,
+        side=side,
         reference_price=Decimal("180"),
-        buy_notional=Decimal("100"),
-        sell_quantity=Decimal("1"),
+        buy_notional=Decimal(buy_notional),
+        sell_quantity=Decimal(sell_quantity),
         client_order_id=client_order_id,
     )
 
@@ -52,6 +60,149 @@ class OrderLedgerTests(unittest.TestCase):
 
             self.assertEqual(1, len(records))
             self.assertEqual("exchange-1", records[0].order_id)
+
+    def test_daily_buy_limit_is_shared_across_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                order("aq-aapl", buy_notional="100"),
+                123,
+                paper=False,
+                max_daily_buy_notional=Decimal("150"),
+            )
+
+            with self.assertRaises(RiskLimitError):
+                ledger.record_submitting(
+                    order("aq-nvda", symbol="NVDA", buy_notional="60"),
+                    123,
+                    paper=False,
+                    max_daily_buy_notional=Decimal("150"),
+                )
+
+    def test_daily_buy_limit_is_atomic_across_ledger_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            ledgers = (OrderLedger(path), OrderLedger(path))
+            barrier = threading.Barrier(2)
+            outcomes: list[str] = []
+            outcomes_lock = threading.Lock()
+
+            def reserve(index: int) -> None:
+                barrier.wait()
+                try:
+                    ledgers[index].record_submitting(
+                        order(
+                            f"aq-{index}",
+                            symbol=("AAPL", "NVDA")[index],
+                            buy_notional="100",
+                        ),
+                        123,
+                        paper=False,
+                        max_daily_buy_notional=Decimal("100"),
+                    )
+                    outcome = "accepted"
+                except RiskLimitError:
+                    outcome = "limited"
+                with outcomes_lock:
+                    outcomes.append(outcome)
+
+            threads = [
+                threading.Thread(target=reserve, args=(index,))
+                for index in range(2)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+            self.assertEqual(["accepted", "limited"], sorted(outcomes))
+            self.assertEqual(
+                Decimal("100"),
+                ledgers[0].daily_buy_notional(123, paper=False),
+            )
+
+    def test_pending_live_order_blocks_duplicate_from_another_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            first = OrderLedger(path)
+            second = OrderLedger(path)
+            first.record_submitting(order("aq-first"), 123, paper=False)
+
+            with self.assertRaisesRegex(RiskLimitError, "禁止重复下单"):
+                second.record_submitting(
+                    order("aq-second"),
+                    123,
+                    paper=False,
+                )
+
+    def test_live_reservation_rechecks_position_inside_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order("aq-buy"), 123, paper=False)
+            ledger.mark_lifecycle(
+                "aq-buy",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("180"),
+            )
+
+            with self.assertRaisesRegex(RiskLimitError, "禁止重复买入"):
+                ledger.record_submitting(
+                    order("aq-buy-again"),
+                    123,
+                    paper=False,
+                )
+            with self.assertRaisesRegex(RiskLimitError, "超过程序持仓"):
+                ledger.record_submitting(
+                    order(
+                        "aq-oversell",
+                        side=Side.SELL,
+                        sell_quantity="1.1",
+                    ),
+                    123,
+                    paper=False,
+                )
+
+    def test_position_summary_tracks_filled_buy_and_sell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order("aq-buy"), 123, paper=False)
+            ledger.mark_lifecycle(
+                "aq-buy",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("180"),
+            )
+            ledger.record_submitting(
+                order(
+                    "aq-sell",
+                    side=Side.SELL,
+                    sell_quantity="0.4",
+                ),
+                123,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-sell",
+                "FILLED",
+                filled_quantity=Decimal("0.4"),
+                average_price=Decimal("190"),
+            )
+
+            position = ledger.position_summary("AAPL", paper=False)
+
+            self.assertEqual(Decimal("0.6"), position.quantity)
+            self.assertEqual(Decimal("180"), position.average_price)
+
+    def test_unknown_live_order_requires_manual_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order(), 123, paper=False)
+            ledger.mark_unknown("aq-test", "timeout")
+
+            self.assertEqual(1, ledger.unknown_count("AAPL", paper=False))
+            self.assertEqual(1, ledger.resolve_unknown("AAPL", paper=False))
+            self.assertEqual(0, ledger.unknown_count("AAPL", paper=False))
 
 
 if __name__ == "__main__":

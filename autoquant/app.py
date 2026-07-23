@@ -8,7 +8,7 @@ from datetime import datetime
 from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, messagebox
 from tkinter import ttk
 
-from autoquant.config import AppConfig, ConfigStore, normalize_symbols
+from autoquant.config import MAX_SYMBOLS, AppConfig, ConfigStore, normalize_symbols
 from autoquant.engine import RunnerConfig, TradingController, create_provider
 from autoquant.models import RunState, RuntimeSnapshot
 
@@ -31,7 +31,7 @@ class AutoQuantApp:
         self.root.geometry("1180x760")
         self.root.minsize(980, 650)
         self.store = config_store or ConfigStore()
-        self.events: queue.Queue[tuple] = queue.Queue()
+        self.events: queue.Queue[tuple] = queue.Queue(maxsize=1000)
         self.config = self._load_config()
 
         self.provider_var = StringVar(value=self.config.provider)
@@ -45,11 +45,24 @@ class AutoQuantApp:
         self.buy_notional_var = StringVar(value=self.config.buy_notional)
         self.sell_quantity_var = StringVar(value=self.config.sell_quantity)
         self.max_trades_var = StringVar(value=str(self.config.max_trades_per_day))
+        self.max_order_notional_var = StringVar(
+            value=self.config.max_order_notional
+        )
+        self.max_daily_buy_notional_var = StringVar(
+            value=self.config.max_daily_buy_notional
+        )
+        self.stop_loss_var = StringVar(value=self.config.stop_loss_percent)
+        self.take_profit_var = StringVar(value=self.config.take_profit_percent)
+        self.max_signal_age_var = StringVar(
+            value=str(self.config.max_signal_age_seconds)
+        )
         self.symbol_var = StringVar()
 
         self.controller = TradingController(
-            snapshot_callback=lambda snapshot: self.events.put(("snapshot", snapshot)),
-            log_callback=lambda level, symbol, message: self.events.put(
+            snapshot_callback=lambda snapshot: self._enqueue_event(
+                ("snapshot", snapshot)
+            ),
+            log_callback=lambda level, symbol, message: self._enqueue_event(
                 ("log", level, symbol, message)
             ),
         )
@@ -147,12 +160,39 @@ class AutoQuantApp:
             row=2, column=7, sticky="w", padx=(5, 0), pady=(9, 0)
         )
 
+        ttk.Label(settings, text="单笔上限(USDC)").grid(
+            row=3, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(settings, textvariable=self.max_order_notional_var, width=12).grid(
+            row=3, column=1, sticky="w", padx=(5, 14), pady=(9, 0)
+        )
+        ttk.Label(settings, text="每日买入上限").grid(
+            row=3, column=2, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            settings, textvariable=self.max_daily_buy_notional_var, width=12
+        ).grid(row=3, column=3, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Label(settings, text="止损/止盈(%)").grid(
+            row=3, column=4, sticky="w", pady=(9, 0)
+        )
+        risk_frame = ttk.Frame(settings)
+        risk_frame.grid(row=3, column=5, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Entry(risk_frame, textvariable=self.stop_loss_var, width=6).pack(side=LEFT)
+        ttk.Label(risk_frame, text="/").pack(side=LEFT, padx=3)
+        ttk.Entry(risk_frame, textvariable=self.take_profit_var, width=6).pack(side=LEFT)
+        ttk.Label(settings, text="信号有效期(秒)").grid(
+            row=3, column=6, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(settings, textvariable=self.max_signal_age_var, width=8).grid(
+            row=3, column=7, sticky="w", padx=(5, 0), pady=(9, 0)
+        )
+
         warning = (
-            "默认 PAPER 只记录模拟订单。REAL 会真实下单；当前 Binance Stocks 接口不支持"
-            "策略建立空头，因此实盘 SELL 信号会被安全阻止。API Secret 仅驻留内存且不会保存。"
+            "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的"
+            "多头，不会建立空头。未知订单会锁定实盘。API Secret 仅驻留内存且不会保存。"
         )
         ttk.Label(settings, text=warning, foreground="#9a5b00", wraplength=1100).grid(
-            row=3, column=0, columnspan=8, sticky="w", pady=(9, 0)
+            row=4, column=0, columnspan=8, sticky="w", pady=(9, 0)
         )
 
         symbols = ttk.Frame(self.root, padding=(10, 5))
@@ -165,11 +205,18 @@ class AutoQuantApp:
         ttk.Button(symbols, text="移除所选", command=self._remove_selected).pack(
             side=LEFT, padx=(6, 0)
         )
-        ttk.Button(symbols, text="全部停止", command=self._stop_all).pack(side=RIGHT)
+        ttk.Button(
+            symbols,
+            text="核对后解除未知订单锁",
+            command=self._resolve_unknown_selected,
+        ).pack(side=LEFT, padx=(6, 0))
+        ttk.Button(
+            symbols, text="全部停止(不平仓)", command=self._stop_all
+        ).pack(side=RIGHT)
         ttk.Button(symbols, text="全部启动", command=self._start_all).pack(
             side=RIGHT, padx=6
         )
-        ttk.Button(symbols, text="停止所选", command=self._stop_selected).pack(
+        ttk.Button(symbols, text="停止所选(不平仓)", command=self._stop_selected).pack(
             side=RIGHT
         )
         ttk.Button(symbols, text="启动所选", command=self._start_selected).pack(
@@ -187,6 +234,10 @@ class AutoQuantApp:
             "ma",
             "warmup",
             "trades",
+            "position",
+            "entry",
+            "pending",
+            "daily_notional",
             "message",
         )
         self.tree = ttk.Treeview(
@@ -204,6 +255,10 @@ class AutoQuantApp:
             "ma": "MA",
             "warmup": "预热",
             "trades": "今日交易",
+            "position": "程序持仓",
+            "entry": "持仓均价",
+            "pending": "未决订单",
+            "daily_notional": "今日买入额",
             "message": "信息",
         }
         widths = {
@@ -213,7 +268,11 @@ class AutoQuantApp:
             "ma": 100,
             "warmup": 80,
             "trades": 85,
-            "message": 480,
+            "position": 90,
+            "entry": 90,
+            "pending": 80,
+            "daily_notional": 95,
+            "message": 360,
         }
         for column in columns:
             self.tree.heading(column, text=headings[column])
@@ -224,9 +283,16 @@ class AutoQuantApp:
                 anchor="w" if column == "message" else "center",
             )
         scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scrollbar.set)
+        horizontal = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.tree.xview
+        )
+        self.tree.configure(
+            yscrollcommand=scrollbar.set,
+            xscrollcommand=horizontal.set,
+        )
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
         self.tree.tag_configure("error", foreground="#b00020")
         self.tree.tag_configure("running", foreground="#087830")
         self.tree.tag_configure("signal", foreground="#0856a8")
@@ -256,6 +322,11 @@ class AutoQuantApp:
             buy_notional=self.buy_notional_var.get().strip(),
             sell_quantity=self.sell_quantity_var.get().strip(),
             max_trades_per_day=int(self.max_trades_var.get()),
+            max_order_notional=self.max_order_notional_var.get().strip(),
+            max_daily_buy_notional=self.max_daily_buy_notional_var.get().strip(),
+            stop_loss_percent=self.stop_loss_var.get().strip(),
+            take_profit_percent=self.take_profit_var.get().strip(),
+            max_signal_age_seconds=int(self.max_signal_age_var.get()),
             rest_base_url=self.config.rest_base_url,
             websocket_base_url=self.config.websocket_base_url,
             recv_window=self.config.recv_window,
@@ -279,13 +350,29 @@ class AutoQuantApp:
             END,
             iid=symbol,
             text=symbol,
-            values=("已停止", "UNKNOWN", "-", "-", "0/0", "0", "未启动"),
+            values=(
+                "已停止",
+                "UNKNOWN",
+                "-",
+                "-",
+                "0/0",
+                "0",
+                "0",
+                "-",
+                "0",
+                "0",
+                "未启动",
+            ),
         )
 
     def _add_symbols(self) -> None:
         try:
             raw_symbols = re.split(r"[,，;；\s]+", self.symbol_var.get())
-            for symbol in normalize_symbols(raw_symbols):
+            new_symbols = normalize_symbols(raw_symbols)
+            combined = set(self.tree.get_children()) | set(new_symbols)
+            if len(combined) > MAX_SYMBOLS:
+                raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
+            for symbol in new_symbols:
                 self._insert_symbol(symbol)
             self.symbol_var.set("")
         except ValueError as exc:
@@ -295,6 +382,36 @@ class AutoQuantApp:
         for symbol in self.tree.selection():
             self.controller.stop(symbol)
             self.tree.delete(symbol)
+
+    def _resolve_unknown_selected(self) -> None:
+        selected = self._selected_symbols()
+        if not selected:
+            return
+        locked = [
+            symbol
+            for symbol in selected
+            if self.controller.unknown_live_orders(symbol) > 0
+        ]
+        if not locked:
+            messagebox.showinfo("没有锁定", "所选股票没有未知实盘订单。")
+            return
+        confirmed = messagebox.askyesno(
+            "确认已经人工核对",
+            "只有在你已经登录 Binance，确认所有未知订单的成交状态，"
+            "并处理了对应持仓后才能解除。\n\n"
+            f"即将解除：{', '.join(locked)}\n\n确认已经完成核对吗？",
+            icon="warning",
+        )
+        if not confirmed:
+            return
+        try:
+            total = sum(
+                self.controller.resolve_unknown_live_orders(symbol)
+                for symbol in locked
+            )
+            messagebox.showinfo("已解除", f"已归档 {total} 笔未知订单记录。")
+        except RuntimeError as exc:
+            messagebox.showerror("无法解除", str(exc))
 
     def _selected_symbols(self) -> list[str]:
         selected = list(self.tree.selection())
@@ -335,7 +452,11 @@ class AutoQuantApp:
         confirmed = messagebox.askyesno(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
-            "BUY 使用配置的 USDC 金额；策略的 SELL（建立空头）信号会被阻止。\n"
+            f"股票数：{len(self.tree.get_children())}；单笔买入："
+            f"{self.buy_notional_var.get()} USDC；每日账户上限："
+            f"{self.max_daily_buy_notional_var.get()} USDC。\n"
+            f"止损/止盈：{self.stop_loss_var.get()}% / "
+            f"{self.take_profit_var.get()}%。SELL 只会平掉程序确认的多头。\n"
             "账户还必须已经接受 Binance 美股交易免责声明。\n\n确认继续吗？",
             icon="warning",
         )
@@ -370,31 +491,45 @@ class AutoQuantApp:
                 message = validation or (
                     f"连接成功；{symbol} tradability={info.get('tradability', 'UNKNOWN')}"
                 )
-                self.events.put(("dialog", "info", "连接检查", message))
-                self.events.put(("log", "INFO", symbol, message))
+                self._enqueue_event(("dialog", "info", "连接检查", message))
+                self._enqueue_event(("log", "INFO", symbol, message))
             except Exception as exc:
-                self.events.put(("dialog", "error", "连接失败", str(exc)))
-                self.events.put(("log", "ERROR", symbol, str(exc)))
+                self._enqueue_event(("dialog", "error", "连接失败", str(exc)))
+                self._enqueue_event(("log", "ERROR", symbol, str(exc)))
 
         threading.Thread(target=check, name="api-check", daemon=True).start()
 
-    def _drain_events(self) -> None:
+    def _enqueue_event(self, event: tuple) -> None:
         try:
-            while True:
+            self.events.put_nowait(event)
+        except queue.Full:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.events.put_nowait(event)
+            except queue.Full:
+                pass
+
+    def _drain_events(self) -> None:
+        for _ in range(200):
+            try:
                 event = self.events.get_nowait()
-                if event[0] == "snapshot":
-                    self._apply_snapshot(event[1])
-                elif event[0] == "log":
-                    self._append_log(event[1], event[2], event[3])
-                elif event[0] == "dialog":
-                    _kind, severity, title, message = event
-                    if severity == "error":
-                        messagebox.showerror(title, message)
-                    else:
-                        messagebox.showinfo(title, message)
-        except queue.Empty:
-            pass
-        self.root.after(100, self._drain_events)
+            except queue.Empty:
+                break
+            if event[0] == "snapshot":
+                self._apply_snapshot(event[1])
+            elif event[0] == "log":
+                self._append_log(event[1], event[2], event[3])
+            elif event[0] == "dialog":
+                _kind, severity, title, message = event
+                if severity == "error":
+                    messagebox.showerror(title, message)
+                else:
+                    messagebox.showinfo(title, message)
+        delay = 10 if not self.events.empty() else 100
+        self.root.after(delay, self._drain_events)
 
     def _apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         if not self.tree.exists(snapshot.symbol):
@@ -413,6 +548,10 @@ class AutoQuantApp:
             self._format_decimal(snapshot.ma_value),
             f"{snapshot.warmup_bars}/{snapshot.warmup_required}",
             str(snapshot.trades_today),
+            self._format_decimal(snapshot.position_quantity),
+            self._format_decimal(snapshot.average_entry_price),
+            str(snapshot.pending_orders),
+            self._format_decimal(snapshot.daily_buy_notional),
             snapshot.message,
         )
         self.tree.item(snapshot.symbol, values=values, tags=(tag,) if tag else ())
@@ -421,6 +560,9 @@ class AutoQuantApp:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log.configure(state="normal")
         self.log.insert(END, f"[{timestamp}] [{level}] [{symbol}] {message}\n")
+        line_count = int(self.log.index("end-1c").split(".")[0])
+        if line_count > 5000:
+            self.log.delete("1.0", f"{line_count - 5000 + 1}.0")
         self.log.see(END)
         self.log.configure(state="disabled")
 

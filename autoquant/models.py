@@ -82,5 +82,9 @@ class RuntimeSnapshot:
     warmup_bars: int = 0
     warmup_required: int = 0
     trades_today: int = 0
+    position_quantity: Decimal = Decimal("0")
+    average_entry_price: Decimal = Decimal("0")
+    pending_orders: int = 0
+    daily_buy_notional: Decimal = Decimal("0")
     message: str = "未启动"
     updated_at: int = 0

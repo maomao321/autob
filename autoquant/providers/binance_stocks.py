@@ -55,6 +55,9 @@ class OrderStatusUnknownError(ProviderError):
 class BinanceStocksProvider(TradingProvider):
     name = "binance_stocks"
     supports_short = False
+    _public_cache_lock = threading.RLock()
+    _tokenized_assets_cache: tuple[float, list[dict[str, Any]]] | None = None
+    _request_semaphore = threading.BoundedSemaphore(4)
 
     def __init__(
         self,
@@ -75,6 +78,8 @@ class BinanceStocksProvider(TradingProvider):
         self.request_timeout = request_timeout
         self._server_time_offset_ms = 0
         self._symbol_info: dict[str, dict[str, Any]] = {}
+        self._symbol_info_cached_at: dict[str, float] = {}
+        self._server_time_synced_at = 0.0
 
     def stream_bars(
         self,
@@ -95,22 +100,35 @@ class BinanceStocksProvider(TradingProvider):
         reconnect_delay = 1.0
 
         while not stop_event.is_set():
-            messages: queue.Queue[tuple[str, Any]] = queue.Queue()
+            messages: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=512)
+
+            def put_message(item: tuple[str, Any]) -> None:
+                try:
+                    messages.put_nowait(item)
+                except queue.Full:
+                    try:
+                        messages.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        messages.put_nowait(item)
+                    except queue.Full:
+                        pass
 
             def on_open(_ws: Any) -> None:
-                nonlocal reconnect_delay
-                reconnect_delay = 1.0
-                messages.put(("status", "行情 WebSocket 已连接"))
+                put_message(("status", "行情 WebSocket 已连接"))
 
             def on_message(_ws: Any, raw_message: str) -> None:
+                nonlocal reconnect_delay
+                reconnect_delay = 1.0
                 try:
                     payload = json.loads(raw_message)
-                    messages.put(("bar", self.parse_kline_message(payload)))
+                    put_message(("bar", self.parse_kline_message(payload)))
                 except (TypeError, ValueError, KeyError) as exc:
-                    messages.put(("status", f"忽略无法解析的行情消息: {exc}"))
+                    put_message(("status", f"忽略无法解析的行情消息: {exc}"))
 
             def on_error(_ws: Any, error: Any) -> None:
-                messages.put(("status", f"行情连接错误: {error}"))
+                put_message(("status", f"行情连接错误: {error}"))
 
             def on_close(
                 _ws: Any,
@@ -118,7 +136,7 @@ class BinanceStocksProvider(TradingProvider):
                 close_message: str | None,
             ) -> None:
                 detail = close_message or "连接已关闭"
-                messages.put(("status", f"行情连接关闭({status_code}): {detail}"))
+                put_message(("status", f"行情连接关闭({status_code}): {detail}"))
 
             ws = websocket.WebSocketApp(
                 url,
@@ -139,7 +157,9 @@ class BinanceStocksProvider(TradingProvider):
             )
             socket_thread.start()
 
-            while socket_thread.is_alive() and not stop_event.is_set():
+            while (
+                socket_thread.is_alive() or not messages.empty()
+            ) and not stop_event.is_set():
                 try:
                     kind, value = messages.get(timeout=0.5)
                 except queue.Empty:
@@ -216,49 +236,65 @@ class BinanceStocksProvider(TradingProvider):
         )
 
     def check_symbol(self, symbol: str) -> dict:
+        symbol = symbol.upper()
         if not self.api_key:
             if self.live_trading:
                 raise ProviderError("实盘模式必须填写 API Key")
             return {
-                "symbol": symbol.upper(),
+                "symbol": symbol,
                 "tradability": "UNKNOWN",
                 "validation": "模拟模式未提供 API Key，跳过交易所代码校验",
             }
-        if self.live_trading:
+        cached = self._symbol_info.get(symbol)
+        cached_at = self._symbol_info_cached_at.get(symbol, 0.0)
+        if cached is not None and time.monotonic() - cached_at < 60:
+            return dict(cached)
+        if self.live_trading and time.monotonic() - self._server_time_synced_at >= 60:
             self.sync_server_time()
         payload = self._request_json(
             "GET",
             "/sapi/v1/equity/market/exchangeInfo",
-            {"symbol": symbol.upper()},
+            {"symbol": symbol},
             signed=False,
         )
         if not isinstance(payload, dict):
             raise ProviderError("Binance 股票信息返回结构不符合预期")
         symbols = payload.get("symbols", [])
         if not symbols:
-            raise ProviderError(f"Binance Stocks 不支持股票代码 {symbol.upper()}")
+            raise ProviderError(f"Binance Stocks 不支持股票代码 {symbol}")
         info = dict(symbols[0])
         if self.live_trading:
-            tokenized_assets = self._request_json(
+            tokenized_assets = self._cached_tokenized_assets()
+            supported = any(
+                str(asset.get("underlyingEquitySymbol", "")).upper()
+                == symbol
+                and self._as_bool(asset.get("multiplierValid", False))
+                for asset in tokenized_assets
+                if isinstance(asset, dict)
+            )
+            if not supported:
+                raise ProviderError(f"{symbol} 当前未启用 Binance 股票交易")
+            info["tokenizationEnabled"] = True
+        self._symbol_info[symbol] = info
+        self._symbol_info_cached_at[symbol] = time.monotonic()
+        return info
+
+    def _cached_tokenized_assets(self) -> list[dict[str, Any]]:
+        with self._public_cache_lock:
+            cached = self.__class__._tokenized_assets_cache
+            if cached is not None and time.monotonic() - cached[0] < 60:
+                return cached[1]
+            payload = self._request_json(
                 "GET",
                 "/sapi/v1/equity/market/tokenized-assets",
                 {},
                 signed=False,
             )
-            if not isinstance(tokenized_assets, list):
+            if not isinstance(payload, list):
                 raise ProviderError("Binance 代币化股票列表返回结构不符合预期")
-            supported = any(
-                str(asset.get("underlyingEquitySymbol", "")).upper()
-                == symbol.upper()
-                and bool(asset.get("multiplierValid", False))
-                for asset in tokenized_assets
-                if isinstance(asset, dict)
-            )
-            if not supported:
-                raise ProviderError(f"{symbol.upper()} 当前未启用 Binance 股票交易")
-            info["tokenizationEnabled"] = True
-        self._symbol_info[symbol.upper()] = info
-        return info
+            assets = [dict(item) for item in payload if isinstance(item, dict)]
+            self.__class__._tokenized_assets_cache = (time.monotonic(), assets)
+            return assets
 
     def get_order_detail(self, order_id: str) -> dict:
         self._require_credentials()
@@ -275,6 +311,7 @@ class BinanceStocksProvider(TradingProvider):
             raise ProviderError("Binance 时间接口返回结构不符合预期")
         server_time = int(payload["serverTime"])
         self._server_time_offset_ms = server_time - int(time.time() * 1000)
+        self._server_time_synced_at = time.monotonic()
         return self._server_time_offset_ms
 
     @classmethod
@@ -339,14 +376,15 @@ class BinanceStocksProvider(TradingProvider):
             url = f"{url}?{query}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.1.1",
+            "User-Agent": "AutoQuant/0.2.0",
         }
         if self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key
         request = Request(url, method=method.upper(), headers=headers)
         try:
-            with urlopen(request, timeout=self.request_timeout) as response:
-                body = response.read().decode("utf-8")
+            with self._request_semaphore:
+                with urlopen(request, timeout=self.request_timeout) as response:
+                    body = response.read().decode("utf-8")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise ProviderHTTPError(

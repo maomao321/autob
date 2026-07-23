@@ -22,6 +22,7 @@ ALLOWED_REST_HOSTS = {
 }
 ALLOWED_WS_HOSTS = {"nbstream.binance.com"}
 SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,9}", re.ASCII)
+MAX_SYMBOLS = 20
 
 
 @dataclass(slots=True)
@@ -34,6 +35,11 @@ class AppConfig:
     buy_notional: str = "100.00"
     sell_quantity: str = "1"
     max_trades_per_day: int = 1
+    max_order_notional: str = "100.00"
+    max_daily_buy_notional: str = "300.00"
+    stop_loss_percent: str = "2.0"
+    take_profit_percent: str = "4.0"
+    max_signal_age_seconds: int = 30
     rest_base_url: str = DEFAULT_REST_URL
     websocket_base_url: str = DEFAULT_WS_URL
     recv_window: int = 5000
@@ -44,6 +50,8 @@ class AppConfig:
         self.symbols = normalize_symbols(self.symbols)
         if not self.symbols:
             raise ValueError("至少配置一只股票")
+        if len(self.symbols) > MAX_SYMBOLS:
+            raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
         if self.provider != "binance_stocks":
             raise ValueError(f"暂不支持 API 供应商: {self.provider}")
         if self.strategy != "five_minute_breakout":
@@ -55,26 +63,48 @@ class AppConfig:
             self.ma_period = int(self.ma_period)
             self.max_trades_per_day = int(self.max_trades_per_day)
             self.recv_window = int(self.recv_window)
+            self.max_signal_age_seconds = int(self.max_signal_age_seconds)
         except (TypeError, ValueError):
-            raise ValueError("MA、每日交易次数和 recvWindow 必须是整数") from None
+            raise ValueError(
+                "MA、每日交易次数、信号有效期和 recvWindow 必须是整数"
+            ) from None
         if not 2 <= self.ma_period <= 200:
             raise ValueError("MA 周期必须在 2 到 200 之间")
         if not 1 <= self.max_trades_per_day <= 100:
             raise ValueError("每日最多交易次数必须在 1 到 100 之间")
-        if not 1 <= self.recv_window <= 60000:
-            raise ValueError("recvWindow 必须在 1 到 60000 毫秒之间")
+        if not 1 <= self.recv_window <= 5000:
+            raise ValueError("为避免过期订单，recvWindow 必须在 1 到 5000 毫秒之间")
+        if not 1 <= self.max_signal_age_seconds <= 300:
+            raise ValueError("信号有效期必须在 1 到 300 秒之间")
         self.buy_notional = str(self.buy_notional)
         self.sell_quantity = str(self.sell_quantity)
+        self.max_order_notional = str(self.max_order_notional)
+        self.max_daily_buy_notional = str(self.max_daily_buy_notional)
+        self.stop_loss_percent = str(self.stop_loss_percent)
+        self.take_profit_percent = str(self.take_profit_percent)
+        parsed_decimals: dict[str, Decimal] = {}
         for label, value in (
             ("买入金额", self.buy_notional),
             ("卖出数量", self.sell_quantity),
+            ("单笔金额上限", self.max_order_notional),
+            ("账户每日买入上限", self.max_daily_buy_notional),
+            ("止损比例", self.stop_loss_percent),
+            ("止盈比例", self.take_profit_percent),
         ):
             try:
                 number = Decimal(value)
                 if not number.is_finite() or number <= 0:
                     raise ValueError
+                parsed_decimals[label] = number
             except (InvalidOperation, ValueError):
                 raise ValueError(f"{label}必须是正数") from None
+        if parsed_decimals["买入金额"] > parsed_decimals["单笔金额上限"]:
+            raise ValueError("买入金额不能超过单笔金额上限")
+        if parsed_decimals["买入金额"] > parsed_decimals["账户每日买入上限"]:
+            raise ValueError("买入金额不能超过账户每日买入上限")
+        for label in ("止损比例", "止盈比例"):
+            if not Decimal("0.1") <= parsed_decimals[label] <= Decimal("50"):
+                raise ValueError(f"{label}必须在 0.1% 到 50% 之间")
         rest_url = urlparse(self.rest_base_url)
         if rest_url.scheme != "https" or rest_url.hostname not in ALLOWED_REST_HOSTS:
             raise ValueError("REST 地址必须是 Binance 官方 HTTPS 地址")
@@ -121,10 +151,26 @@ class ConfigStore:
             payload: dict[str, Any] = json.loads(
                 self.path.read_text(encoding="utf-8")
             )
+            if "buy_notional" in payload and "max_order_notional" not in payload:
+                legacy_buy = Decimal(str(payload["buy_notional"]))
+                payload["max_order_notional"] = str(max(legacy_buy, Decimal("100")))
+            if (
+                "max_order_notional" in payload
+                and "max_daily_buy_notional" not in payload
+            ):
+                payload["max_daily_buy_notional"] = str(
+                    Decimal(str(payload["max_order_notional"])) * Decimal("3")
+                )
             config = AppConfig(**payload)
             config.validate()
             return config
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (
+            OSError,
+            json.JSONDecodeError,
+            InvalidOperation,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise ValueError(f"配置文件读取失败: {exc}") from exc
 
     def save(self, config: AppConfig) -> None:

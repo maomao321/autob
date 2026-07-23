@@ -10,8 +10,12 @@
   "buy_notional": "100.00",
   "sell_quantity": "1",
   "max_trades_per_day": 1,
+  "max_order_notional": "100.00",
+  "max_daily_buy_notional": "300.00",
+  "stop_loss_percent": "2.0",
+  "take_profit_percent": "4.0",
+  "max_signal_age_seconds": 30,
   "rest_base_url": "https://api.binance.com",
   "websocket_base_url": "wss://nbstream.binance.com/equity",
   "recv_window": 5000
 }
-

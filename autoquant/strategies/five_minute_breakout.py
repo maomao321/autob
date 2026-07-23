@@ -106,10 +106,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
         current_ma = self._mean_close(current_window)
         self.ma_value = current_ma
 
-        day_key = self._daily_bar.open_time
-        if self._trades_by_day.get(day_key, 0) >= self.max_trades_per_day:
-            return None
-
         crossed_up = previous_bar.close <= previous_ma and bar.close > current_ma
         broke_previous_high = bar.close > previous_bar.high
         if self.direction is Direction.LONG and crossed_up and broke_previous_high:

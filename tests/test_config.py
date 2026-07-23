@@ -45,6 +45,18 @@ class ConfigTests(unittest.TestCase):
                 symbols=["AAPL"], rest_base_url="https://example.com"
             ).validate()
 
+    def test_buy_amount_must_fit_risk_limits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "单笔金额上限"):
+            AppConfig(
+                symbols=["AAPL"],
+                buy_notional="101",
+                max_order_notional="100",
+            ).validate()
+
+    def test_symbol_count_is_bounded(self) -> None:
+        with self.assertRaisesRegex(ValueError, "不能超过"):
+            AppConfig(symbols=[f"A{index}" for index in range(21)]).validate()
+
 
 if __name__ == "__main__":
     unittest.main()

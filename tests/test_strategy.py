@@ -78,7 +78,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertIsNotNone(signal)
         self.assertIsNone(strategy.on_bar(bar("13", 3)))
 
-    def test_daily_limit_blocks_later_signals_after_execution(self) -> None:
+    def test_execution_count_is_exposed_for_engine_risk_checks(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
             "AAPL", ma_period=3, max_trades_per_day=1
         )
@@ -92,7 +92,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
 
         strategy.on_bar(bar("10", 4))
         strategy.on_bar(bar("9", 5))
-        self.assertIsNone(strategy.on_bar(bar("13", 6)))
+        self.assertIsNotNone(strategy.on_bar(bar("13", 6)))
 
     def test_new_daily_bar_clears_intraday_warmup(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
@@ -120,7 +120,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
 
         self.assertEqual(2, strategy.warmup_bars)
 
-    def test_restored_daily_count_blocks_signal(self) -> None:
+    def test_restored_daily_count_does_not_hide_exit_signals(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
             "AAPL", ma_period=3, max_trades_per_day=1
         )
@@ -129,7 +129,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         for index in range(3):
             strategy.on_bar(bar("10", index))
 
-        self.assertIsNone(strategy.on_bar(bar("12", 3)))
+        self.assertIsNotNone(strategy.on_bar(bar("12", 3)))
         self.assertEqual(1, strategy.trades_today)
 
 
