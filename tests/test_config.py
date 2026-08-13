@@ -15,13 +15,23 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
-            config = AppConfig(symbols=["AAPL", "NVDA"], ma_period=8)
+            config = AppConfig(
+                symbols=["AAPL", "NVDA"],
+                ma_period=8,
+                contract_multiplier="2.5",
+                max_order_notional="250",
+                ai_provider="dual",
+                ai_min_confidence="0.75",
+            )
             store.save(config)
 
             loaded = store.load()
 
             self.assertEqual(["AAPL", "NVDA"], loaded.symbols)
             self.assertEqual(8, loaded.ma_period)
+            self.assertEqual("2.5", loaded.contract_multiplier)
+            self.assertEqual("DUAL", loaded.ai_provider)
+            self.assertEqual("0.75", loaded.ai_min_confidence)
             content = path.read_text(encoding="utf-8")
             self.assertNotIn("api_secret", content.lower())
             self.assertNotIn("api_key", content.lower())
@@ -53,9 +63,35 @@ class ConfigTests(unittest.TestCase):
                 max_order_notional="100",
             ).validate()
 
+    def test_contract_multiplier_scales_amount_before_risk_validation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "倍数后的实际买入金额"):
+            AppConfig(
+                symbols=["AAPL"],
+                buy_notional="60",
+                contract_multiplier="2",
+                max_order_notional="100",
+            ).validate()
+
+    def test_contract_multiplier_must_be_positive_and_bounded(self) -> None:
+        with self.assertRaisesRegex(ValueError, "合约倍数必须是正数"):
+            AppConfig(symbols=["AAPL"], contract_multiplier="0").validate()
+        with self.assertRaisesRegex(ValueError, "合约倍数不能超过 100"):
+            AppConfig(
+                symbols=["AAPL"],
+                contract_multiplier="101",
+                max_order_notional="20000",
+                max_daily_buy_notional="20000",
+            ).validate()
+
     def test_symbol_count_is_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "不能超过"):
             AppConfig(symbols=[f"A{index}" for index in range(21)]).validate()
+
+    def test_ai_settings_are_bounded(self) -> None:
+        with self.assertRaisesRegex(ValueError, "置信度"):
+            AppConfig(symbols=["AAPL"], ai_min_confidence="0.4").validate()
+        with self.assertRaisesRegex(ValueError, "大模型模式"):
+            AppConfig(symbols=["AAPL"], ai_provider="unknown").validate()
 
 
 if __name__ == "__main__":

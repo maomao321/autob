@@ -1,0 +1,223 @@
+from __future__ import annotations
+
+import json
+import unittest
+from decimal import Decimal
+
+from autoquant.ai_decision import (
+    DecisionError,
+    DeepSeekDecisionClient,
+    OpenAIResponsesDecisionClient,
+    OpeningDecision,
+    OpeningDecisionService,
+    PublicMarketContextCollector,
+    parse_opening_decision,
+)
+from autoquant.models import Bar, Direction
+
+
+def daily_bar() -> Bar:
+    return Bar(
+        symbol="AAPL",
+        interval="1d",
+        open_time=1_000,
+        close_time=2_000,
+        open=Decimal("100"),
+        high=Decimal("103"),
+        low=Decimal("99"),
+        close=Decimal("102"),
+        closed=False,
+    )
+
+
+def decision_json(
+    direction: str = "LONG", confidence: float = 0.82
+) -> str:
+    return json.dumps(
+        {
+            "direction": direction,
+            "confidence": confidence,
+            "summary": "大盘与个股趋势同向",
+            "factors": ["SPY 近五日上涨", "个股站上均线"],
+            "risks": ["新闻事件可能放大波动"],
+        },
+        ensure_ascii=False,
+    )
+
+
+class StaticCollector:
+    def collect(self, symbol: str, current_daily_bar: Bar):
+        return {
+            "symbol": symbol,
+            "current": str(current_daily_bar.close),
+            "recent_news": [{"title": "test"}],
+        }
+
+
+class StaticClient:
+    def __init__(
+        self,
+        provider: str,
+        direction: Direction,
+        confidence: float = 0.8,
+    ) -> None:
+        self.provider = provider
+        self.model = provider.lower()
+        self.direction = direction
+        self.confidence = confidence
+
+    def decide(self, context):
+        return OpeningDecision(
+            direction=self.direction,
+            confidence=self.confidence,
+            summary=f"{self.provider} conclusion",
+            factors=("trend",),
+            risks=("volatility",),
+            provider=self.provider,
+            model=self.model,
+        )
+
+
+class AiDecisionTests(unittest.TestCase):
+    def test_public_context_combines_nasdaq_trends_and_news(self) -> None:
+        rows = [
+            {"date": f"08/{day:02d}/2026", "close": f"${100 + day}.00"}
+            for day in range(1, 8)
+        ]
+
+        def get_bytes(url, _timeout):
+            if "news.google.com" in url:
+                return (
+                    "<rss><channel><item><title>AAPL launches product</title>"
+                    "<link>https://example.com/story</link>"
+                    "<source>Example</source>"
+                    "<pubDate>Thu, 13 Aug 2026 10:00:00 GMT</pubDate>"
+                    "</item></channel></rss>"
+                ).encode()
+            return json.dumps(
+                {"data": {"tradesTable": {"rows": rows}}}
+            ).encode()
+
+        collector = PublicMarketContextCollector(
+            history_days=30,
+            news_days=7,
+            news_limit=3,
+            timeout_seconds=10,
+            get_bytes=get_bytes,
+        )
+
+        context = collector.collect("AAPL", daily_bar())
+
+        self.assertEqual("AAPL", context["symbol"])
+        self.assertEqual(7, context["symbol_trend"]["observations"])
+        self.assertEqual({"SPY", "QQQ"}, set(context["broad_market_trends"]))
+        self.assertEqual("AAPL launches product", context["recent_news"][0]["title"])
+
+    def test_parser_accepts_only_the_expected_contract(self) -> None:
+        decision = parse_opening_decision(
+            decision_json(), "CHATGPT", "gpt-test"
+        )
+
+        self.assertEqual(Direction.LONG, decision.direction)
+        self.assertEqual(0.82, decision.confidence)
+        self.assertEqual("CHATGPT", decision.provider)
+
+        malformed = json.loads(decision_json())
+        malformed["quantity"] = 100
+        with self.assertRaisesRegex(DecisionError, "字段"):
+            parse_opening_decision(
+                json.dumps(malformed), "CHATGPT", "gpt-test"
+            )
+
+    def test_openai_client_uses_structured_response_text(self) -> None:
+        calls = []
+
+        def post(url, payload, api_key, timeout):
+            calls.append((url, payload, api_key, timeout))
+            return {
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": decision_json()}
+                        ],
+                    }
+                ]
+            }
+
+        client = OpenAIResponsesDecisionClient(
+            "secret", "gpt-test", 12, post_json=post
+        )
+        decision = client.decide({"symbol": "AAPL"})
+
+        self.assertEqual(Direction.LONG, decision.direction)
+        self.assertEqual("json_schema", calls[0][1]["text"]["format"]["type"])
+        self.assertFalse(calls[0][1]["store"])
+
+    def test_deepseek_retries_one_empty_json_response(self) -> None:
+        responses = [
+            {"choices": [{"message": {"content": ""}}]},
+            {"choices": [{"message": {"content": decision_json("SHORT")}}]},
+        ]
+
+        def post(_url, _payload, _api_key, _timeout):
+            return responses.pop(0)
+
+        client = DeepSeekDecisionClient(
+            "secret", "deepseek-test", 12, post_json=post
+        )
+        decision = client.decide({"symbol": "AAPL"})
+
+        self.assertEqual(Direction.SHORT, decision.direction)
+        self.assertEqual([], responses)
+
+    def test_low_confidence_fails_closed(self) -> None:
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (StaticClient("CHATGPT", Direction.LONG, 0.6),),
+            min_confidence=0.7,
+            mode="CHATGPT",
+        )
+
+        decision = service.decide("AAPL", daily_bar())
+
+        self.assertEqual(Direction.FLAT, decision.direction)
+        self.assertTrue(decision.fallback)
+
+    def test_dual_mode_requires_same_direction(self) -> None:
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (
+                StaticClient("CHATGPT", Direction.LONG),
+                StaticClient("DEEPSEEK", Direction.SHORT),
+            ),
+            min_confidence=0.7,
+            mode="DUAL",
+        )
+
+        decision = service.decide("AAPL", daily_bar())
+
+        self.assertEqual(Direction.FLAT, decision.direction)
+        self.assertTrue(decision.fallback)
+        self.assertIn("未形成", decision.summary)
+
+    def test_dual_mode_accepts_high_confidence_consensus(self) -> None:
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (
+                StaticClient("CHATGPT", Direction.LONG, 0.81),
+                StaticClient("DEEPSEEK", Direction.LONG, 0.77),
+            ),
+            min_confidence=0.7,
+            mode="DUAL",
+        )
+
+        decision = service.decide("AAPL", daily_bar())
+
+        self.assertEqual(Direction.LONG, decision.direction)
+        self.assertEqual(0.77, decision.confidence)
+        self.assertFalse(decision.fallback)
+
+
+if __name__ == "__main__":
+    unittest.main()

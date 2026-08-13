@@ -8,7 +8,8 @@ from threading import Event
 
 from autoquant.config import AppConfig
 from autoquant.engine import RunnerConfig, SymbolRunner
-from autoquant.models import Bar, OrderResult
+from autoquant.ai_decision import OpeningDecision
+from autoquant.models import Bar, Direction, OrderResult
 from autoquant.state import OrderLedger
 
 
@@ -104,6 +105,21 @@ class MalformedFillProvider(FilledLiveProvider):
         return {"status": "FILLED"}
 
 
+class FlatOpeningDecider:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def decide(self, symbol, current_daily_bar):
+        self.calls.append((symbol, current_daily_bar.open_time))
+        return OpeningDecision(
+            direction=Direction.FLAT,
+            confidence=0.88,
+            summary="新闻与走势相互冲突",
+            provider="CHATGPT",
+            model="gpt-test",
+        )
+
+
 class SymbolRunnerTests(unittest.TestCase):
     def test_runner_turns_strategy_signal_into_paper_order(self) -> None:
         snapshots = []
@@ -134,6 +150,67 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual(1, len(fake_provider.orders))
             self.assertTrue(any(level == "ORDER" for level, _symbol, _message in logs))
             self.assertEqual(1, max(snapshot.trades_today for snapshot in snapshots))
+
+    def test_ai_flat_direction_blocks_an_otherwise_valid_entry(self) -> None:
+        logs = []
+        decider = FlatOpeningDecider()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ma_period=3,
+                        ai_provider="CHATGPT",
+                    ),
+                    openai_api_key="test-key",
+                ),
+                lambda _snapshot: None,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
+                ledger,
+                opening_decider=decider,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual([], provider.orders)
+            self.assertEqual([("AAPL", 0)], decider.calls)
+            self.assertTrue(any("今日方向=FLAT" in item[2] for item in logs))
+
+    def test_contract_multiplier_scales_entry_order_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ma_period=3,
+                        buy_notional="75",
+                        sell_quantity="0.5",
+                        contract_multiplier="2",
+                        max_order_notional="150",
+                    )
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            self.assertEqual(Decimal("150"), provider.orders[0].buy_notional)
+            self.assertEqual(Decimal("1.0"), provider.orders[0].sell_quantity)
 
     def test_unknown_submission_is_persisted_and_stops_runner(self) -> None:
         snapshots = []
@@ -282,7 +359,14 @@ class SymbolRunnerTests(unittest.TestCase):
             runner = SymbolRunner(
                 "AAPL",
                 RunnerConfig(
-                    AppConfig(symbols=["AAPL"], trading_mode="REAL", ma_period=3),
+                    AppConfig(
+                        symbols=["AAPL"],
+                        trading_mode="REAL",
+                        ma_period=3,
+                        contract_multiplier="5",
+                        max_order_notional="500",
+                        max_daily_buy_notional="500",
+                    ),
                     api_key="key",
                     api_secret="secret",
                 ),

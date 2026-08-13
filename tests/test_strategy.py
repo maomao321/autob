@@ -68,6 +68,23 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         assert signal is not None
         self.assertEqual(Side.SELL, signal.side)
 
+    def test_ai_direction_overrides_the_intraday_daily_candle(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy.set_opening_direction(Direction.SHORT, "新闻与大盘偏空")
+        strategy.on_bar(
+            bar("101", 0, interval="1d", open_price="100")
+        )
+        for index in range(3):
+            strategy.on_bar(bar("10", index))
+
+        signal = strategy.on_bar(bar("8", 3, high="10.2", low="7.8"))
+
+        self.assertEqual(Direction.SHORT, strategy.direction)
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertEqual(Side.SELL, signal.side)
+        self.assertIn("大模型今日偏空", signal.reason)
+
     def test_open_bar_and_duplicate_closed_bar_do_not_repeat_signal(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))

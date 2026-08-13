@@ -27,11 +27,15 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._daily_bar: Bar | None = None
         self._last_evaluated_open_time: int | None = None
         self._trades_by_day: dict[int, int] = {}
+        self._opening_direction: Direction | None = None
+        self._opening_direction_reason = ""
         self.last_price: Decimal | None = None
         self.ma_value: Decimal | None = None
 
     @property
     def direction(self) -> Direction:
+        if self._opening_direction is not None:
+            return self._opening_direction
         if self._daily_bar is None:
             return Direction.UNKNOWN
         if self._daily_bar.close > self._daily_bar.open:
@@ -39,6 +43,22 @@ class FiveMinuteBreakoutStrategy(Strategy):
         if self._daily_bar.close < self._daily_bar.open:
             return Direction.SHORT
         return Direction.FLAT
+
+    @property
+    def opening_direction_reason(self) -> str:
+        return self._opening_direction_reason
+
+    def set_opening_direction(
+        self, direction: Direction, reason: str = ""
+    ) -> None:
+        if direction not in {
+            Direction.LONG,
+            Direction.SHORT,
+            Direction.FLAT,
+        }:
+            raise ValueError("opening direction must be LONG, SHORT or FLAT")
+        self._opening_direction = direction
+        self._opening_direction_reason = " ".join(str(reason).split())[:500]
 
     @property
     def warmup_bars(self) -> int:
@@ -109,6 +129,11 @@ class FiveMinuteBreakoutStrategy(Strategy):
         crossed_up = previous_bar.close <= previous_ma and bar.close > current_ma
         broke_previous_high = bar.close > previous_bar.high
         if self.direction is Direction.LONG and crossed_up and broke_previous_high:
+            direction_reason = (
+                f"大模型今日偏多（{self._opening_direction_reason}）"
+                if self._opening_direction is not None
+                else "日线偏多"
+            )
             return Signal(
                 symbol=self.symbol,
                 side=Side.BUY,
@@ -116,7 +141,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 ma_value=current_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"日线偏多；5分钟收盘价 {bar.close} 上穿 MA{self.ma_period} "
+                    f"{direction_reason}；5分钟收盘价 {bar.close} "
+                    f"上穿 MA{self.ma_period} "
                     f"{current_ma}，并突破前一根最高价 {previous_bar.high}"
                 ),
             )
@@ -124,6 +150,11 @@ class FiveMinuteBreakoutStrategy(Strategy):
         crossed_down = previous_bar.close >= previous_ma and bar.close < current_ma
         broke_previous_low = bar.close < previous_bar.low
         if self.direction is Direction.SHORT and crossed_down and broke_previous_low:
+            direction_reason = (
+                f"大模型今日偏空（{self._opening_direction_reason}）"
+                if self._opening_direction is not None
+                else "日线偏空"
+            )
             return Signal(
                 symbol=self.symbol,
                 side=Side.SELL,
@@ -131,7 +162,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 ma_value=current_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"日线偏空；5分钟收盘价 {bar.close} 下穿 MA{self.ma_period} "
+                    f"{direction_reason}；5分钟收盘价 {bar.close} "
+                    f"下穿 MA{self.ma_period} "
                     f"{current_ma}，并跌破前一根最低价 {previous_bar.low}"
                 ),
             )

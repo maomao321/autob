@@ -5,8 +5,16 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import Callable
+from typing import Callable, Protocol
 
+from autoquant.ai_decision import (
+    DecisionClient,
+    DeepSeekDecisionClient,
+    OpenAIResponsesDecisionClient,
+    OpeningDecision,
+    OpeningDecisionService,
+    PublicMarketContextCollector,
+)
 from autoquant.config import AppConfig
 from autoquant.models import (
     Bar,
@@ -41,6 +49,13 @@ class RunnerConfig:
     app: AppConfig
     api_key: str = ""
     api_secret: str = ""
+    openai_api_key: str = ""
+    deepseek_api_key: str = ""
+
+
+class OpeningDecider(Protocol):
+    def decide(self, symbol: str, current_daily_bar: Bar) -> OpeningDecision:
+        """Return the direction filter for one exchange trading day."""
 
 
 def create_provider(config: RunnerConfig) -> TradingProvider:
@@ -66,6 +81,45 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
     raise ValueError(f"未知策略: {config.app.strategy}")
 
 
+def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
+    mode = config.app.ai_provider
+    if mode == "DISABLED":
+        return None
+    clients: list[DecisionClient] = []
+    if mode in {"CHATGPT", "DUAL"}:
+        if not config.openai_api_key.strip():
+            raise ValueError("CHATGPT/DUAL 模式必须填写 OpenAI API Key")
+        clients.append(
+            OpenAIResponsesDecisionClient(
+                api_key=config.openai_api_key,
+                model=config.app.openai_model,
+                timeout_seconds=config.app.ai_timeout_seconds,
+            )
+        )
+    if mode in {"DEEPSEEK", "DUAL"}:
+        if not config.deepseek_api_key.strip():
+            raise ValueError("DEEPSEEK/DUAL 模式必须填写 DeepSeek API Key")
+        clients.append(
+            DeepSeekDecisionClient(
+                api_key=config.deepseek_api_key,
+                model=config.app.deepseek_model,
+                timeout_seconds=config.app.ai_timeout_seconds,
+            )
+        )
+    collector = PublicMarketContextCollector(
+        history_days=config.app.ai_history_days,
+        news_days=config.app.ai_news_days,
+        news_limit=config.app.ai_news_limit,
+        timeout_seconds=config.app.ai_timeout_seconds,
+    )
+    return OpeningDecisionService(
+        collector=collector,
+        clients=tuple(clients),
+        min_confidence=float(Decimal(config.app.ai_min_confidence)),
+        mode=mode,
+    )
+
+
 class SymbolRunner:
     def __init__(
         self,
@@ -74,11 +128,15 @@ class SymbolRunner:
         snapshot_callback: SnapshotCallback,
         log_callback: LogCallback,
         ledger: OrderLedger | None = None,
+        opening_decider: OpeningDecider | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.config = config
         self.provider = create_provider(config)
         self.strategy = create_strategy(self.symbol, config)
+        self.opening_decider = opening_decider
+        if self.opening_decider is None and config.app.ai_provider != "DISABLED":
+            self.opening_decider = create_opening_decider(config)
         self.snapshot_callback = snapshot_callback
         self.log_callback = log_callback
         self.ledger = ledger or OrderLedger()
@@ -91,6 +149,7 @@ class SymbolRunner:
         self._pending_orders = 0
         self._daily_buy_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
+        self._ai_decision_day_key: int | None = None
 
     @property
     def is_alive(self) -> bool:
@@ -176,6 +235,10 @@ class SymbolRunner:
                 if bar.interval == "5m" and bar.closed:
                     self._sync_trade_count()
                     self._update_risk_cache(paper=is_paper)
+                if bar.interval == "1d":
+                    self._apply_opening_decision(bar)
+                    if self.stop_event.is_set():
+                        break
                 signal = self.strategy.on_bar(bar)
                 risk_signal = self._risk_exit_signal(bar)
                 if risk_signal is not None:
@@ -255,15 +318,22 @@ class SymbolRunner:
                 if day_key is None:
                     self._log("ERROR", "未下单：尚未确定当前交易日")
                     continue
+                contract_multiplier = Decimal(
+                    self.config.app.contract_multiplier
+                )
                 order = OrderRequest(
                     symbol=self.symbol,
                     side=signal.side,
                     reference_price=signal.price,
-                    buy_notional=Decimal(self.config.app.buy_notional),
+                    buy_notional=(
+                        Decimal(self.config.app.buy_notional)
+                        * contract_multiplier
+                    ),
                     sell_quantity=(
                         position.quantity
                         if is_long_exit
                         else Decimal(self.config.app.sell_quantity)
+                        * contract_multiplier
                     ),
                     client_order_id=f"aq{uuid.uuid4().hex}",
                 )
@@ -363,6 +433,41 @@ class SymbolRunner:
                 return
         self._update(RunState.STOPPED, "已停止")
         self._log("INFO", "量化运行已停止")
+
+    def _apply_opening_decision(self, bar: Bar) -> None:
+        if (
+            self.opening_decider is None
+            or self._ai_decision_day_key == bar.open_time
+        ):
+            return
+        self._update(
+            RunState.STARTING,
+            "正在结合近期新闻、大盘和个股走势生成今日方向",
+        )
+        try:
+            decision = self.opening_decider.decide(self.symbol, bar)
+        except Exception as exc:
+            decision = OpeningDecision.flat(
+                f"大模型决策异常：{' '.join(str(exc).split())[:240]}",
+                provider=self.config.app.ai_provider,
+                risks=("异常已触发安全兜底，今日不开新仓",),
+            )
+        self._ai_decision_day_key = bar.open_time
+        setter = getattr(self.strategy, "set_opening_direction", None)
+        if not callable(setter):
+            raise RuntimeError("当前策略不支持大模型开仓方向过滤")
+        setter(decision.direction, decision.summary)
+        level = "ERROR" if decision.fallback else "AI"
+        self._log(
+            level,
+            f"{decision.provider}/{decision.model or '-'} 今日方向="
+            f"{decision.direction.value}，置信度={decision.confidence:.0%}；"
+            f"{decision.summary}",
+        )
+        if decision.factors:
+            self._log("AI", "主要依据：" + "；".join(decision.factors))
+        if decision.risks:
+            self._log("AI", "主要风险：" + "；".join(decision.risks))
 
     def _sync_trade_count(self) -> None:
         day_key = getattr(self.strategy, "current_day_key", None)

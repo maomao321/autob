@@ -50,6 +50,9 @@ class AutoQuantApp:
         self.ma_var = StringVar(value=str(self.config.ma_period))
         self.buy_notional_var = StringVar(value=self.config.buy_notional)
         self.sell_quantity_var = StringVar(value=self.config.sell_quantity)
+        self.contract_multiplier_var = StringVar(
+            value=self.config.contract_multiplier
+        )
         self.max_trades_var = StringVar(value=str(self.config.max_trades_per_day))
         self.max_order_notional_var = StringVar(
             value=self.config.max_order_notional
@@ -62,6 +65,24 @@ class AutoQuantApp:
         self.max_signal_age_var = StringVar(
             value=str(self.config.max_signal_age_seconds)
         )
+        self.ai_provider_var = StringVar(value=self.config.ai_provider)
+        self.openai_model_var = StringVar(value=self.config.openai_model)
+        self.deepseek_model_var = StringVar(value=self.config.deepseek_model)
+        self.openai_api_key_var = StringVar(
+            value=os.environ.get("OPENAI_API_KEY", "")
+        )
+        self.deepseek_api_key_var = StringVar(
+            value=os.environ.get("DEEPSEEK_API_KEY", "")
+        )
+        self.ai_min_confidence_var = StringVar(
+            value=self.config.ai_min_confidence
+        )
+        self.ai_history_days_var = StringVar(
+            value=str(self.config.ai_history_days)
+        )
+        self.ai_news_days_var = StringVar(value=str(self.config.ai_news_days))
+        self.ai_news_limit_var = StringVar(value=str(self.config.ai_news_limit))
+        self.ai_timeout_var = StringVar(value=str(self.config.ai_timeout_seconds))
         self.symbol_var = StringVar()
         self.account_total_var = StringVar(value="—")
         self.realized_pnl_var = StringVar(value="0.00 USDC")
@@ -286,13 +307,116 @@ class AutoQuantApp:
             row=3, column=7, sticky="w", padx=(5, 0), pady=(9, 0)
         )
 
+        ttk.Label(settings, text="合约倍数(×)").grid(
+            row=4, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            settings, textvariable=self.contract_multiplier_var, width=8
+        ).grid(row=4, column=1, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Label(
+            settings,
+            text=(
+                "实际入场规模 = 买入金额/卖出数量 × 合约倍数；"
+                "该参数用于仓位缩放，不代表 Binance 杠杆。"
+            ),
+            foreground="#5f6b76",
+        ).grid(row=4, column=2, columnspan=6, sticky="w", pady=(9, 0))
+
         warning = (
             "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的"
             "多头，不会建立空头。未知订单会锁定实盘。API Secret 仅驻留内存且不会保存。"
         )
         ttk.Label(settings, text=warning, foreground="#9a5b00", wraplength=1100).grid(
-            row=4, column=0, columnspan=8, sticky="w", pady=(9, 0)
+            row=5, column=0, columnspan=8, sticky="w", pady=(9, 0)
         )
+
+        ai_settings = ttk.LabelFrame(
+            self.config_page, text="大模型今日开仓方向", padding=14
+        )
+        ai_settings.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        for column in (1, 3, 5, 7):
+            ai_settings.columnconfigure(column, weight=1)
+
+        ttk.Label(ai_settings, text="决策模式").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            ai_settings,
+            textvariable=self.ai_provider_var,
+            values=("DISABLED", "CHATGPT", "DEEPSEEK", "DUAL"),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=1, sticky="ew", padx=(5, 14))
+        ttk.Label(ai_settings, text="OpenAI 模型").grid(
+            row=0, column=2, sticky="w"
+        )
+        ttk.Entry(ai_settings, textvariable=self.openai_model_var, width=20).grid(
+            row=0, column=3, sticky="ew", padx=(5, 14)
+        )
+        ttk.Label(ai_settings, text="OpenAI API Key").grid(
+            row=0, column=4, sticky="w"
+        )
+        ttk.Entry(
+            ai_settings, textvariable=self.openai_api_key_var, show="●"
+        ).grid(row=0, column=5, columnspan=3, sticky="ew", padx=(5, 0))
+
+        ttk.Label(ai_settings, text="DeepSeek 模型").grid(
+            row=1, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            ai_settings, textvariable=self.deepseek_model_var, width=20
+        ).grid(row=1, column=1, sticky="ew", padx=(5, 14), pady=(9, 0))
+        ttk.Label(ai_settings, text="DeepSeek API Key").grid(
+            row=1, column=2, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            ai_settings, textvariable=self.deepseek_api_key_var, show="●"
+        ).grid(
+            row=1,
+            column=3,
+            columnspan=5,
+            sticky="ew",
+            padx=(5, 0),
+            pady=(9, 0),
+        )
+
+        ttk.Label(ai_settings, text="最低置信度").grid(
+            row=2, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            ai_settings, textvariable=self.ai_min_confidence_var, width=8
+        ).grid(row=2, column=1, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Label(ai_settings, text="走势天数").grid(
+            row=2, column=2, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            ai_settings, textvariable=self.ai_history_days_var, width=8
+        ).grid(row=2, column=3, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Label(ai_settings, text="新闻天数/条数").grid(
+            row=2, column=4, sticky="w", pady=(9, 0)
+        )
+        news_frame = ttk.Frame(ai_settings)
+        news_frame.grid(row=2, column=5, sticky="w", padx=(5, 14), pady=(9, 0))
+        ttk.Entry(news_frame, textvariable=self.ai_news_days_var, width=5).pack(
+            side=LEFT
+        )
+        ttk.Label(news_frame, text="/").pack(side=LEFT, padx=3)
+        ttk.Entry(news_frame, textvariable=self.ai_news_limit_var, width=5).pack(
+            side=LEFT
+        )
+        ttk.Label(ai_settings, text="请求超时(秒)").grid(
+            row=2, column=6, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(ai_settings, textvariable=self.ai_timeout_var, width=8).grid(
+            row=2, column=7, sticky="w", padx=(5, 0), pady=(9, 0)
+        )
+        ttk.Label(
+            ai_settings,
+            text=(
+                "DUAL 仅在 ChatGPT 与 DeepSeek 同向且都达到阈值时放行；"
+                "失败、低置信度或数据不足一律 FLAT。API Key 仅驻留内存。"
+            ),
+            foreground="#5f6b76",
+            wraplength=1100,
+        ).grid(row=3, column=0, columnspan=8, sticky="w", pady=(9, 0))
 
         symbols = ttk.Frame(self.main_page, padding=(10, 5))
         symbols.grid(row=1, column=0, sticky="ew")
@@ -420,12 +544,21 @@ class AutoQuantApp:
             ma_period=int(self.ma_var.get()),
             buy_notional=self.buy_notional_var.get().strip(),
             sell_quantity=self.sell_quantity_var.get().strip(),
+            contract_multiplier=self.contract_multiplier_var.get().strip(),
             max_trades_per_day=int(self.max_trades_var.get()),
             max_order_notional=self.max_order_notional_var.get().strip(),
             max_daily_buy_notional=self.max_daily_buy_notional_var.get().strip(),
             stop_loss_percent=self.stop_loss_var.get().strip(),
             take_profit_percent=self.take_profit_var.get().strip(),
             max_signal_age_seconds=int(self.max_signal_age_var.get()),
+            ai_provider=self.ai_provider_var.get(),
+            openai_model=self.openai_model_var.get().strip(),
+            deepseek_model=self.deepseek_model_var.get().strip(),
+            ai_min_confidence=self.ai_min_confidence_var.get().strip(),
+            ai_history_days=int(self.ai_history_days_var.get()),
+            ai_news_days=int(self.ai_news_days_var.get()),
+            ai_news_limit=int(self.ai_news_limit_var.get()),
+            ai_timeout_seconds=int(self.ai_timeout_var.get()),
             rest_base_url=self.config.rest_base_url,
             websocket_base_url=self.config.websocket_base_url,
             recv_window=self.config.recv_window,
@@ -434,10 +567,19 @@ class AutoQuantApp:
         return config
 
     def _runner_config(self) -> RunnerConfig:
+        app = self._current_config()
+        openai_api_key = self.openai_api_key_var.get().strip()
+        deepseek_api_key = self.deepseek_api_key_var.get().strip()
+        if app.ai_provider in {"CHATGPT", "DUAL"} and not openai_api_key:
+            raise ValueError("CHATGPT/DUAL 模式必须填写 OpenAI API Key")
+        if app.ai_provider in {"DEEPSEEK", "DUAL"} and not deepseek_api_key:
+            raise ValueError("DEEPSEEK/DUAL 模式必须填写 DeepSeek API Key")
         return RunnerConfig(
-            app=self._current_config(),
+            app=app,
             api_key=self.api_key_var.get(),
             api_secret=self.api_secret_var.get(),
+            openai_api_key=openai_api_key,
+            deepseek_api_key=deepseek_api_key,
         )
 
     def _insert_symbol(self, symbol: str) -> None:
@@ -532,7 +674,9 @@ class AutoQuantApp:
         except (ValueError, TypeError) as exc:
             messagebox.showerror("配置错误", str(exc))
             return
-        if config.app.trading_mode == "REAL" and not self._confirm_real_mode():
+        if config.app.trading_mode == "REAL" and not self._confirm_real_mode(
+            config.app
+        ):
             return
         for symbol in symbols:
             self.controller.start(symbol, config)
@@ -544,16 +688,20 @@ class AutoQuantApp:
     def _stop_all(self) -> None:
         self.controller.stop_all()
 
-    def _confirm_real_mode(self) -> bool:
+    def _confirm_real_mode(self, config: AppConfig) -> bool:
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
             messagebox.showerror("缺少凭据", "REAL 模式必须填写 API Key 和 API Secret。")
             return False
+        effective_buy_notional = (
+            Decimal(config.buy_notional) * Decimal(config.contract_multiplier)
+        )
         confirmed = messagebox.askyesno(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
-            f"股票数：{len(self.tree.get_children())}；单笔买入："
-            f"{self.buy_notional_var.get()} USDC；每日账户上限："
-            f"{self.max_daily_buy_notional_var.get()} USDC。\n"
+            f"股票数：{len(self.tree.get_children())}；基础买入金额："
+            f"{config.buy_notional} USDC；合约倍数：{config.contract_multiplier}×；"
+            f"实际单笔买入：{effective_buy_notional} USDC。\n"
+            f"每日账户上限：{config.max_daily_buy_notional} USDC。\n"
             f"止损/止盈：{self.stop_loss_var.get()}% / "
             f"{self.take_profit_var.get()}%。SELL 只会平掉程序确认的多头。\n"
             "账户还必须已经接受 Binance 美股交易免责声明。\n\n确认继续吗？",

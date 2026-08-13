@@ -1,6 +1,6 @@
 # AutoQuant：Binance Stocks 桌面量化程序
 
-这是按 `需求文档.txt` 需求实现的 Windows/Python 桌面程序。程序支持按股票独立启动、停止，供应商和策略均通过工厂隔离；本版接入 Binance Stocks Trading，并实现“日线方向 + 五分钟 MA5/前一根 K 线突破”策略。
+这是按 `需求文档.txt` 需求实现的 Windows/Python 桌面程序。程序支持按股票独立启动、停止，供应商和策略均通过工厂隔离；本版接入 Binance Stocks Trading、ChatGPT 和 DeepSeek，并实现“当日方向 + 五分钟 MA5/前一根 K 线突破”策略。
 
 程序默认使用 `PAPER` 模拟交易。除非在界面中主动切换为 `REAL` 并再次确认，否则不会向 Binance 提交真实订单。
 
@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1 -PythonExe py
 ## 使用步骤
 
 1. 首次运行保留 `PAPER` 模式。
-2. 打开“运行配置”页，配置 API、交易模式、MA 周期、买入金额、每日账户买入上限、止损/止盈和信号有效期。
+2. 打开“运行配置”页，配置交易 API、交易模式、MA 周期、金额与风控；需要大模型决策时再选择 `CHATGPT`、`DEEPSEEK` 或 `DUAL`，并填写相应 API Key。
 3. 返回“交易监控”页，添加一个或多个大写美股代码，例如 `AAPL`、`NVDA`、`TSLA`。
 4. 选择股票后点击“启动所选”，或点击“全部启动”。每只股票有独立运行器，可分别停止。
 5. 查看状态、程序持仓、持仓均价、未决订单、今日买入金额和日志。
@@ -42,8 +42,21 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1 -PythonExe py
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
 $env:BINANCE_API_SECRET = "你的 API Secret"
+$env:OPENAI_API_KEY = "你的 OpenAI API Key"
+$env:DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
 py -m autoquant
 ```
+
+### 大模型今日开仓方向
+
+- `DISABLED`：保持原策略，使用 Binance 当日日线相对开盘价判断 `LONG / SHORT / FLAT`。
+- `CHATGPT`：调用 OpenAI Responses API，使用严格 JSON Schema 返回方向、置信度、依据和风险。
+- `DEEPSEEK`：调用 DeepSeek Chat Completions JSON Output；空响应最多重试一次。
+- `DUAL`：并行调用两者，只有方向一致且各自置信度都不低于配置阈值时才放行；其他情况为 `FLAT`。
+
+每个股票在收到新的 Binance 日 K 线后只决策一次。上下文包含近期新闻标题、`SPY/QQQ` 大盘日线统计、个股日线统计以及 Binance 当前日线；公开历史价格来自 Nasdaq 网站的历史行情端点，新闻来自 Google News RSS。大模型只能设置方向过滤器，不能修改金额、倍数、止损止盈，也不能直接下单。上下文获取失败、API 超时、返回字段非法、模型拒绝、低置信度或双模型不一致时，程序会安全降级为 `FLAT`，当天不新开仓。
+
+OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新闻和走势摘要会发送给选择的大模型服务；同时程序会访问 Nasdaq 与 Google News。使用前应自行确认这些服务的账号权限、费用、数据许可和所在地区可用性。公开数据和模型结论都可能延迟或错误，不能替代交易所行情、人工核对或风险管理。
 
 订单保护账本保存在 `%LOCALAPPDATA%\AutoQuant\orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交数量和程序持仓，不保存 API 凭据。该文件用于恢复交易次数、持仓和资金限额，不能在交易运行期间删除或修改。
 
@@ -57,11 +70,12 @@ py -m autoquant
 
 程序只在一根 5 分钟 K 线已经收盘时评估信号：
 
-- 日线当前价高于日线开盘价时，方向为 `LONG`；低于开盘价时，方向为 `SHORT`；相等时不交易。
+- 大模型模式启用时使用当日模型决策作为方向；大模型模式关闭时，日线当前价高于开盘价为 `LONG`、低于开盘价为 `SHORT`、相等时不交易。
 - 做多：上一根 5 分钟收盘价不高于上一时点 MA，当前收盘价上穿当前 MA，并且当前收盘价突破前一根最高价。
 - 做空/卖出：上一根 5 分钟收盘价不低于上一时点 MA，当前收盘价下穿当前 MA，并且当前收盘价跌破前一根最低价。实盘中，该信号只用于平掉程序确认的多头，不建立空头。
 - 每根收盘 K 线只评估一次。每日次数限制用于入场，风险退出不受入场次数限制。
 - 程序持续用 5 分钟行情更新检查止损和止盈；触发后使用程序账本记录的全部多头数量发出 SELL。
+- “合约倍数”是程序侧的仓位缩放参数。入场时，实际 BUY `notional` 为“买入金额 × 合约倍数”；没有多头持仓的 PAPER SELL 数量为“卖出数量 × 合约倍数”。退出已有多头时始终卖出程序记录的实际持仓数量，不会再次乘倍数。
 - 新的日 K 线到达时会清空上一交易日的 5 分钟预热数据；乱序 K 线和不属于当前日 K 线时间范围的数据不会参与计算。
 
 计算 MA 交叉需要 `MA 周期 + 1` 根已收盘 5 分钟 K 线。本版使用 Binance Stocks 公开 WebSocket；当前股票 REST 市场数据接口没有提供历史 K 线端点，因此程序刚启动时需要预热。例如 MA5 需要收到 6 根已收盘 5 分钟 K 线。
@@ -70,13 +84,14 @@ py -m autoquant
 
 ## 实盘注意事项
 
-- `REAL` 会提交真实的 `MARKET` 订单。BUY 使用“买入金额(USDC)”作为 `notional`，并在每次启动股票前再次要求确认。
+- `REAL` 会提交真实的 `MARKET` 订单。BUY 使用“买入金额(USDC) × 合约倍数”作为 `notional`，并在每次启动股票前展示实际单笔金额、再次要求确认。
+- Binance Stocks API 的市价 BUY 接受 `notional`，市价 SELL 接受 `quantity`，没有可传入的杠杆或用户自定义交易所合约乘数字段。本程序的“合约倍数”只放大下单规模，不会产生杠杆；交易所返回的 `multiplierUp` / `multiplierDown` 是价格带限制，也不是杠杆倍数。
 - Binance 要求账户先接受 US Equity Disclaimer，否则下单会返回错误 `486410`。程序不会代替用户自动接受法律声明。
 - API Key 需要开启交易权限。股票代码还必须在 Binance Stocks 当前可交易列表中。
 - 当前版本实盘为安全优先的长仓模式：没有程序持仓时阻止 SELL；存在程序确认的多头时，策略 SELL、止损或止盈会平掉该持仓。已有多头时也会阻止重复 BUY 加仓。
 - “程序持仓”只包含本程序能够确认成交的订单，不代表 Binance 账户的全部真实持仓。若在 Binance 网页或其他客户端手工交易，必须人工核对两边状态。
 - 账户总金额与程序盈亏的统计口径不同：前者来自 Binance 全钱包余额，后者只来自本地程序订单账本，不能相减后作为全账户收益。
-- 单笔买入金额必须小于“单笔上限”；所有股票共享“每日买入上限”，资金通过 SQLite 即时事务原子预留。即使同时打开多个程序进程，同股票的未决订单、重复持仓和超量卖出也会在事务内再次拦截。股票数量最多 20 只。
+- 倍数后的实际单笔买入金额必须小于“单笔上限”；所有股票共享“每日买入上限”，资金通过 SQLite 即时事务原子预留。即使同时打开多个程序进程，同股票的未决订单、重复持仓和超量卖出也会在事务内再次拦截。合约倍数必须是正数且不超过 100，股票数量最多 20 只。
 - 下单前会按交易所返回的 `stepSize`、数量上下限和金额上下限规范化或校验订单。
 - 下单接受后会查询订单详情并保存成交数量/均价；未到终态的订单会阻止同股票继续下单，并在后续行情消息及重启时继续查询。
 - 网络超时后的订单状态可能未知。任何未知实盘订单都会硬锁该股票，跨日也不会自动解除。只有登录 Binance 核对订单并处理对应持仓后，才能点击“核对后解除未知订单锁”。
@@ -84,6 +99,7 @@ py -m autoquant
 - 超过“信号有效期”的行情不会下单，`recvWindow` 被限制在 5000 毫秒以内。MARKET 订单仍可能受到价差、流动性、停牌和网络延迟影响，止损价不保证等于最终成交价。
 - 行情和界面队列均有容量上限，REST 公共信息使用短期缓存并限制并发，避免多股票运行时无限占用内存或集中请求接口。
 - 在投入真实资金前，应完成模拟验证、限额配置、账户权限检查和风险评估。
+- 大模型判断不是收益保证。建议先在 `PAPER + DUAL` 模式观察多个交易日，并审阅日志中的方向、置信度、依据和风险，再考虑实盘。
 
 ## Binance 官方接口依据
 
@@ -91,12 +107,21 @@ py -m autoquant
 - 模块通用规则：<https://developers.binance.com/en/docs/products/stocks/general-info>
 - 快速开始与签名下单：<https://developers.binance.com/en/docs/products/stocks/quick-start>
 - WebSocket 连接与流名称：<https://developers.binance.com/en/docs/products/stocks/websocket-streams-general-info>
-- REST API 参考：<https://developers.binance.com/en/docs/catalog/advanced-trading-stocks-trading/api/rest-api/market-data>
+- REST 行情与交易规则：<https://developers.binance.com/en/docs/catalog/advanced-trading-stocks-trading/api/rest-api/market-data>
+- REST 下单接口：<https://developers.binance.com/en/docs/catalog/advanced-trading-stocks-trading/api/rest-api/trade>
 - 钱包总余额：<https://developers.binance.com/docs/wallet/asset/query-user-wallet-balance>
+
+## 大模型官方接口依据
+
+- OpenAI Responses API 与 Java SDK：<https://developers.openai.com/api/docs/libraries>
+- OpenAI Structured Outputs：<https://developers.openai.com/api/docs/guides/structured-outputs>
+- DeepSeek JSON Output：<https://api-docs.deepseek.com/guides/json_mode/>
+- DeepSeek 模型与 API Base URL：<https://api-docs.deepseek.com/quick_start/pricing/>
 
 ## 项目结构与扩展
 
 - `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider`。
+- `autoquant/ai_decision.py`：新闻/走势上下文、ChatGPT/DeepSeek 客户端、结构化结果校验与双模型共识。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 - `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
 - `autoquant/app.py`：Tkinter 桌面界面。
