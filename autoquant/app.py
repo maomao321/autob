@@ -8,11 +8,35 @@ import time
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
-from tkinter import BOTH, END, LEFT, RIGHT, X, Y, StringVar, Tk, messagebox
+from pathlib import Path
+from tkinter import (
+    BOTH,
+    END,
+    LEFT,
+    RIGHT,
+    X,
+    Y,
+    StringVar,
+    Tk,
+    filedialog,
+    messagebox,
+)
 from tkinter import ttk
 
 from autoquant.config import MAX_SYMBOLS, AppConfig, ConfigStore, normalize_symbols
 from autoquant.engine import RunnerConfig, TradingController, create_provider
+from autoquant.experience import (
+    ExperienceError,
+    OpenAIVectorStoreUploader,
+    TradeExperience,
+    UploadResult,
+    default_experience_path,
+    extract_trade_experiences,
+    load_ohlcv_csv,
+    merge_experience_document,
+    summarize_experiences,
+    write_experience_document,
+)
 from autoquant.models import AccountOverview, RunState, RuntimeSnapshot
 
 
@@ -83,6 +107,17 @@ class AutoQuantApp:
         self.ai_news_days_var = StringVar(value=str(self.config.ai_news_days))
         self.ai_news_limit_var = StringVar(value=str(self.config.ai_news_limit))
         self.ai_timeout_var = StringVar(value=str(self.config.ai_timeout_seconds))
+        self.experience_mode_var = StringVar(value="全部")
+        self.experience_kline_path_var = StringVar()
+        self.experience_pattern_bars_var = StringVar(value="20")
+        self.experience_vector_store_var = StringVar()
+        self.experience_summary_var = StringVar(value="尚未提取交易经验")
+        self.experience_status_var = StringVar(
+            value="长期经验将保存到本地；只有点击上传后才会发送到 OpenAI。"
+        )
+        self._experiences: list[TradeExperience] = []
+        self._experience_extract_inflight = False
+        self._experience_upload_inflight = False
         self.symbol_var = StringVar()
         self.account_total_var = StringVar(value="—")
         self.realized_pnl_var = StringVar(value="0.00 USDC")
@@ -128,13 +163,17 @@ class AutoQuantApp:
         self.notebook.grid(row=0, column=0, sticky="nsew")
         self.main_page = ttk.Frame(self.notebook)
         self.config_page = ttk.Frame(self.notebook)
+        self.experience_page = ttk.Frame(self.notebook)
         self.notebook.add(self.main_page, text="交易监控")
         self.notebook.add(self.config_page, text="运行配置")
+        self.notebook.add(self.experience_page, text="交易经验库")
 
         self.main_page.columnconfigure(0, weight=1)
         self.main_page.rowconfigure(2, weight=1)
         self.main_page.rowconfigure(4, weight=1)
         self.config_page.columnconfigure(0, weight=1)
+        self.experience_page.columnconfigure(0, weight=1)
+        self.experience_page.rowconfigure(2, weight=1)
 
         style = ttk.Style(self.root)
         style.configure("AccountValue.TLabel", font=("Segoe UI", 22, "bold"))
@@ -534,6 +573,428 @@ class AutoQuantApp:
         self.log.configure(yscrollcommand=log_scroll.set)
         self.log.grid(row=0, column=0, sticky="nsew")
         log_scroll.grid(row=0, column=1, sticky="ns")
+
+        self._build_experience_page()
+
+    def _build_experience_page(self) -> None:
+        source = ttk.LabelFrame(
+            self.experience_page, text="1. 提取成交经验", padding=12
+        )
+        source.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
+        source.columnconfigure(1, weight=1)
+
+        ttk.Label(source, text="订单账本").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            source,
+            text=str(self.controller.ledger.path),
+            foreground="#5f6b76",
+        ).grid(row=0, column=1, columnspan=4, sticky="w", padx=(8, 0))
+
+        ttk.Label(source, text="记录范围").grid(
+            row=1, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Combobox(
+            source,
+            textvariable=self.experience_mode_var,
+            values=("全部", "模拟盘", "实盘"),
+            state="readonly",
+            width=12,
+        ).grid(row=1, column=1, sticky="w", padx=(8, 18), pady=(9, 0))
+        ttk.Label(source, text="开仓前K线数量").grid(
+            row=1, column=2, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(
+            source, textvariable=self.experience_pattern_bars_var, width=8
+        ).grid(row=1, column=3, sticky="w", padx=(8, 18), pady=(9, 0))
+        self.experience_extract_button = ttk.Button(
+            source, text="提取并预览", command=self._extract_experience_records
+        )
+        self.experience_extract_button.grid(
+            row=1, column=4, sticky="e", pady=(9, 0)
+        )
+
+        ttk.Label(source, text="K线CSV（可选）").grid(
+            row=2, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(source, textvariable=self.experience_kline_path_var).grid(
+            row=2, column=1, columnspan=3, sticky="ew", padx=(8, 8), pady=(9, 0)
+        )
+        ttk.Button(
+            source, text="选择文件", command=self._browse_experience_kline_file
+        ).grid(row=2, column=4, sticky="e", pady=(9, 0))
+        ttk.Label(
+            source,
+            text=(
+                "CSV字段：symbol、timestamp/close_time、open、high、low、close，"
+                "可选 volume、interval。timestamp按收盘可用时间解释；使用open_time时必须"
+                "提供interval。只使用开仓前已收盘K线，防止未来数据泄漏。"
+            ),
+            foreground="#5f6b76",
+            wraplength=1080,
+        ).grid(row=3, column=0, columnspan=5, sticky="w", pady=(8, 0))
+
+        summary = ttk.Frame(self.experience_page, padding=(12, 7))
+        summary.grid(row=1, column=0, sticky="ew")
+        ttk.Label(
+            summary,
+            textvariable=self.experience_summary_var,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side=LEFT)
+        ttk.Label(
+            summary,
+            text="盈利和亏损样本会一起上传，避免幸存者偏差。",
+            foreground="#9a5b00",
+        ).pack(side=RIGHT)
+
+        table_frame = ttk.Frame(self.experience_page, padding=(10, 0))
+        table_frame.grid(row=2, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        columns = (
+            "outcome",
+            "mode",
+            "entry_time",
+            "quantity",
+            "entry_price",
+            "exit_price",
+            "net_pnl",
+            "return_percent",
+            "holding",
+            "kline",
+        )
+        self.experience_tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="tree headings",
+            selectmode="browse",
+        )
+        self.experience_tree.heading("#0", text="股票")
+        self.experience_tree.column("#0", width=80, minwidth=60, anchor="center")
+        headings = {
+            "outcome": "结果",
+            "mode": "来源",
+            "entry_time": "开仓时间(UTC)",
+            "quantity": "数量",
+            "entry_price": "开仓价",
+            "exit_price": "平仓价",
+            "net_pnl": "净盈亏",
+            "return_percent": "收益率(%)",
+            "holding": "持有时间",
+            "kline": "K线形态",
+        }
+        widths = {
+            "outcome": 70,
+            "mode": 70,
+            "entry_time": 180,
+            "quantity": 90,
+            "entry_price": 90,
+            "exit_price": 90,
+            "net_pnl": 90,
+            "return_percent": 90,
+            "holding": 100,
+            "kline": 210,
+        }
+        for column in columns:
+            self.experience_tree.heading(column, text=headings[column])
+            self.experience_tree.column(
+                column, width=widths[column], minwidth=60, anchor="center"
+            )
+        experience_scroll = ttk.Scrollbar(
+            table_frame, orient="vertical", command=self.experience_tree.yview
+        )
+        experience_horizontal = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.experience_tree.xview
+        )
+        self.experience_tree.configure(
+            yscrollcommand=experience_scroll.set,
+            xscrollcommand=experience_horizontal.set,
+        )
+        self.experience_tree.grid(row=0, column=0, sticky="nsew")
+        experience_scroll.grid(row=0, column=1, sticky="ns")
+        experience_horizontal.grid(row=1, column=0, sticky="ew")
+        self.experience_tree.tag_configure("win", foreground="#087830")
+        self.experience_tree.tag_configure("loss", foreground="#b00020")
+
+        upload = ttk.LabelFrame(
+            self.experience_page, text="2. 保存或上传知识库", padding=12
+        )
+        upload.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 10))
+        upload.columnconfigure(1, weight=1)
+        ttk.Label(upload, text="本地共享经验库").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            upload,
+            text=str(default_experience_path()),
+            foreground="#5f6b76",
+        ).grid(row=0, column=1, sticky="w", padx=(8, 8))
+        ttk.Button(
+            upload, text="保存到本地", command=self._save_local_experience_library
+        ).grid(row=0, column=2, sticky="e", padx=(0, 8))
+        ttk.Button(
+            upload, text="另存为JSON", command=self._export_experience_records
+        ).grid(row=0, column=3, sticky="e")
+
+        ttk.Label(upload, text="OpenAI Vector Store ID").grid(
+            row=1, column=0, sticky="w", pady=(9, 0)
+        )
+        ttk.Entry(upload, textvariable=self.experience_vector_store_var).grid(
+            row=1, column=1, sticky="ew", padx=(8, 8), pady=(9, 0)
+        )
+        self.experience_upload_button = ttk.Button(
+            upload, text="上传到 OpenAI", command=self._upload_experience_records
+        )
+        self.experience_upload_button.grid(
+            row=1, column=2, columnspan=2, sticky="e", pady=(9, 0)
+        )
+        ttk.Label(
+            upload,
+            text=(
+                "ID留空会创建新的 Vector Store；已有ID则追加文件。"
+                "DeepSeek暂无本页托管上传目标，后续由本地共享经验库检索后提供给它。"
+            ),
+            foreground="#5f6b76",
+            wraplength=1080,
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        ttk.Label(
+            upload,
+            textvariable=self.experience_status_var,
+            foreground="#0856a8",
+            wraplength=1080,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    def _browse_experience_kline_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="选择开仓前K线CSV",
+            filetypes=(("CSV 文件", "*.csv"), ("所有文件", "*.*")),
+        )
+        if selected:
+            self.experience_kline_path_var.set(selected)
+
+    def _extract_experience_records(self) -> None:
+        if self._experience_extract_inflight:
+            return
+        try:
+            pattern_bars = int(self.experience_pattern_bars_var.get())
+            if not 5 <= pattern_bars <= 240:
+                raise ValueError("开仓前K线数量必须在 5 到 240 之间")
+            mode = self.experience_mode_var.get()
+            paper = None if mode == "全部" else mode == "模拟盘"
+            kline_text = self.experience_kline_path_var.get().strip()
+            kline_path = Path(kline_text) if kline_text else None
+            if kline_path is not None and not kline_path.is_file():
+                raise ValueError("选择的K线CSV不存在")
+        except ValueError as exc:
+            messagebox.showerror("提取配置错误", str(exc))
+            return
+
+        self._experience_extract_inflight = True
+        self.experience_extract_button.configure(state="disabled")
+        self.experience_status_var.set("正在从订单账本提取并配对成交记录……")
+
+        def extract() -> None:
+            try:
+                records = self.controller.ledger.list_filled_records(paper=paper)
+                bars = load_ohlcv_csv(kline_path) if kline_path else {}
+                experiences = extract_trade_experiences(
+                    records,
+                    bars_by_symbol=bars,
+                    pattern_bars=pattern_bars,
+                )
+                bar_count = sum(len(items) for items in bars.values())
+                self._enqueue_event(
+                    ("experience_extracted", experiences, len(records), bar_count)
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("experience_error", "extract", str(exc) or exc.__class__.__name__)
+                )
+
+        threading.Thread(
+            target=extract, name="experience-extractor", daemon=True
+        ).start()
+
+    def _apply_experience_records(
+        self,
+        experiences: list[TradeExperience],
+        record_count: int,
+        bar_count: int,
+    ) -> None:
+        self._experience_extract_inflight = False
+        self.experience_extract_button.configure(state="normal")
+        self._experiences = experiences
+        for item_id in self.experience_tree.get_children():
+            self.experience_tree.delete(item_id)
+        outcome_text = {"WIN": "盈利", "LOSS": "亏损", "BREAKEVEN": "持平"}
+        for index, item in enumerate(experiences):
+            pattern = item.pre_entry_pattern
+            kline = (
+                f"{pattern.get('bar_count', 0)}根 / "
+                f"{pattern.get('shape_signature', '未分类')}"
+                if pattern.get("available")
+                else "未提供"
+            )
+            tag = "win" if item.outcome == "WIN" else "loss" if item.outcome == "LOSS" else ""
+            self.experience_tree.insert(
+                "",
+                END,
+                iid=f"experience-{index}",
+                text=item.symbol,
+                values=(
+                    outcome_text.get(item.outcome, item.outcome),
+                    "模拟盘" if item.paper else "实盘",
+                    item.entry_time.replace("+00:00", "Z"),
+                    item.quantity,
+                    item.entry_price,
+                    item.exit_price,
+                    item.net_pnl,
+                    item.return_percent,
+                    self._format_holding_seconds(item.holding_seconds),
+                    kline,
+                ),
+                tags=(tag,) if tag else (),
+            )
+        summary = summarize_experiences(experiences)
+        self.experience_summary_var.set(
+            f"闭环交易 {summary.total} 笔｜盈利 {summary.wins}｜"
+            f"亏损 {summary.losses}｜持平 {summary.breakeven}｜"
+            f"含K线 {summary.with_kline}｜净盈亏 {summary.net_pnl} USDC"
+        )
+        if experiences:
+            detail = f"已读取 {record_count} 条成交订单"
+            if bar_count:
+                detail += f"和 {bar_count} 根K线"
+            self.experience_status_var.set(detail + "；请核对后保存或上传。")
+        else:
+            self.experience_status_var.set(
+                f"已读取 {record_count} 条成交订单，但没有可配对的买入和平仓记录。"
+            )
+
+    def _save_local_experience_library(self) -> None:
+        if not self._experiences:
+            messagebox.showinfo("没有经验", "请先提取至少一笔已平仓交易。")
+            return
+        try:
+            path, added, total = merge_experience_document(
+                default_experience_path(), self._experiences
+            )
+            self.experience_status_var.set(
+                f"已保存本地经验库：新增 {added} 笔，共 {total} 笔；{path}"
+            )
+            messagebox.showinfo("保存完成", f"本地经验库共 {total} 笔：\n{path}")
+        except ExperienceError as exc:
+            messagebox.showerror("保存失败", str(exc))
+
+    def _export_experience_records(self) -> None:
+        if not self._experiences:
+            messagebox.showinfo("没有经验", "请先提取至少一笔已平仓交易。")
+            return
+        selected = filedialog.asksaveasfilename(
+            title="导出交易经验",
+            defaultextension=".json",
+            initialfile="trade_experiences.json",
+            filetypes=(("JSON 文件", "*.json"),),
+        )
+        if not selected:
+            return
+        try:
+            path = write_experience_document(Path(selected), self._experiences)
+            self.experience_status_var.set(f"已导出 {len(self._experiences)} 笔：{path}")
+        except ExperienceError as exc:
+            messagebox.showerror("导出失败", str(exc))
+
+    def _upload_experience_records(self) -> None:
+        if self._experience_upload_inflight:
+            return
+        if not self._experiences:
+            messagebox.showinfo("没有经验", "请先提取至少一笔已平仓交易。")
+            return
+        api_key = self.openai_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror(
+                "缺少凭据", "请先在“运行配置”页填写 OpenAI API Key。"
+            )
+            return
+        vector_store_id = self.experience_vector_store_var.get().strip()
+        confirmed = messagebox.askyesno(
+            "确认上传交易数据",
+            "将把股票代码、成交价格、盈亏、持有时间和可用的开仓前K线"
+            "上传到 OpenAI Vector Store。API Key 不会写入文件。\n\n"
+            f"本次提取记录：{len(self._experiences)} 笔。确认继续吗？",
+            icon="warning",
+        )
+        if not confirmed:
+            return
+        try:
+            timeout_seconds = max(5, min(120, int(self.ai_timeout_var.get())))
+        except ValueError:
+            timeout_seconds = 30
+
+        self._experience_upload_inflight = True
+        self.experience_upload_button.configure(state="disabled")
+        self.experience_status_var.set("正在保存本地经验库并上传到 OpenAI……")
+
+        def upload() -> None:
+            try:
+                path, added, total = merge_experience_document(
+                    default_experience_path(), self._experiences
+                )
+                result = OpenAIVectorStoreUploader().upload(
+                    path,
+                    api_key=api_key,
+                    vector_store_id=vector_store_id,
+                    timeout_seconds=timeout_seconds,
+                )
+                self._enqueue_event(
+                    ("experience_uploaded", result, added, total, str(path))
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("experience_error", "upload", str(exc) or exc.__class__.__name__)
+                )
+
+        threading.Thread(
+            target=upload, name="experience-uploader", daemon=True
+        ).start()
+
+    def _apply_experience_upload(
+        self, result: UploadResult, added: int, total: int, path: str
+    ) -> None:
+        self._experience_upload_inflight = False
+        self.experience_upload_button.configure(state="normal")
+        self.experience_vector_store_var.set(result.vector_store_id)
+        self.experience_status_var.set(
+            f"上传已受理：Vector Store {result.vector_store_id}，"
+            f"文件 {result.file_id}，索引状态 {result.status}。"
+        )
+        messagebox.showinfo(
+            "上传已受理",
+            f"本地库新增 {added} 笔，共 {total} 笔：\n{path}\n\n"
+            f"Vector Store：{result.vector_store_id}\n"
+            f"文件：{result.file_id}\n状态：{result.status}",
+        )
+
+    def _apply_experience_error(self, operation: str, message: str) -> None:
+        if operation == "extract":
+            self._experience_extract_inflight = False
+            self.experience_extract_button.configure(state="normal")
+            title = "经验提取失败"
+        else:
+            self._experience_upload_inflight = False
+            self.experience_upload_button.configure(state="normal")
+            title = "经验上传失败"
+        self.experience_status_var.set(message)
+        messagebox.showerror(title, message)
+
+    @staticmethod
+    def _format_holding_seconds(seconds: int) -> str:
+        hours, remainder = divmod(max(0, seconds), 3600)
+        minutes, remaining_seconds = divmod(remainder, 60)
+        if hours:
+            return f"{hours}时{minutes}分"
+        if minutes:
+            return f"{minutes}分{remaining_seconds}秒"
+        return f"{remaining_seconds}秒"
 
     def _current_config(self) -> AppConfig:
         config = AppConfig(
@@ -940,6 +1401,16 @@ class AutoQuantApp:
                 self._apply_account_overview(event[1])
             elif event[0] == "account_refresh":
                 self._refresh_account_overview(manual=True)
+            elif event[0] == "experience_extracted":
+                self._apply_experience_records(
+                    event[1], event[2], event[3]
+                )
+            elif event[0] == "experience_uploaded":
+                self._apply_experience_upload(
+                    event[1], event[2], event[3], event[4]
+                )
+            elif event[0] == "experience_error":
+                self._apply_experience_error(event[1], event[2])
         delay = 10 if not self.events.empty() else 100
         self.root.after(delay, self._drain_events)
 

@@ -122,11 +122,25 @@ OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新
 
 - `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider`。
 - `autoquant/ai_decision.py`：新闻/走势上下文、ChatGPT/DeepSeek 客户端、结构化结果校验与双模型共识。
+- `autoquant/experience.py`：成交配对、盈亏经验提取、开仓前K线标准化、本地经验库及 OpenAI Vector Store 上传。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 - `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
 - `autoquant/app.py`：Tkinter 桌面界面。
 
 添加供应商或策略时，实现相应抽象接口，并在 `autoquant/engine.py` 的工厂函数中注册即可。
+
+## 交易经验库
+
+“交易经验库”页会从本地订单账本按时间顺序配对已成交的买入和平仓订单，同时保留盈利、亏损和持平样本。可以保存到 `%LOCALAPPDATA%\AutoQuant\trade_experiences.json`，或使用“运行配置”页内存中的 OpenAI API Key 上传到新的/已有的 Vector Store。上传是显式操作，API Key 不会写入经验文件。
+
+旧订单账本没有保存历史5分钟K线。需要提取开仓前形态时，可在该页选择 UTF-8 CSV，字段为：
+
+```text
+symbol,close_time,open,high,low,close,volume,interval
+AAPL,2026-08-13T09:30:00Z,100,102,99,101,1200,1m
+```
+
+`close_time` 也可以替换为 `close_time_ms`、`timestamp`、`time`、`datetime` 或 `date`，这些字段都按K线收盘后的可用时间解释。使用 `open_time` 或 `open_time_ms` 时必须提供类似 `1m`、`5m`、`1h` 的 `interval`，程序会换算收盘时间。程序只使用开仓前已经收盘的数据，并把价格与成交量标准化后写入经验记录；不会把尚未收盘或平仓后的K线混入开仓形态。
 
 ## 测试
 

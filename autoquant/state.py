@@ -400,6 +400,20 @@ class OrderLedger:
             ).fetchone()
         return self._to_record(row) if row is not None else None
 
+    def list_filled_records(self, paper: bool | None = None) -> list[OrderRecord]:
+        query = (
+            "SELECT * FROM orders "
+            "WHERE CAST(filled_quantity AS REAL) > 0"
+        )
+        params: tuple[object, ...] = ()
+        if paper is not None:
+            query += " AND paper = ?"
+            params = (int(paper),)
+        query += " ORDER BY created_at, client_order_id"
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(query, params).fetchall()
+        return [self._to_record(row) for row in rows]
+
     def unknown_count(self, symbol: str, paper: bool | None = None) -> int:
         query = (
             "SELECT COUNT(*) AS total FROM orders "

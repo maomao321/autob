@@ -194,6 +194,34 @@ class OrderLedgerTests(unittest.TestCase):
             self.assertEqual(Decimal("0.6"), position.quantity)
             self.assertEqual(Decimal("180"), position.average_price)
 
+    def test_list_filled_records_filters_paper_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order("paper-buy"), 123, paper=True)
+            ledger.mark_lifecycle(
+                "paper-buy",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("100"),
+            )
+            ledger.record_submitting(order("live-buy"), 123, paper=False)
+            ledger.mark_lifecycle(
+                "live-buy",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("101"),
+            )
+
+            self.assertEqual(
+                ["paper-buy"],
+                [record.client_order_id for record in ledger.list_filled_records(True)],
+            )
+            self.assertEqual(
+                ["live-buy"],
+                [record.client_order_id for record in ledger.list_filled_records(False)],
+            )
+            self.assertEqual(2, len(ledger.list_filled_records()))
+
     def test_unknown_live_order_requires_manual_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
