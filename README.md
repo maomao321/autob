@@ -122,7 +122,7 @@ OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新
 
 - `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider`。
 - `autoquant/ai_decision.py`：新闻/走势上下文、ChatGPT/DeepSeek 客户端、结构化结果校验与双模型共识。
-- `autoquant/experience.py`：成交配对、盈亏经验提取、开仓前K线标准化、本地经验库及 OpenAI Vector Store 上传。
+- `autoquant/experience.py`：外部 Excel/CSV 交易与K线导入、形态标准化、本地经验库及 OpenAI Vector Store 上传。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 - `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
 - `autoquant/app.py`：Tkinter 桌面界面。
@@ -131,16 +131,29 @@ OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新
 
 ## 交易经验库
 
-“交易经验库”页会从本地订单账本按时间顺序配对已成交的买入和平仓订单，同时保留盈利、亏损和持平样本。可以保存到 `%LOCALAPPDATA%\AutoQuant\trade_experiences.json`，或使用“运行配置”页内存中的 OpenAI API Key 上传到新的/已有的 Vector Store。上传是显式操作，API Key 不会写入经验文件。
+“交易经验库”页只读取用户选择的外部文件，不读取本程序订单账本。交易记录和K线形态都支持 UTF-8 `.csv` 或现代 Excel `.xlsx`（读取第一个工作表），两类文件可以单独导入，也可以一起导入。旧版 `.xls` 请先在 Excel 中另存为 `.xlsx`。
 
-旧订单账本没有保存历史5分钟K线。需要提取开仓前形态时，可在该页选择 UTF-8 CSV，字段为：
+交易记录的必填字段如下；字段名也支持对应的中文名称：
 
 ```text
-symbol,close_time,open,high,low,close,volume,interval
-AAPL,2026-08-13T09:30:00Z,100,102,99,101,1200,1m
+trade_id,symbol,side,entry_time,exit_time,entry_price,exit_price,quantity,fee,notes
+T001,AAPL,LONG,2026-08-13T09:35:00Z,2026-08-13T09:45:00Z,100,110,2,1,突破后回踩
 ```
 
-`close_time` 也可以替换为 `close_time_ms`、`timestamp`、`time`、`datetime` 或 `date`，这些字段都按K线收盘后的可用时间解释。使用 `open_time` 或 `open_time_ms` 时必须提供类似 `1m`、`5m`、`1h` 的 `interval`，程序会换算收盘时间。程序只使用开仓前已经收盘的数据，并把价格与成交量标准化后写入经验记录；不会把尚未收盘或平仓后的K线混入开仓形态。
+其中 `symbol`、`entry_time`、`exit_time`、`entry_price`、`exit_price`、`quantity` 必填；`trade_id`、`side`、`fee`、`entry_fee`、`exit_fee`、`notes`、`setup`、`market_regime`、`tags` 可选。总手续费 `fee` 与分项手续费 `entry_fee/exit_fee` 二选一。`side` 支持 `LONG/SHORT`、`BUY/SELL` 或 `多/空`，缺省按 `LONG` 计算。程序根据方向、价格、数量和手续费重新计算盈亏，不采信文件中的结果标签。
+
+K线形态文件示例：
+
+```text
+pattern_id,pattern_name,symbol,close_time,open,high,low,close,volume,interval
+T001,突破前缩量,AAPL,2026-08-13T09:34:00Z,100,102,99,101,1200,1m
+```
+
+`open`、`high`、`low`、`close` 和时间字段必填；`symbol` 与 `pattern_id` 至少提供一个。`close_time` 也可以写作 `close_time_ms`、`timestamp`、`time`、`datetime` 或 `date`，都按K线收盘后的可用时间解释。使用 `open_time` 或 `open_time_ms` 时必须提供类似 `1m`、`5m`、`1h` 的 `interval`，程序会换算为收盘时间。
+
+当K线的 `pattern_id`（也可命名为 `trade_id`）与交易记录的 `trade_id` 相同时，K线会关联到该笔交易；没有编号时则按 `symbol` 关联。关联交易时只使用开仓前已经收盘的K线，防止未来数据泄漏。若只导入K线文件，建议每种典型形态使用独立的 `pattern_id` 分组。
+
+导入结果可以保存到 `%LOCALAPPDATA%\AutoQuant\external_trade_experiences.json`，也可以使用“运行配置”页内存中的 OpenAI API Key 上传到新的或已有的 Vector Store。上传是显式操作，API Key 不会写入经验文件。为避免混入旧的本地订单数据，这个外部经验库使用独立文件名；DeepSeek 后续可由本地检索器选取相关经验后随决策请求一起发送。
 
 ## 测试
 
