@@ -1,12 +1,12 @@
 # AutoQuant：Binance Stocks 桌面量化程序
 
-这是按 `需求文档.txt` 需求实现的 Windows/Python 桌面程序。程序支持按股票独立启动、停止，供应商和策略均通过工厂隔离；本版接入 Binance Stocks Trading、ChatGPT 和 DeepSeek，并实现“当日方向 + 五分钟 MA5/前一根 K 线突破”策略。
+这是按 `需求文档.txt` 需求实现的 Python/Qt 桌面程序。界面基于 PySide6，可在 Windows、macOS 和 Linux 上运行。程序支持按股票独立启动、停止，供应商和策略均通过工厂隔离；本版接入 Binance Stocks Trading、ChatGPT 和 DeepSeek，并实现“当日方向 + 五分钟 MA5/前一根 K 线突破”策略。
 
 程序默认使用 `PAPER` 模拟交易。除非在界面中主动切换为 `REAL` 并再次确认，否则不会向 Binance 提交真实订单。
 
 ## 安装和运行
 
-要求 Python 3.10 或更高版本。Windows 官方 Python 通常自带 Tkinter。
+要求 Python 3.10 或更高版本。安装项目时会一并安装 PySide6 Qt 运行时。
 
 ```powershell
 py -m pip install -e .
@@ -125,7 +125,7 @@ OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新
 - `autoquant/experience.py`：外部 Excel/CSV 交易与K线导入、形态标准化、本地经验库及 OpenAI Vector Store 上传。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 - `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
-- `autoquant/app.py`：Tkinter 桌面界面。
+- `autoquant/app.py`：PySide6/Qt 桌面界面。
 
 添加供应商或策略时，实现相应抽象接口，并在 `autoquant/engine.py` 的工厂函数中注册即可。
 
