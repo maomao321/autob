@@ -446,7 +446,7 @@ class BinanceStocksProvider(TradingProvider):
             url = f"{url}?{query}"
         headers = {
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.3.0",
+            "User-Agent": "AutoQuant/0.4.0",
         }
         if self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key

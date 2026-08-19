@@ -13,7 +13,7 @@ py -m pip install -e .
 py -m autoquant
 ```
 
-也可以双击 `run.bat` 启动。安装后还可执行：
+Windows 可以双击 `run.bat`，macOS 可以双击 `run.command`（首次使用若无执行权限，先运行 `chmod +x run.command packaging/build_macos.sh`）。启动脚本会优先打开已构建的桌面程序，没有构建产物时再尝试使用项目虚拟环境或系统 Python。安装后还可执行：
 
 ```powershell
 autoquant
@@ -21,13 +21,24 @@ autoquant
 
 ### Windows EXE
 
-仓库已提供单文件 Windows 版本：`dist\AutoQuant.exe`，无需另行安装 Python。也可在安装了 Python 的 Windows 电脑上重新构建：
+安装了 Python 的 Windows 电脑可运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1 -PythonExe py
+powershell -ExecutionPolicy Bypass -File .\packaging\build_exe.ps1
 ```
 
-构建脚本会安装项目依赖和 PyInstaller，然后生成无控制台窗口的 `dist\AutoQuant.exe`。
+构建脚本使用独立环境安装项目依赖和 PyInstaller，然后生成无控制台窗口的 `dist\windows\AutoQuant.exe`。如需指定 Python，可追加 `-PythonExe C:\path\to\python.exe`。
+
+### macOS App
+
+macOS 应用必须在 macOS 电脑上本机构建，不能在 Windows 上交叉编译：
+
+```bash
+chmod +x packaging/build_macos.sh run.command
+./packaging/build_macos.sh
+```
+
+构建完成后可双击 `run.command`，或直接打开 `dist/macos/AutoQuant.app`。如需指定 Python，可设置 `PYTHON_EXE=/path/to/python3` 后运行构建脚本。若要分发给其他 Mac，仍需按 Apple 要求完成代码签名和公证。
 
 ## 使用步骤
 

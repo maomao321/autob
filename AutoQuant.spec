@@ -1,9 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import sys
 
 
 project_root = Path(SPECPATH)
 dependency_root = project_root / ".packaging"
+is_windows = sys.platform == "win32"
+is_macos = sys.platform == "darwin"
 
 a = Analysis(
     [str(project_root / "autoquant" / "__main__.py")],
@@ -39,6 +42,20 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version=str(project_root / "packaging" / "version_info.txt"),
+    version=str(project_root / "packaging" / "version_info.txt") if is_windows else None,
 )
 
+if is_macos:
+    app = BUNDLE(
+        exe,
+        name="AutoQuant.app",
+        icon=None,
+        bundle_identifier="com.autoquant.desktop",
+        info_plist={
+            "CFBundleDisplayName": "AutoQuant",
+            "CFBundleName": "AutoQuant",
+            "CFBundleShortVersionString": "0.4.0",
+            "CFBundleVersion": "0.4.0",
+            "NSHighResolutionCapable": True,
+        },
+    )
