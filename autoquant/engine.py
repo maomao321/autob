@@ -336,22 +336,15 @@ class SymbolRunner:
                 if day_key is None:
                     self._log("ERROR", "未下单：尚未确定当前交易日")
                     continue
-                contract_multiplier = Decimal(
-                    self.config.app.contract_multiplier
-                )
                 order = OrderRequest(
                     symbol=self.symbol,
                     side=signal.side,
                     reference_price=signal.price,
-                    buy_notional=(
-                        Decimal(self.config.app.buy_notional)
-                        * contract_multiplier
-                    ),
+                    buy_notional=Decimal(self.config.app.buy_notional),
                     sell_quantity=(
                         position.quantity
                         if is_long_exit
                         else Decimal(self.config.app.sell_quantity)
-                        * contract_multiplier
                     ),
                     client_order_id=f"aq{uuid.uuid4().hex}",
                 )

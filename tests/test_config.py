@@ -18,7 +18,6 @@ class ConfigTests(unittest.TestCase):
             config = AppConfig(
                 symbols=["AAPL", "NVDA"],
                 ma_period=8,
-                contract_multiplier="2.5",
                 max_order_notional="250",
                 ai_provider="dual",
                 ai_min_confidence="0.75",
@@ -29,7 +28,6 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(["AAPL", "NVDA"], loaded.symbols)
             self.assertEqual(8, loaded.ma_period)
-            self.assertEqual("2.5", loaded.contract_multiplier)
             self.assertEqual("DUAL", loaded.ai_provider)
             self.assertEqual("0.75", loaded.ai_min_confidence)
             content = path.read_text(encoding="utf-8")
@@ -63,25 +61,20 @@ class ConfigTests(unittest.TestCase):
                 max_order_notional="100",
             ).validate()
 
-    def test_contract_multiplier_scales_amount_before_risk_validation(self) -> None:
-        with self.assertRaisesRegex(ValueError, "倍数后的实际买入金额"):
-            AppConfig(
-                symbols=["AAPL"],
-                buy_notional="60",
-                contract_multiplier="2",
-                max_order_notional="100",
-            ).validate()
+    def test_legacy_contract_multiplier_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                '{"symbols":["AAPL"],"contract_multiplier":"5"}',
+                encoding="utf-8",
+            )
+            store = ConfigStore(path)
 
-    def test_contract_multiplier_must_be_positive_and_bounded(self) -> None:
-        with self.assertRaisesRegex(ValueError, "合约倍数必须是正数"):
-            AppConfig(symbols=["AAPL"], contract_multiplier="0").validate()
-        with self.assertRaisesRegex(ValueError, "合约倍数不能超过 100"):
-            AppConfig(
-                symbols=["AAPL"],
-                contract_multiplier="101",
-                max_order_notional="20000",
-                max_daily_buy_notional="20000",
-            ).validate()
+            loaded = store.load()
+            store.save(loaded)
+
+            self.assertFalse(hasattr(loaded, "contract_multiplier"))
+            self.assertNotIn("contract_multiplier", path.read_text(encoding="utf-8"))
 
     def test_symbol_count_is_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "不能超过"):

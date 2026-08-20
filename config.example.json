@@ -9,7 +9,6 @@
   "ma_period": 5,
   "buy_notional": "100.00",
   "sell_quantity": "1",
-  "contract_multiplier": "1",
   "max_trades_per_day": 1,
   "max_order_notional": "100.00",
   "max_daily_buy_notional": "300.00",

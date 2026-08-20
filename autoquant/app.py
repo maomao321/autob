@@ -287,7 +287,6 @@ class AutoQuantApp(QMainWindow):
         self.ma_var = TextValue(str(self.config.ma_period))
         self.buy_notional_var = TextValue(self.config.buy_notional)
         self.sell_quantity_var = TextValue(self.config.sell_quantity)
-        self.contract_multiplier_var = TextValue(self.config.contract_multiplier)
         self.max_trades_var = TextValue(str(self.config.max_trades_per_day))
         self.max_order_notional_var = TextValue(self.config.max_order_notional)
         self.max_daily_buy_notional_var = TextValue(
@@ -542,10 +541,6 @@ class AutoQuantApp(QMainWindow):
         risk_layout.addWidget(self._line(self.take_profit_var))
         self._grid_field(grid, 3, 4, "止损/止盈(%)", risk)
         self._grid_field(grid, 3, 6, "信号有效期(秒)", self._line(self.max_signal_age_var))
-        self._grid_field(grid, 4, 0, "合约倍数(×)", self._line(self.contract_multiplier_var))
-        note = QLabel("实际入场规模 = 买入金额/卖出数量 × 合约倍数；该参数用于仓位缩放，不代表 Binance 杠杆。")
-        note.setStyleSheet(f"color: {COLORS['muted']};")
-        grid.addWidget(note, 4, 2, 1, 6)
         warning = QLabel(
             "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的多头，"
             "不会建立空头。“停止并平仓”会卖出全部程序多头；未知订单会锁定实盘。"
@@ -553,7 +548,7 @@ class AutoQuantApp(QMainWindow):
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(f"color: {COLORS['warning']};")
-        grid.addWidget(warning, 5, 0, 1, 8)
+        grid.addWidget(warning, 4, 0, 1, 8)
         content_layout.addWidget(settings)
 
         ai_settings = QGroupBox("大模型今日开仓方向")
@@ -911,7 +906,6 @@ class AutoQuantApp(QMainWindow):
             strategy=self.strategy_var.get(), trading_mode=self.mode_var.get(),
             ma_period=int(self.ma_var.get()), buy_notional=self.buy_notional_var.get().strip(),
             sell_quantity=self.sell_quantity_var.get().strip(),
-            contract_multiplier=self.contract_multiplier_var.get().strip(),
             max_trades_per_day=int(self.max_trades_var.get()),
             max_order_notional=self.max_order_notional_var.get().strip(),
             max_daily_buy_notional=self.max_daily_buy_notional_var.get().strip(),
@@ -1067,12 +1061,10 @@ class AutoQuantApp(QMainWindow):
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
             show_error("缺少凭据", "REAL 模式必须填写 API Key 和 API Secret。")
             return False
-        effective_buy_notional = Decimal(config.buy_notional) * Decimal(config.contract_multiplier)
         return ask_yes_no(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
-            f"股票数：{len(self.tree.get_children())}；基础买入金额：{config.buy_notional} USDC；"
-            f"合约倍数：{config.contract_multiplier}×；实际单笔买入：{effective_buy_notional} USDC。\n"
+            f"股票数：{len(self.tree.get_children())}；单笔买入金额：{config.buy_notional} USDC。\n"
             f"每日账户上限：{config.max_daily_buy_notional} USDC。\n"
             f"止损/止盈：{self.stop_loss_var.get()}% / {self.take_profit_var.get()}%。"
             "SELL 只会平掉程序确认的多头。\n账户还必须已经接受 Binance 美股交易免责声明。\n\n确认继续吗？",

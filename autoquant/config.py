@@ -35,7 +35,6 @@ class AppConfig:
     ma_period: int = 5
     buy_notional: str = "100.00"
     sell_quantity: str = "1"
-    contract_multiplier: str = "1"
     max_trades_per_day: int = 1
     max_order_notional: str = "100.00"
     max_daily_buy_notional: str = "300.00"
@@ -117,7 +116,6 @@ class AppConfig:
             raise ValueError("AI 请求超时必须在 5 到 60 秒之间")
         self.buy_notional = str(self.buy_notional)
         self.sell_quantity = str(self.sell_quantity)
-        self.contract_multiplier = str(self.contract_multiplier)
         self.max_order_notional = str(self.max_order_notional)
         self.max_daily_buy_notional = str(self.max_daily_buy_notional)
         self.stop_loss_percent = str(self.stop_loss_percent)
@@ -127,7 +125,6 @@ class AppConfig:
         for label, value in (
             ("买入金额", self.buy_notional),
             ("卖出数量", self.sell_quantity),
-            ("合约倍数", self.contract_multiplier),
             ("单笔金额上限", self.max_order_notional),
             ("账户每日买入上限", self.max_daily_buy_notional),
             ("止损比例", self.stop_loss_percent),
@@ -140,14 +137,10 @@ class AppConfig:
                 parsed_decimals[label] = number
             except (InvalidOperation, ValueError):
                 raise ValueError(f"{label}必须是正数") from None
-        multiplier = parsed_decimals["合约倍数"]
-        if multiplier > Decimal("100"):
-            raise ValueError("合约倍数不能超过 100")
-        effective_buy_notional = parsed_decimals["买入金额"] * multiplier
-        if effective_buy_notional > parsed_decimals["单笔金额上限"]:
-            raise ValueError("倍数后的实际买入金额不能超过单笔金额上限")
-        if effective_buy_notional > parsed_decimals["账户每日买入上限"]:
-            raise ValueError("倍数后的实际买入金额不能超过账户每日买入上限")
+        if parsed_decimals["买入金额"] > parsed_decimals["单笔金额上限"]:
+            raise ValueError("买入金额不能超过单笔金额上限")
+        if parsed_decimals["买入金额"] > parsed_decimals["账户每日买入上限"]:
+            raise ValueError("买入金额不能超过账户每日买入上限")
         for label in ("止损比例", "止盈比例"):
             if not Decimal("0.1") <= parsed_decimals[label] <= Decimal("50"):
                 raise ValueError(f"{label}必须在 0.1% 到 50% 之间")
@@ -205,6 +198,7 @@ class ConfigStore:
             payload: dict[str, Any] = json.loads(
                 self.path.read_text(encoding="utf-8")
             )
+            payload.pop("contract_multiplier", None)
             if "buy_notional" in payload and "max_order_notional" not in payload:
                 legacy_buy = Decimal(str(payload["buy_notional"]))
                 payload["max_order_notional"] = str(max(legacy_buy, Decimal("100")))

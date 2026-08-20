@@ -375,7 +375,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([("AAPL", 0)], decider.calls)
             self.assertTrue(any("今日方向=FLAT" in item[2] for item in logs))
 
-    def test_contract_multiplier_scales_entry_order_size(self) -> None:
+    def test_entry_order_uses_configured_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
             runner = SymbolRunner(
@@ -386,7 +386,6 @@ class SymbolRunnerTests(unittest.TestCase):
                         ma_period=3,
                         buy_notional="75",
                         sell_quantity="0.5",
-                        contract_multiplier="2",
                         max_order_notional="150",
                     )
                 ),
@@ -401,8 +400,8 @@ class SymbolRunnerTests(unittest.TestCase):
             runner.join(timeout=2)
 
             self.assertEqual(1, len(provider.orders))
-            self.assertEqual(Decimal("150"), provider.orders[0].buy_notional)
-            self.assertEqual(Decimal("1.0"), provider.orders[0].sell_quantity)
+            self.assertEqual(Decimal("75"), provider.orders[0].buy_notional)
+            self.assertEqual(Decimal("0.5"), provider.orders[0].sell_quantity)
 
     def test_unknown_submission_is_persisted_and_stops_runner(self) -> None:
         snapshots = []
@@ -555,7 +554,6 @@ class SymbolRunnerTests(unittest.TestCase):
                         symbols=["AAPL"],
                         trading_mode="REAL",
                         ma_period=3,
-                        contract_multiplier="5",
                         max_order_notional="500",
                         max_daily_buy_notional="500",
                     ),
