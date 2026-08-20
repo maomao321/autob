@@ -53,6 +53,16 @@ class FakeProvider:
     def check_symbol(self, symbol: str) -> dict:
         return {"symbol": symbol, "tradability": "BUY_SELL"}
 
+    def get_historical_bars(
+        self, symbol, interval, start_time, end_time, limit
+    ):
+        if interval == "1d":
+            return [
+                make_bar("99", -2, interval="1d"),
+                make_bar("100", -1, interval="1d"),
+            ][-limit:]
+        return []
+
     def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
         yield make_bar("101", 0, interval="1d", open_price="100")
         for index in range(3):
@@ -72,6 +82,40 @@ class ShortSignalProvider(FakeProvider):
         for index in range(3):
             yield make_bar("10", index)
         yield make_bar("8", 3)
+
+    def get_historical_bars(
+        self, symbol, interval, start_time, end_time, limit
+    ):
+        if interval == "1d":
+            return [
+                make_bar("101", -2, interval="1d"),
+                make_bar("100", -1, interval="1d"),
+            ][-limit:]
+        return []
+
+
+class HistoricalWarmupProvider(FakeProvider):
+    def __init__(self, history: list[Bar], live: list[Bar] | None = None) -> None:
+        super().__init__()
+        self.history = history
+        self.live = live or []
+        self.history_requests = []
+
+    def get_historical_bars(
+        self, symbol, interval, start_time, end_time, limit
+    ):
+        if interval == "1d":
+            return super().get_historical_bars(
+                symbol, interval, start_time, end_time, limit
+            )
+        self.history_requests.append(
+            (symbol, interval, start_time, end_time, limit)
+        )
+        return self.history[-limit:]
+
+    def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
+        yield make_bar("101", 0, interval="1d", open_price="100")
+        yield from self.live
 
 
 class UnknownResultProvider(FakeProvider):
@@ -159,6 +203,54 @@ class FlatOpeningDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_historical_bars_complete_warmup_before_live_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"], ma_period=3)),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = HistoricalWarmupProvider(
+                [make_bar("10", index) for index in range(4)],
+                live=[make_bar("12", 4)],
+            )
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.history_requests))
+            self.assertEqual(4, provider.history_requests[0][-1])
+            self.assertEqual(1, len(provider.orders))
+
+    def test_signal_found_only_in_history_is_not_submitted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"], ma_period=3)),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = HistoricalWarmupProvider(
+                [
+                    make_bar("10", 0),
+                    make_bar("10", 1),
+                    make_bar("10", 2),
+                    make_bar("12", 3),
+                ]
+            )
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual([], provider.orders)
+
     def test_stop_force_closes_paper_position(self) -> None:
         snapshots = []
         with tempfile.TemporaryDirectory() as directory:

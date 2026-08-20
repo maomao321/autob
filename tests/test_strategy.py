@@ -37,12 +37,30 @@ def bar(
     )
 
 
+def seed_direction(
+    strategy: FiveMinuteBreakoutStrategy, direction: Direction
+) -> None:
+    if direction is Direction.LONG:
+        closes = ("99", "100")
+    elif direction is Direction.SHORT:
+        closes = ("101", "100")
+    else:
+        closes = ("100", "100")
+    strategy.seed_daily_history(
+        [
+            bar(closes[0], -2, interval="1d"),
+            bar(closes[1], -1, interval="1d"),
+        ]
+    )
+
+
 class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
     def test_long_signal_requires_daily_bias_ma_cross_and_previous_high(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(
             bar("101", 0, interval="1d", open_price="100", high="102", low="99")
         )
+        seed_direction(strategy, Direction.LONG)
         self.assertEqual(Direction.LONG, strategy.direction)
         for index in range(3):
             self.assertIsNone(strategy.on_bar(bar("10", index)))
@@ -59,6 +77,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         strategy.on_bar(
             bar("99", 0, interval="1d", open_price="100", high="101", low="98")
         )
+        seed_direction(strategy, Direction.SHORT)
         for index in range(3):
             strategy.on_bar(bar("10", index))
 
@@ -88,6 +107,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
     def test_open_bar_and_duplicate_closed_bar_do_not_repeat_signal(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
+        seed_direction(strategy, Direction.LONG)
         for index in range(3):
             strategy.on_bar(bar("10", index))
         self.assertIsNone(strategy.on_bar(bar("12", 3, closed=False)))
@@ -100,6 +120,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
             "AAPL", ma_period=3, max_trades_per_day=1
         )
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
+        seed_direction(strategy, Direction.LONG)
         for index in range(3):
             strategy.on_bar(bar("10", index))
         signal = strategy.on_bar(bar("12", 3))
@@ -142,12 +163,25 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
             "AAPL", ma_period=3, max_trades_per_day=1
         )
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
+        seed_direction(strategy, Direction.LONG)
         strategy.restore_trade_count(0, 1)
         for index in range(3):
             strategy.on_bar(bar("10", index))
 
         self.assertIsNotNone(strategy.on_bar(bar("12", 3)))
         self.assertEqual(1, strategy.trades_today)
+
+    def test_direction_requires_two_previous_trading_days(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy.on_bar(bar("120", 0, interval="1d", open_price="100"))
+
+        self.assertEqual(Direction.UNKNOWN, strategy.direction)
+
+        seed_direction(strategy, Direction.LONG)
+        self.assertEqual(Direction.LONG, strategy.direction)
+
+        seed_direction(strategy, Direction.SHORT)
+        self.assertEqual(Direction.SHORT, strategy.direction)
 
 
 if __name__ == "__main__":

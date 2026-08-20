@@ -150,6 +150,8 @@ class SymbolRunner:
         self._daily_buy_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
         self._ai_decision_day_key: int | None = None
+        self._daily_backfill_day_key: int | None = None
+        self._warmup_backfill_day_key: int | None = None
         self._close_position_on_stop = False
         self._lifecycle_lock = threading.Lock()
 
@@ -258,6 +260,11 @@ class SymbolRunner:
                     if self.stop_event.is_set():
                         break
                 signal = self.strategy.on_bar(bar)
+                if bar.interval == "1d":
+                    self._backfill_daily_direction(bar)
+                    self._backfill_warmup(bar)
+                    if self.stop_event.is_set():
+                        break
                 risk_signal = self._risk_exit_signal(bar)
                 if risk_signal is not None:
                     signal = risk_signal
@@ -641,6 +648,84 @@ class SymbolRunner:
             self._log("AI", "主要依据：" + "；".join(decision.factors))
         if decision.risks:
             self._log("AI", "主要风险：" + "；".join(decision.risks))
+
+    def _backfill_warmup(self, daily_bar: Bar) -> None:
+        if self._warmup_backfill_day_key == daily_bar.open_time:
+            return
+        self._warmup_backfill_day_key = daily_bar.open_time
+        required = int(getattr(self.strategy, "warmup_required", 0))
+        current = int(getattr(self.strategy, "warmup_bars", 0))
+        if required <= 0 or current >= required:
+            return
+        fetcher = getattr(self.provider, "get_historical_bars", None)
+        if not callable(fetcher):
+            return
+        end_time = min(daily_bar.close_time, int(time.time() * 1000) - 1)
+        if end_time < daily_bar.open_time:
+            return
+
+        self._update(RunState.WARMING_UP, "正在加载当日历史 5 分钟 K 线")
+        try:
+            bars = fetcher(
+                self.symbol,
+                "5m",
+                daily_bar.open_time,
+                end_time,
+                required,
+            )
+        except Exception as exc:
+            message = " ".join(str(exc).split())[:300]
+            self._log(
+                "ERROR",
+                f"历史 K 线回补失败，将继续等待实时行情：{message}",
+            )
+            return
+
+        for historical_bar in bars:
+            if self.stop_event.is_set():
+                return
+            # Historical signals are intentionally discarded: the bars only seed
+            # indicator state and must never cause a retroactive order.
+            self.strategy.on_bar(historical_bar)
+        loaded = int(getattr(self.strategy, "warmup_bars", 0))
+        self._log(
+            "INFO",
+            f"历史 K 线回补完成，预热 {loaded}/{required}",
+        )
+
+    def _backfill_daily_direction(self, current_daily_bar: Bar) -> None:
+        if self._daily_backfill_day_key == current_daily_bar.open_time:
+            return
+        self._daily_backfill_day_key = current_daily_bar.open_time
+        setter = getattr(self.strategy, "seed_daily_history", None)
+        fetcher = getattr(self.provider, "get_historical_bars", None)
+        if not callable(setter) or not callable(fetcher):
+            return
+
+        self._update(RunState.WARMING_UP, "正在加载前两个交易日的日线")
+        try:
+            bars = fetcher(
+                self.symbol,
+                "1d",
+                current_daily_bar.open_time - 14 * 86_400_000,
+                current_daily_bar.open_time - 1,
+                2,
+            )
+            setter(bars)
+        except Exception as exc:
+            message = " ".join(str(exc).split())[:300]
+            self._log(
+                "ERROR",
+                f"历史日线回补失败；未启用大模型时今日方向保持未知：{message}",
+            )
+            return
+
+        direction = getattr(self.strategy, "direction", None)
+        direction_value = getattr(direction, "value", "UNKNOWN")
+        self._log(
+            "INFO",
+            f"历史日线回补完成，加载 {len(bars)} 根，今日方向 {direction_value}",
+        )
 
     def _sync_trade_count(self) -> None:
         day_key = getattr(self.strategy, "current_day_key", None)

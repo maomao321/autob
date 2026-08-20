@@ -9,11 +9,12 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from threading import Event
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from autoquant.models import Bar, OrderRequest, OrderResult, Side
@@ -58,6 +59,7 @@ class BinanceStocksProvider(TradingProvider):
     _public_cache_lock = threading.RLock()
     _tokenized_assets_cache: tuple[float, list[dict[str, Any]]] | None = None
     _request_semaphore = threading.BoundedSemaphore(4)
+    _nasdaq_quote_base_url = "https://api.nasdaq.com/api/quote"
 
     def __init__(
         self,
@@ -366,6 +368,67 @@ class BinanceStocksProvider(TradingProvider):
         self._latest_price_cache[symbol] = (time.monotonic(), result)
         return result
 
+    def get_historical_bars(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: int,
+        end_time: int,
+        limit: int,
+    ) -> list[Bar]:
+        if interval not in {"1d", "5m"}:
+            raise ProviderError(f"历史预热暂不支持周期 {interval}")
+        if limit <= 0 or end_time < start_time:
+            return []
+        normalized_symbol = symbol.strip().upper()
+        bars: list[Bar] = []
+        for asset_class in ("stocks", "etf"):
+            if interval == "1d":
+                params = urlencode(
+                    {
+                        "assetclass": asset_class,
+                        "fromdate": self._utc_date(start_time),
+                        "todate": self._utc_date(end_time),
+                        "limit": max(limit, 10),
+                    }
+                )
+                url = (
+                    f"{self._nasdaq_quote_base_url}/{quote(normalized_symbol)}"
+                    f"/historical?{params}"
+                )
+            else:
+                params = urlencode(
+                    {"assetclass": asset_class, "charttype": "rs"}
+                )
+                url = (
+                    f"{self._nasdaq_quote_base_url}/{quote(normalized_symbol)}"
+                    f"/chart?{params}"
+                )
+            payload = self._request_public_json(
+                url, source_name="Nasdaq 历史行情"
+            )
+            bars = (
+                self.parse_nasdaq_daily_bars(payload, normalized_symbol)
+                if interval == "1d"
+                else self.parse_nasdaq_chart_bars(
+                    payload, normalized_symbol, interval
+                )
+            )
+            if bars:
+                break
+        eligible = [
+            bar
+            for bar in bars
+            if start_time <= bar.open_time and bar.close_time <= end_time
+        ]
+        return eligible[-limit:]
+
+    @staticmethod
+    def _utc_date(timestamp_ms: int) -> str:
+        return datetime.fromtimestamp(
+            timestamp_ms / 1000, tz=timezone.utc
+        ).date().isoformat()
+
     def _ensure_server_time(self) -> None:
         if time.monotonic() - self._server_time_synced_at >= 60:
             self.sync_server_time()
@@ -412,6 +475,136 @@ class BinanceStocksProvider(TradingProvider):
             event_time=int(data.get("E", data.get("eventTime", 0))),
         )
 
+    @staticmethod
+    def parse_nasdaq_chart_bars(
+        payload: dict[str, Any], symbol: str, interval: str = "5m"
+    ) -> list[Bar]:
+        try:
+            data = payload.get("data")
+            if data is None:
+                return []
+            chart = data.get("chart", [])
+        except (AttributeError, TypeError) as exc:
+            raise ProviderError("Nasdaq 历史行情返回结构不符合预期") from exc
+        if not isinstance(chart, list):
+            raise ProviderError("Nasdaq 历史行情返回结构不符合预期")
+
+        interval_ms = {"5m": 300_000}.get(interval)
+        if interval_ms is None:
+            raise ProviderError(f"无法解析历史 K 线周期 {interval}")
+        points: list[tuple[int, Decimal, Decimal]] = []
+        for item in chart:
+            if not isinstance(item, dict):
+                continue
+            try:
+                timestamp = int(item["x"])
+                price = Decimal(str(item["y"]))
+                volume = Decimal(str(item.get("w", 0) or 0))
+                if not price.is_finite() or price <= 0:
+                    continue
+                if not volume.is_finite() or volume < 0:
+                    volume = Decimal("0")
+                points.append((timestamp, price, volume))
+            except (ArithmeticError, KeyError, TypeError, ValueError):
+                continue
+        points.sort(key=lambda point: point[0])
+
+        buckets: dict[int, dict[str, Decimal]] = {}
+        for timestamp, price, volume in points:
+            open_time = timestamp - timestamp % interval_ms
+            bucket = buckets.get(open_time)
+            if bucket is None:
+                buckets[open_time] = {
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": volume,
+                }
+                continue
+            bucket["high"] = max(bucket["high"], price)
+            bucket["low"] = min(bucket["low"], price)
+            bucket["close"] = price
+            bucket["volume"] += volume
+
+        return [
+            Bar(
+                symbol=symbol.upper(),
+                interval=interval,
+                open_time=open_time,
+                close_time=open_time + interval_ms - 1,
+                open=values["open"],
+                high=values["high"],
+                low=values["low"],
+                close=values["close"],
+                volume=values["volume"],
+                closed=True,
+            )
+            for open_time, values in sorted(buckets.items())
+        ]
+
+    @staticmethod
+    def parse_nasdaq_daily_bars(
+        payload: dict[str, Any], symbol: str
+    ) -> list[Bar]:
+        try:
+            data = payload.get("data")
+            if data is None:
+                return []
+            table = data.get("tradesTable")
+            rows = table.get("rows") if isinstance(table, dict) else None
+        except (AttributeError, TypeError) as exc:
+            raise ProviderError("Nasdaq 历史日线返回结构不符合预期") from exc
+        if rows is None:
+            return []
+        if not isinstance(rows, list):
+            raise ProviderError("Nasdaq 历史日线 rows 格式错误")
+
+        bars: list[Bar] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                day = datetime.strptime(str(row.get("date", "")), "%m/%d/%Y")
+                open_time = int(day.replace(tzinfo=timezone.utc).timestamp() * 1000)
+                values = {
+                    name: BinanceStocksProvider._market_decimal(row.get(name))
+                    for name in ("open", "high", "low", "close")
+                }
+                if any(
+                    value is None or value <= 0 for value in values.values()
+                ):
+                    continue
+                volume = BinanceStocksProvider._market_decimal(row.get("volume"))
+                bars.append(
+                    Bar(
+                        symbol=symbol.upper(),
+                        interval="1d",
+                        open_time=open_time,
+                        close_time=open_time + 86_400_000 - 1,
+                        open=values["open"],
+                        high=values["high"],
+                        low=values["low"],
+                        close=values["close"],
+                        volume=volume or Decimal("0"),
+                        closed=True,
+                    )
+                )
+            except (ArithmeticError, TypeError, ValueError):
+                continue
+        bars.sort(key=lambda bar: bar.open_time)
+        return bars
+
+    @staticmethod
+    def _market_decimal(value: Any) -> Decimal | None:
+        try:
+            parsed = Decimal(
+                str(value).replace("$", "").replace(",", "").strip()
+            )
+        except (ArithmeticError, ValueError):
+            return None
+        return parsed if parsed.is_finite() and parsed >= 0 else None
+
     def _signed_request(
         self, method: str, path: str, params: dict[str, Any]
     ) -> dict[str, Any]:
@@ -450,26 +643,52 @@ class BinanceStocksProvider(TradingProvider):
         }
         if self.api_key:
             headers["X-MBX-APIKEY"] = self.api_key
-        request = Request(url, method=method.upper(), headers=headers)
+        return self._request_public_json(
+            url,
+            method=method,
+            headers=headers,
+            source_name="Binance",
+        )
+
+    def _request_public_json(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        source_name: str,
+    ) -> Any:
+        request_headers = {
+            "Accept": "application/json",
+            "User-Agent": "AutoQuant/0.4.0",
+        }
+        if headers:
+            request_headers.update(headers)
+        request = Request(url, method=method.upper(), headers=request_headers)
         try:
             with self._request_semaphore:
                 with urlopen(request, timeout=self.request_timeout) as response:
                     body = response.read().decode("utf-8")
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            if source_name != "Binance":
+                detail = body[:300] if body.strip() else str(exc.reason)
+                raise ProviderError(
+                    f"{source_name} HTTP {exc.code}: {detail}"
+                ) from exc
             raise ProviderHTTPError(
                 exc.code,
                 self._error_message(exc.code, body),
                 self._exchange_error_code(body),
             ) from exc
         except (URLError, TimeoutError, OSError) as exc:
-            raise ProviderTransportError(f"Binance 请求失败: {exc}") from exc
+            raise ProviderTransportError(f"{source_name}请求失败: {exc}") from exc
         if not body.strip():
             return {}
         try:
             payload = json.loads(body)
         except json.JSONDecodeError as exc:
-            raise ProviderError("Binance 返回了无效 JSON") from exc
+            raise ProviderError(f"{source_name}返回了无效 JSON") from exc
         return payload
 
     def _signature(self, query: str) -> str:

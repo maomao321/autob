@@ -40,3 +40,14 @@ class TradingProvider(ABC):
 
     def get_latest_price(self, symbol: str) -> Decimal:
         raise NotImplementedError("当前供应商不支持最新报价查询")
+
+    def get_historical_bars(
+        self,
+        symbol: str,
+        interval: str,
+        start_time: int,
+        end_time: int,
+        limit: int,
+    ) -> list[Bar]:
+        """Return closed historical bars in chronological order when supported."""
+        return []

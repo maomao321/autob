@@ -25,6 +25,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self.max_trades_per_day = max_trades_per_day
         self._bars: deque[Bar] = deque(maxlen=ma_period + 1)
         self._daily_bar: Bar | None = None
+        self._direction_daily_bars: tuple[Bar, Bar] | None = None
         self._last_evaluated_open_time: int | None = None
         self._trades_by_day: dict[int, int] = {}
         self._opening_direction: Direction | None = None
@@ -36,11 +37,12 @@ class FiveMinuteBreakoutStrategy(Strategy):
     def direction(self) -> Direction:
         if self._opening_direction is not None:
             return self._opening_direction
-        if self._daily_bar is None:
+        if self._direction_daily_bars is None:
             return Direction.UNKNOWN
-        if self._daily_bar.close > self._daily_bar.open:
+        older, newer = self._direction_daily_bars
+        if newer.close > older.close:
             return Direction.LONG
-        if self._daily_bar.close < self._daily_bar.open:
+        if newer.close < older.close:
             return Direction.SHORT
         return Direction.FLAT
 
@@ -59,6 +61,25 @@ class FiveMinuteBreakoutStrategy(Strategy):
             raise ValueError("opening direction must be LONG, SHORT or FLAT")
         self._opening_direction = direction
         self._opening_direction_reason = " ".join(str(reason).split())[:500]
+
+    def seed_daily_history(self, bars: list[Bar]) -> None:
+        eligible = sorted(
+            (
+                bar
+                for bar in bars
+                if bar.symbol.upper() == self.symbol
+                and bar.interval == "1d"
+                and bar.closed
+                and (
+                    self._daily_bar is None
+                    or bar.open_time < self._daily_bar.open_time
+                )
+            ),
+            key=lambda bar: bar.open_time,
+        )
+        self._direction_daily_bars = (
+            (eligible[-2], eligible[-1]) if len(eligible) >= 2 else None
+        )
 
     @property
     def warmup_bars(self) -> int:
@@ -93,6 +114,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 return None
             if self._daily_bar is None or bar.open_time > self._daily_bar.open_time:
                 self._bars.clear()
+                self._direction_daily_bars = None
                 self._last_evaluated_open_time = None
                 self.ma_value = None
             self._daily_bar = bar
@@ -132,7 +154,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
             direction_reason = (
                 f"大模型今日偏多（{self._opening_direction_reason}）"
                 if self._opening_direction is not None
-                else "日线偏多"
+                else "前两交易日收盘趋势偏多"
             )
             return Signal(
                 symbol=self.symbol,
@@ -153,7 +175,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
             direction_reason = (
                 f"大模型今日偏空（{self._opening_direction_reason}）"
                 if self._opening_direction is not None
-                else "日线偏空"
+                else "前两交易日收盘趋势偏空"
             )
             return Signal(
                 symbol=self.symbol,

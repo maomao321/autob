@@ -13,6 +13,88 @@ from autoquant.providers.binance_stocks import (
 
 
 class BinanceStocksProviderTests(unittest.TestCase):
+    def test_parse_nasdaq_daily_history_returns_chronological_ohlc(self) -> None:
+        payload = {
+            "data": {
+                "tradesTable": {
+                    "rows": [
+                        {
+                            "date": "08/19/2026",
+                            "close": "$102.50",
+                            "open": "$101.00",
+                            "high": "$103.00",
+                            "low": "$100.50",
+                            "volume": "1,200",
+                        },
+                        {
+                            "date": "08/18/2026",
+                            "close": "$100.00",
+                            "open": "$99.00",
+                            "high": "$101.00",
+                            "low": "$98.50",
+                            "volume": "1,000",
+                        },
+                    ]
+                }
+            }
+        }
+
+        bars = BinanceStocksProvider.parse_nasdaq_daily_bars(payload, "AAPL")
+
+        self.assertEqual(2, len(bars))
+        self.assertLess(bars[0].open_time, bars[1].open_time)
+        self.assertEqual(Decimal("100.00"), bars[0].close)
+        self.assertEqual(Decimal("102.50"), bars[1].close)
+        self.assertTrue(all(bar.interval == "1d" for bar in bars))
+        self.assertTrue(all(bar.closed for bar in bars))
+
+    def test_parse_nasdaq_points_aggregates_five_minute_ohlc(self) -> None:
+        payload = {
+            "data": {
+                "chart": [
+                    {"x": 1_020_000, "y": "100", "w": "10"},
+                    {"x": 1_080_000, "y": "102", "w": "20"},
+                    {"x": 1_140_000, "y": "99", "w": "30"},
+                    {"x": 1_320_000, "y": "103", "w": "40"},
+                    {"x": 1_380_000, "y": None, "w": "50"},
+                ]
+            }
+        }
+
+        bars = BinanceStocksProvider.parse_nasdaq_chart_bars(payload, "AAPL")
+
+        self.assertEqual(2, len(bars))
+        self.assertEqual(900_000, bars[0].open_time)
+        self.assertEqual(1_199_999, bars[0].close_time)
+        self.assertEqual(Decimal("100"), bars[0].open)
+        self.assertEqual(Decimal("102"), bars[0].high)
+        self.assertEqual(Decimal("99"), bars[0].low)
+        self.assertEqual(Decimal("99"), bars[0].close)
+        self.assertEqual(Decimal("60"), bars[0].volume)
+        self.assertEqual(Decimal("103"), bars[1].close)
+        self.assertTrue(all(bar.closed for bar in bars))
+
+    def test_historical_bars_are_filtered_and_limited(self) -> None:
+        class HistoryProvider(BinanceStocksProvider):
+            def _request_public_json(self, url: str, **_kwargs) -> dict:
+                return {
+                    "data": {
+                        "chart": [
+                            {"x": 1_020_000, "y": "100", "w": "10"},
+                            {"x": 1_320_000, "y": "101", "w": "20"},
+                            {"x": 1_620_000, "y": "102", "w": "30"},
+                        ]
+                    }
+                }
+
+        provider = HistoryProvider()
+        bars = provider.get_historical_bars(
+            "AAPL", "5m", 900_000, 1_799_999, 1
+        )
+
+        self.assertEqual(1, len(bars))
+        self.assertEqual(1_500_000, bars[0].open_time)
+
     def test_parse_combined_kline_message(self) -> None:
         payload = {
             "stream": "AAPL@kline_5m",
