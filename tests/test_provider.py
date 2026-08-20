@@ -42,6 +42,34 @@ class BinanceStocksProviderTests(unittest.TestCase):
         self.assertEqual(Decimal("181.00"), result.close)
         self.assertTrue(result.closed)
 
+    def test_parse_current_kline_close_time_field(self) -> None:
+        payload = {
+            "stream": "DRAM@kline_1d",
+            "data": {
+                "e": "kline",
+                "E": 1776677041000,
+                "s": "DRAM",
+                "k": {
+                    "t": 1776643200000,
+                    "ct": 1776729599999,
+                    "s": "DRAM",
+                    "i": "1d",
+                    "o": "12.10",
+                    "h": "12.40",
+                    "l": "12.00",
+                    "c": "12.30",
+                    "v": "1000",
+                    "x": False,
+                },
+            },
+        }
+
+        result = BinanceStocksProvider.parse_kline_message(payload)
+
+        self.assertEqual(1776729599999, result.close_time)
+        self.assertEqual("1d", result.interval)
+        self.assertEqual("DRAM", result.symbol)
+
     def test_hmac_signature_matches_known_value(self) -> None:
         provider = BinanceStocksProvider(api_secret="secret")
         self.assertEqual(

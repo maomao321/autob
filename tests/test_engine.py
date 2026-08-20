@@ -9,7 +9,14 @@ from threading import Event
 from autoquant.config import AppConfig
 from autoquant.engine import RunnerConfig, SymbolRunner
 from autoquant.ai_decision import OpeningDecision
-from autoquant.models import Bar, Direction, OrderResult
+from autoquant.models import (
+    Bar,
+    Direction,
+    OrderRequest,
+    OrderResult,
+    RunState,
+    Side,
+)
 from autoquant.state import OrderLedger
 
 
@@ -105,6 +112,37 @@ class MalformedFillProvider(FilledLiveProvider):
         return {"status": "FILLED"}
 
 
+class WaitingPaperProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+
+    def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
+        self.started.set()
+        stop_event.wait(2)
+        if False:
+            yield make_bar("100", 0)
+
+
+class WaitingFilledLiveProvider(FilledLiveProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = Event()
+        self.detail_calls = 0
+
+    def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
+        self.started.set()
+        stop_event.wait(2)
+        if False:
+            yield make_bar("100", 0)
+
+    def get_order_detail(self, order_id: str) -> dict:
+        self.detail_calls += 1
+        if self.detail_calls == 1:
+            return {"status": "NEW", "filledQty": "0"}
+        return super().get_order_detail(order_id)
+
+
 class FlatOpeningDecider:
     def __init__(self) -> None:
         self.calls = []
@@ -121,6 +159,160 @@ class FlatOpeningDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_stop_force_closes_paper_position(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("100"),
+                    buy_notional=Decimal("50"),
+                    sell_quantity=Decimal("1"),
+                    client_order_id="aq-paper-buy",
+                ),
+                0,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-paper-buy",
+                "FILLED",
+                filled_quantity=Decimal("0.5"),
+                average_price=Decimal("100"),
+            )
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"])),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = WaitingPaperProvider()
+            runner.provider = provider
+
+            runner.start()
+            self.assertTrue(provider.started.wait(1))
+            runner.stop(close_position=True)
+            runner.join(timeout=2)
+
+            self.assertFalse(runner.is_alive)
+            self.assertEqual(1, len(provider.orders))
+            self.assertIs(Side.SELL, provider.orders[0].side)
+            self.assertEqual(Decimal("0.5"), provider.orders[0].sell_quantity)
+            self.assertEqual(
+                Decimal("0"),
+                ledger.position_summary("AAPL", paper=True).quantity,
+            )
+            self.assertEqual(RunState.STOPPED, snapshots[-1].state)
+
+    def test_stop_force_closes_real_position(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("100"),
+                    buy_notional=Decimal("50"),
+                    sell_quantity=Decimal("1"),
+                    client_order_id="aq-live-buy",
+                ),
+                0,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-live-buy",
+                "FILLED",
+                filled_quantity=Decimal("0.5"),
+                average_price=Decimal("100"),
+            )
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], trading_mode="REAL"),
+                    api_key="key",
+                    api_secret="secret",
+                ),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = WaitingFilledLiveProvider()
+            runner.provider = provider
+
+            runner.start()
+            self.assertTrue(provider.started.wait(1))
+            runner.stop(close_position=True)
+            runner.join(timeout=2)
+
+            self.assertFalse(runner.is_alive)
+            self.assertEqual(1, len(provider.orders))
+            self.assertEqual(2, provider.detail_calls)
+            self.assertIs(Side.SELL, provider.orders[0].side)
+            self.assertEqual(Decimal("0.5"), provider.orders[0].sell_quantity)
+            self.assertEqual(
+                Decimal("0"),
+                ledger.position_summary("AAPL", paper=False).quantity,
+            )
+            self.assertEqual(RunState.STOPPED, snapshots[-1].state)
+
+    def test_stop_does_not_submit_close_while_order_is_unknown(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.BUY,
+                    reference_price=Decimal("100"),
+                    buy_notional=Decimal("50"),
+                    sell_quantity=Decimal("1"),
+                    client_order_id="aq-paper-buy",
+                ),
+                0,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-paper-buy",
+                "FILLED",
+                filled_quantity=Decimal("0.5"),
+                average_price=Decimal("100"),
+            )
+            ledger.record_submitting(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.SELL,
+                    reference_price=Decimal("100"),
+                    buy_notional=Decimal("0"),
+                    sell_quantity=Decimal("0.5"),
+                    client_order_id="aq-unknown-sell",
+                ),
+                0,
+                paper=True,
+            )
+            ledger.mark_unknown("aq-unknown-sell", "timeout")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"])),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = WaitingPaperProvider()
+            runner.provider = provider
+
+            runner.stop(close_position=True)
+            runner.join(timeout=2)
+
+            self.assertEqual([], provider.orders)
+            self.assertEqual(
+                Decimal("0.5"),
+                ledger.position_summary("AAPL", paper=True).quantity,
+            )
+            self.assertEqual(RunState.ERROR, snapshots[-1].state)
+
     def test_runner_turns_strategy_signal_into_paper_order(self) -> None:
         snapshots = []
         logs = []

@@ -402,7 +402,7 @@ class BinanceStocksProvider(TradingProvider):
             symbol=str(optional(data.get("s", ""), "s", "symbol")).upper(),
             interval=str(required("i", "interval")),
             open_time=int(required("t", "openTime", "startTime")),
-            close_time=int(required("T", "closeTime", "endTime")),
+            close_time=int(required("ct", "T", "closeTime", "endTime")),
             open=Decimal(str(required("o", "open"))),
             high=Decimal(str(required("h", "high"))),
             low=Decimal(str(required("l", "low"))),

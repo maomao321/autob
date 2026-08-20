@@ -150,28 +150,46 @@ class SymbolRunner:
         self._daily_buy_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
         self._ai_decision_day_key: int | None = None
+        self._close_position_on_stop = False
+        self._lifecycle_lock = threading.Lock()
 
     @property
     def is_alive(self) -> bool:
         return bool(self.thread and self.thread.is_alive())
 
     def start(self) -> None:
-        if self.is_alive:
-            return
-        self.stop_event.clear()
-        self.thread = threading.Thread(
-            target=self._run,
-            name=f"autoquant-{self.symbol}",
-            daemon=True,
-        )
-        self.thread.start()
+        with self._lifecycle_lock:
+            if self.is_alive:
+                return
+            self._close_position_on_stop = False
+            self.stop_event.clear()
+            self.thread = threading.Thread(
+                target=self._run,
+                name=f"autoquant-{self.symbol}",
+                daemon=True,
+            )
+            self.thread.start()
 
-    def stop(self) -> None:
-        if not self.is_alive:
-            self._update(RunState.STOPPED, "已停止")
-            return
-        self._update(RunState.STOPPING, "正在停止")
-        self.stop_event.set()
+    def stop(self, *, close_position: bool = False) -> None:
+        with self._lifecycle_lock:
+            self._close_position_on_stop = (
+                self._close_position_on_stop or close_position
+            )
+            if self.is_alive:
+                message = "正在停止并准备平仓" if close_position else "正在停止"
+                self._update(RunState.STOPPING, message)
+                self.stop_event.set()
+                return
+            if close_position and self._needs_close_handling():
+                self.stop_event.set()
+                self.thread = threading.Thread(
+                    target=self._close_stopped_position,
+                    name=f"autoquant-close-{self.symbol}",
+                    daemon=True,
+                )
+                self.thread.start()
+                return
+        self._update(RunState.STOPPED, "已停止")
 
     def join(self, timeout: float | None = None) -> None:
         if self.thread:
@@ -431,8 +449,170 @@ class SymbolRunner:
                 self._log("ERROR", message)
                 self._update(RunState.ERROR, message)
                 return
-        self._update(RunState.STOPPED, "已停止")
-        self._log("INFO", "量化运行已停止")
+        if self._close_position_on_stop and not self._force_close_position():
+            return
+        message = "已停止并完成平仓" if self._close_position_on_stop else "已停止"
+        self._update(RunState.STOPPED, message)
+        self._log("INFO", f"量化运行{message}")
+
+    def _close_stopped_position(self) -> None:
+        if not self._force_close_position():
+            return
+        self._update(RunState.STOPPED, "已停止并完成平仓")
+        self._log("INFO", "已停止的量化持仓已完成平仓")
+
+    def _needs_close_handling(self) -> bool:
+        is_paper = self.config.app.trading_mode != "REAL"
+        quantity = self.ledger.position_summary(
+            self.symbol, paper=is_paper
+        ).quantity
+        return bool(
+            quantity > 0
+            or self.ledger.pending_count(self.symbol, paper=is_paper)
+            or self.ledger.unknown_count(self.symbol, paper=is_paper)
+        )
+
+    def _force_close_position(self) -> bool:
+        is_paper = self.config.app.trading_mode != "REAL"
+        mode = "模拟" if is_paper else "实盘"
+        self._update(RunState.STOPPING, f"正在停止并强制平仓（{mode}）")
+        try:
+            if not is_paper:
+                self._reconcile_orders()
+            unknown_count = self.ledger.unknown_count(
+                self.symbol, paper=is_paper
+            )
+            pending_count = self.ledger.pending_count(
+                self.symbol, paper=is_paper
+            )
+            if unknown_count:
+                raise RuntimeError(
+                    f"存在 {unknown_count} 笔状态未知订单，不能安全强制平仓"
+                )
+            if pending_count:
+                raise RuntimeError(
+                    f"仍有 {pending_count} 笔订单未到终态，不能安全强制平仓"
+                )
+
+            position = self.ledger.position_summary(
+                self.symbol, paper=is_paper
+            )
+            if position.quantity <= 0:
+                self._update_risk_cache(paper=is_paper)
+                self._log("INFO", "停止量化时没有程序多头持仓，无需平仓")
+                return True
+
+            if not is_paper:
+                info = self.provider.check_symbol(self.symbol)
+                tradability = str(info.get("tradability", "NONE"))
+                if tradability not in {"BUY_SELL", "SELL"}:
+                    raise RuntimeError(
+                        f"当前 tradability={tradability}，交易所不允许 SELL 平仓"
+                    )
+
+            reference_price = getattr(self.strategy, "last_price", None)
+            if reference_price is None or reference_price <= 0:
+                reference_price = position.average_price
+            if reference_price <= 0:
+                raise RuntimeError("缺少有效参考价格，不能记录强制平仓订单")
+
+            day_key = getattr(self.strategy, "current_day_key", None)
+            if day_key is None:
+                day_key = int(time.time() * 1000)
+            order = OrderRequest(
+                symbol=self.symbol,
+                side=Side.SELL,
+                reference_price=reference_price,
+                buy_notional=Decimal("0"),
+                sell_quantity=position.quantity,
+                client_order_id=f"aq{uuid.uuid4().hex}",
+            )
+            self.ledger.record_submitting(
+                order,
+                day_key,
+                paper=is_paper,
+            )
+            try:
+                result = self.provider.place_order(order)
+            except (OrderValidationError, OrderRejectedError) as exc:
+                message = str(exc) or exc.__class__.__name__
+                self.ledger.mark_rejected(order.client_order_id, message)
+                raise RuntimeError(f"强制平仓订单被拒绝：{message}") from exc
+            except Exception as exc:
+                message = str(exc) or exc.__class__.__name__
+                self.ledger.mark_unknown(order.client_order_id, message)
+                raise RuntimeError(
+                    f"强制平仓提交结果未知，必须登录 Binance 核对：{message}"
+                ) from exc
+
+            if not result.accepted:
+                self.ledger.mark_rejected(
+                    order.client_order_id, result.message
+                )
+                raise RuntimeError(f"强制平仓订单被拒绝：{result.message}")
+
+            self.ledger.mark_acknowledged(
+                order.client_order_id,
+                result.order_id,
+                result.message,
+            )
+            self._log(
+                "ORDER",
+                f"停止量化强制平仓订单已接受: {result.order_id}；"
+                f"SELL {order.sell_quantity}",
+            )
+            if result.paper:
+                self.ledger.mark_lifecycle(
+                    order.client_order_id,
+                    "FILLED",
+                    "模拟强制平仓订单已成交",
+                    filled_quantity=order.sell_quantity,
+                    average_price=order.reference_price,
+                )
+            else:
+                self._reconcile_order_until_terminal(
+                    order.client_order_id,
+                    result.order_id,
+                )
+
+            self._update_risk_cache(paper=is_paper)
+            if self.ledger.unknown_count(self.symbol, paper=is_paper):
+                raise RuntimeError(
+                    "强制平仓订单状态未知，必须登录 Binance 核对持仓"
+                )
+            if self._pending_orders:
+                raise RuntimeError(
+                    "强制平仓订单尚未到终态，必须登录 Binance 核对持仓"
+                )
+            if self._position_quantity > 0:
+                raise RuntimeError(
+                    f"强制平仓后仍有 {self._position_quantity} 股程序持仓"
+                )
+            self._refresh_market_snapshot("停止量化强制平仓完成")
+            return True
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            self._update_risk_cache(paper=is_paper)
+            self._log("ERROR", f"停止量化强制平仓失败：{message}")
+            self._update(RunState.ERROR, f"停止完成，但强制平仓失败：{message}")
+            return False
+
+    def _reconcile_order_until_terminal(
+        self,
+        client_order_id: str,
+        order_id: str,
+        *,
+        attempts: int = 6,
+        interval: float = 0.75,
+    ) -> None:
+        pending_statuses = {"ACKNOWLEDGED", "NEW", "ACCEPTED", "PARTIALLY_FILLED"}
+        for attempt in range(max(1, attempts)):
+            self._reconcile_single_order(client_order_id, order_id)
+            record = self.ledger.get_record(client_order_id)
+            if record is None or record.status not in pending_statuses:
+                return
+            if attempt + 1 < attempts:
+                time.sleep(max(0.0, interval))
 
     def _apply_opening_decision(self, bar: Bar) -> None:
         if (
@@ -716,23 +896,61 @@ class TradingController:
             self._runners[symbol] = runner
             runner.start()
 
-    def stop(self, symbol: str) -> None:
+    def stop(self, symbol: str, *, close_position: bool = False) -> None:
         with self._lock:
             runner = self._runners.get(symbol.upper())
         if runner:
-            runner.stop()
+            runner.stop(close_position=close_position)
 
-    def stop_all(self) -> None:
+    def stop_all(self, *, close_position: bool = False) -> None:
         with self._lock:
             runners = list(self._runners.values())
         for runner in runners:
-            runner.stop()
+            runner.stop(close_position=close_position)
+
+    def stop_targets(
+        self, symbols: list[str] | None = None
+    ) -> list[tuple[str, str, Decimal]]:
+        requested = (
+            None if symbols is None else {symbol.upper() for symbol in symbols}
+        )
+        with self._lock:
+            runners = [
+                runner
+                for symbol, runner in self._runners.items()
+                if requested is None or symbol in requested
+            ]
+        targets: list[tuple[str, str, Decimal]] = []
+        for runner in runners:
+            mode = runner.config.app.trading_mode
+            is_paper = mode != "REAL"
+            quantity = self.ledger.position_summary(
+                runner.symbol, paper=is_paper
+            ).quantity
+            has_blocking_order = bool(
+                self.ledger.pending_count(runner.symbol, paper=is_paper)
+                or self.ledger.unknown_count(runner.symbol, paper=is_paper)
+            )
+            if runner.is_alive or quantity > 0 or has_blocking_order:
+                targets.append((runner.symbol, mode, quantity))
+        return targets
 
     def join_all(self, timeout_per_runner: float = 2.0) -> None:
         with self._lock:
             runners = list(self._runners.values())
         for runner in runners:
             runner.join(timeout=timeout_per_runner)
+
+    def wait_for_all(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            runners = list(self._runners.values())
+        for runner in runners:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            runner.join(timeout=remaining)
+        return all(not runner.is_alive for runner in runners)
 
     def is_running(self, symbol: str) -> bool:
         with self._lock:

@@ -444,9 +444,9 @@ class AutoQuantApp(QMainWindow):
         controls.addWidget(self._button("核对后解除未知订单锁", self._resolve_unknown_selected))
         controls.addStretch()
         controls.addWidget(self._button("启动所选", self._start_selected, primary=True))
-        controls.addWidget(self._button("停止所选(不平仓)", self._stop_selected))
+        controls.addWidget(self._button("停止所选并平仓", self._stop_selected))
         controls.addWidget(self._button("全部启动", self._start_all, primary=True))
-        controls.addWidget(self._button("全部停止(不平仓)", self._stop_all))
+        controls.addWidget(self._button("全部停止并平仓", self._stop_all))
         layout.addLayout(controls)
 
         headers = [
@@ -548,7 +548,8 @@ class AutoQuantApp(QMainWindow):
         grid.addWidget(note, 4, 2, 1, 6)
         warning = QLabel(
             "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的多头，"
-            "不会建立空头。未知订单会锁定实盘。API Secret 仅驻留内存且不会保存。"
+            "不会建立空头。“停止并平仓”会卖出全部程序多头；未知订单会锁定实盘。"
+            "API Secret 仅驻留内存且不会保存。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(f"color: {COLORS['warning']};")
@@ -967,8 +968,14 @@ class AutoQuantApp(QMainWindow):
             show_error("股票代码错误", str(exc))
 
     def _remove_selected(self) -> None:
-        for symbol in self.tree.selection():
-            self.controller.stop(symbol)
+        selected = list(self.tree.selection())
+        if self.controller.stop_targets(selected):
+            show_info(
+                "请先停止并平仓",
+                "运行中或仍有程序持仓的股票不能直接移除。请先使用“停止所选并平仓”。",
+            )
+            return
+        for symbol in selected:
             self.tree.delete(symbol)
 
     def _resolve_unknown_selected(self) -> None:
@@ -1018,11 +1025,43 @@ class AutoQuantApp(QMainWindow):
             self.controller.start(symbol, config)
 
     def _stop_selected(self) -> None:
-        for symbol in self._selected_symbols():
-            self.controller.stop(symbol)
+        self._stop_symbols(self._selected_symbols())
 
     def _stop_all(self) -> None:
-        self.controller.stop_all()
+        self._stop_symbols(list(self.tree.get_children()))
+
+    def _stop_symbols(self, symbols: list[str]) -> None:
+        if not symbols:
+            return
+        targets = self.controller.stop_targets(symbols)
+        if not targets:
+            show_info("无需停止", "所选股票均已停止且没有程序多头持仓。")
+            return
+        details = "\n".join(
+            f"{symbol}：{mode}，程序多头 {quantity}"
+            for symbol, mode, quantity in targets
+        )
+        real_positions = [
+            symbol
+            for symbol, mode, quantity in targets
+            if mode == "REAL" and quantity > 0
+        ]
+        warning = (
+            "\n\n警告：以下 REAL 持仓将向 Binance 提交真实 MARKET SELL："
+            + ", ".join(real_positions)
+            if real_positions
+            else ""
+        )
+        confirmed = ask_yes_no(
+            "确认停止并强制平仓",
+            "程序会先阻止新的策略订单，再按本地账本记录的全部多头数量平仓。"
+            "没有持仓时只停止策略；有未知或未决订单时会拒绝自动平仓。\n\n"
+            f"{details}{warning}\n\n确认继续吗？",
+        )
+        if not confirmed:
+            return
+        for symbol, _mode, _quantity in targets:
+            self.controller.stop(symbol, close_position=True)
 
     def _confirm_real_mode(self, config: AppConfig) -> bool:
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
@@ -1248,6 +1287,41 @@ class AutoQuantApp(QMainWindow):
         return "-" if value is None else format(value, "f")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        targets = self.controller.stop_targets()
+        if targets:
+            details = "\n".join(
+                f"{symbol}：{mode}，程序多头 {quantity}"
+                for symbol, mode, quantity in targets
+            )
+            if not ask_yes_no(
+                "确认退出并强制平仓",
+                "退出前将停止所有量化线程，并尝试平掉本地账本记录的全部多头。"
+                "REAL 持仓会提交真实 MARKET SELL。\n\n"
+                f"{details}\n\n确认继续退出吗？",
+            ):
+                event.ignore()
+                return
+            self.controller.stop_all(close_position=True)
+            if not self.controller.wait_for_all(timeout=15.0):
+                show_error(
+                    "尚未停止完成",
+                    "部分量化线程或平仓订单仍在处理，程序暂不退出。请稍后重试并查看日志。",
+                )
+                event.ignore()
+                return
+            remaining = [
+                f"{symbol}({mode})={quantity}"
+                for symbol, mode, quantity in self.controller.stop_targets()
+            ]
+            if remaining:
+                show_error(
+                    "平仓未完成",
+                    "以下程序持仓或订单状态未能确认清零，程序暂不退出：\n"
+                    + "\n".join(remaining)
+                    + "\n\n请查看日志并登录 Binance 核对。",
+                )
+                event.ignore()
+                return
         self._closed = True
         self.event_timer.stop()
         self.account_timer.stop()
