@@ -24,11 +24,13 @@ ALLOWED_WS_HOSTS = {"nbstream.binance.com"}
 SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,9}", re.ASCII)
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", re.ASCII)
 MAX_SYMBOLS = 20
+MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
 
 
 @dataclass(slots=True)
 class AppConfig:
     symbols: list[str] = field(default_factory=lambda: ["AAPL"])
+    manual_directions: dict[str, str] = field(default_factory=dict)
     provider: str = "binance_stocks"
     api_key: str = ""
     api_secret: str = ""
@@ -65,6 +67,23 @@ class AppConfig:
             raise ValueError("至少配置一只股票")
         if len(self.symbols) > MAX_SYMBOLS:
             raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
+        if not isinstance(self.manual_directions, dict):
+            raise ValueError("manual_directions 必须是股票与手动方向的映射")
+        normalized_manual_directions: dict[str, str] = {}
+        for raw_symbol, raw_direction in self.manual_directions.items():
+            if not isinstance(raw_symbol, str):
+                raise ValueError("手动方向的股票代码必须是字符串")
+            symbols = normalize_symbols([raw_symbol])
+            if not symbols:
+                raise ValueError("手动方向的股票代码不能为空")
+            direction = str(raw_direction).strip().upper()
+            if direction not in MANUAL_DIRECTION_VALUES:
+                raise ValueError(
+                    f"{symbols[0]} 的手动方向必须是 AUTO、LONG、SHORT 或 FLAT"
+                )
+            if symbols[0] in self.symbols:
+                normalized_manual_directions[symbols[0]] = direction
+        self.manual_directions = normalized_manual_directions
         if self.provider != "binance_stocks":
             raise ValueError(f"暂不支持 API 供应商: {self.provider}")
         if self.strategy != "five_minute_breakout":

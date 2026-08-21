@@ -18,6 +18,7 @@ from autoquant.ai_decision import (
 from autoquant.config import AppConfig
 from autoquant.models import (
     Bar,
+    Direction,
     OrderRequest,
     RunState,
     RuntimeSnapshot,
@@ -51,6 +52,7 @@ class RunnerConfig:
     api_secret: str = ""
     openai_api_key: str = ""
     deepseek_api_key: str = ""
+    manual_direction: Direction = Direction.UNKNOWN
 
 
 class OpeningDecider(Protocol):
@@ -134,6 +136,15 @@ class SymbolRunner:
         self.config = config
         self.provider = create_provider(config)
         self.strategy = create_strategy(self.symbol, config)
+        if config.manual_direction is not Direction.UNKNOWN:
+            fallback_setter = getattr(
+                self.strategy, "set_fallback_direction", None
+            )
+            if callable(fallback_setter):
+                fallback_setter(
+                    config.manual_direction,
+                    "启动时预设；仅在自动日线方向不可用时生效",
+                )
         self.opening_decider = opening_decider
         if self.opening_decider is None and config.app.ai_provider != "DISABLED":
             self.opening_decider = create_opening_decider(config)
@@ -699,7 +710,10 @@ class SymbolRunner:
         self._daily_backfill_day_key = current_daily_bar.open_time
         setter = getattr(self.strategy, "seed_daily_history", None)
         fetcher = getattr(self.provider, "get_historical_bars", None)
-        if not callable(setter) or not callable(fetcher):
+        if not callable(setter):
+            return
+        if not callable(fetcher):
+            self._use_manual_direction_fallback("供应商不支持历史日线查询")
             return
 
         self._update(RunState.WARMING_UP, "正在加载前两个交易日的日线")
@@ -714,17 +728,55 @@ class SymbolRunner:
             setter(bars)
         except Exception as exc:
             message = " ".join(str(exc).split())[:300]
-            self._log(
-                "ERROR",
-                f"历史日线回补失败；未启用大模型时今日方向保持未知：{message}",
-            )
+            self._use_manual_direction_fallback(message)
             return
 
         direction = getattr(self.strategy, "direction", None)
         direction_value = getattr(direction, "value", "UNKNOWN")
+        if direction is Direction.UNKNOWN:
+            self._use_manual_direction_fallback(
+                f"返回的 {len(bars)} 根日线未形成两个有效的前序交易日"
+            )
+            direction = getattr(self.strategy, "direction", None)
+            direction_value = getattr(direction, "value", "UNKNOWN")
         self._log(
             "INFO",
             f"历史日线回补完成，加载 {len(bars)} 根，今日方向 {direction_value}",
+        )
+
+    def _use_manual_direction_fallback(self, failure_message: str) -> None:
+        current_direction = getattr(self.strategy, "direction", Direction.UNKNOWN)
+        if current_direction is not Direction.UNKNOWN:
+            if getattr(self.strategy, "direction_source", "") == "MANUAL":
+                self._log(
+                    "ERROR",
+                    f"历史日线不可用，继续使用手动开仓方向 "
+                    f"{current_direction.value}：{failure_message}",
+                )
+                return
+            self._log(
+                "ERROR",
+                f"历史日线回补失败，但已有方向 {current_direction.value}，"
+                f"不启用手动回退：{failure_message}",
+            )
+            return
+        manual_direction = self.config.manual_direction
+        if manual_direction is Direction.UNKNOWN:
+            self._log(
+                "ERROR",
+                f"历史日线回补失败且未设置手动方向，今日方向保持 UNKNOWN："
+                f"{failure_message}",
+            )
+            return
+        setter = getattr(self.strategy, "set_fallback_direction", None)
+        if not callable(setter):
+            self._log("ERROR", "当前策略不支持手动开仓方向回退")
+            return
+        setter(manual_direction, failure_message)
+        self._log(
+            "ERROR",
+            f"历史日线不可用，已采用手动开仓方向 {manual_direction.value}："
+            f"{failure_message}",
         )
 
     def _sync_trade_count(self) -> None:
@@ -901,13 +953,33 @@ class SymbolRunner:
         last_price = getattr(self.strategy, "last_price", None)
         ma_value = getattr(self.strategy, "ma_value", None)
         trades_today = getattr(self.strategy, "trades_today", 0)
-        ready = warmup_bars >= warmup_required and direction.value != "UNKNOWN"
+        current_day_key = getattr(self.strategy, "current_day_key", None)
+        ready = (
+            current_day_key is not None
+            and warmup_bars >= warmup_required
+            and direction is not Direction.UNKNOWN
+        )
         state = RunState.RUNNING if ready else RunState.WARMING_UP
         if message is None:
             if ready:
-                message = f"运行中；日线方向 {direction.value}"
+                message = f"运行中；实际方向 {direction.value}"
+            elif current_day_key is None:
+                if direction is Direction.UNKNOWN:
+                    message = "等待当日日线和开仓方向"
+                else:
+                    message = (
+                        "等待当日日线以确定交易日边界；"
+                        f"手动方向 {direction.value} 已登记"
+                    )
+            elif direction is Direction.UNKNOWN:
+                message = (
+                    f"预热 {warmup_bars}/{warmup_required}，等待日线方向"
+                )
             else:
-                message = f"预热 {warmup_bars}/{warmup_required}，等待日线方向"
+                message = (
+                    f"预热 {warmup_bars}/{warmup_required}；实际方向 "
+                    f"{direction.value}，等待 5 分钟 K 线"
+                )
         with self._snapshot_lock:
             self._snapshot.state = state
             self._snapshot.direction = direction

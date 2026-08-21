@@ -23,6 +23,7 @@ class ConfigTests(unittest.TestCase):
             store = ConfigStore(path)
             config = AppConfig(
                 symbols=["AAPL", "NVDA"],
+                manual_directions={"aapl": "long", "NVDA": "AUTO"},
                 api_key="binance-key",
                 api_secret="binance-secret",
                 ma_period=8,
@@ -35,6 +36,10 @@ class ConfigTests(unittest.TestCase):
             loaded = store.load()
 
             self.assertEqual(["AAPL", "NVDA"], loaded.symbols)
+            self.assertEqual(
+                {"AAPL": "LONG", "NVDA": "AUTO"},
+                loaded.manual_directions,
+            )
             self.assertEqual(8, loaded.ma_period)
             self.assertEqual("DUAL", loaded.ai_provider)
             self.assertEqual("0.75", loaded.ai_min_confidence)
@@ -59,6 +64,13 @@ class ConfigTests(unittest.TestCase):
         config = AppConfig(symbols=["AAPL"], trading_mode="REAL", buy_notional="0")
         with self.assertRaisesRegex(ValueError, "买入金额"):
             config.validate()
+
+    def test_invalid_manual_direction_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "手动方向"):
+            AppConfig(
+                symbols=["AAPL"],
+                manual_directions={"AAPL": "UP"},
+            ).validate()
 
     def test_non_finite_amount_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "买入金额"):

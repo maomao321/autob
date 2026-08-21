@@ -104,6 +104,32 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual(Side.SELL, signal.side)
         self.assertIn("大模型今日偏空", signal.reason)
 
+    def test_manual_fallback_is_used_only_without_daily_direction(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
+        strategy.set_fallback_direction(Direction.SHORT, "日线请求失败")
+
+        self.assertEqual(Direction.SHORT, strategy.direction)
+        self.assertEqual("MANUAL", strategy.direction_source)
+
+        seed_direction(strategy, Direction.LONG)
+
+        self.assertEqual(Direction.LONG, strategy.direction)
+        self.assertEqual("DAILY", strategy.direction_source)
+
+    def test_manual_fallback_is_identified_in_signal_reason(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
+        strategy.set_fallback_direction(Direction.LONG, "日线不足两根")
+        for index in range(3):
+            strategy.on_bar(bar("10", index))
+
+        signal = strategy.on_bar(bar("12", 3))
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertIn("采用手动方向偏多", signal.reason)
+
     def test_open_bar_and_duplicate_closed_bar_do_not_repeat_signal(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))

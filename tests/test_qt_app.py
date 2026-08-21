@@ -38,6 +38,19 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("运行中", table.item(0, 1).text())
         self.assertEqual("行情已连接", table.item(0, 2).text())
 
+    def test_keyed_table_exposes_per_row_combo_value(self) -> None:
+        table = KeyedTable(
+            ["股票", "手动方向"], [80, 100], multi_select=True
+        )
+        table.insert("", None, iid="AAPL", text="AAPL", values=("AUTO",))
+        combo = table.set_combo(
+            "AAPL", 1, ("AUTO", "LONG", "SHORT", "FLAT"), "SHORT"
+        )
+
+        self.assertEqual("SHORT", table.combo_text("AAPL", 1))
+        combo.setCurrentText("LONG")
+        self.assertEqual("LONG", table.combo_text("AAPL", 1))
+
 
 if __name__ == "__main__":
     unittest.main()

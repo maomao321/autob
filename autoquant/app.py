@@ -58,10 +58,12 @@ from autoquant.experience import (
     summarize_experiences,
     write_experience_document,
 )
-from autoquant.models import AccountOverview, RunState, RuntimeSnapshot
+from autoquant.models import AccountOverview, Direction, RunState, RuntimeSnapshot
 
 
 ACCOUNT_REFRESH_MS = 30_000
+MANUAL_DIRECTION_COLUMN = 3
+MANUAL_DIRECTION_OPTIONS = ("AUTO", "LONG", "SHORT", "FLAT")
 
 STATE_TEXT = {
     RunState.STOPPED: "已停止",
@@ -218,6 +220,39 @@ class KeyedTable(QTableWidget):
         symbol_item = self.item(row, 0)
         symbol = symbol_item.text() if symbol_item else key
         self._write_row(row, (symbol, *values), tags)
+
+    def set_combo(
+        self,
+        key: str,
+        column: int,
+        options: tuple[str, ...],
+        current: str,
+        *,
+        tooltip: str = "",
+    ) -> QComboBox:
+        if key not in self._keys:
+            raise KeyError(key)
+        combo = QComboBox(self)
+        combo.addItems(options)
+        combo.setCurrentText(current if current in options else options[0])
+        combo.setToolTip(tooltip)
+        self.setCellWidget(self._keys.index(key), column, combo)
+        return combo
+
+    def combo_text(self, key: str, column: int) -> str:
+        if key not in self._keys:
+            raise KeyError(key)
+        widget = self.cellWidget(self._keys.index(key), column)
+        if not isinstance(widget, QComboBox):
+            raise ValueError(f"{key} 第 {column} 列不是下拉框")
+        return widget.currentText()
+
+    def set_combo_enabled(self, key: str, column: int, enabled: bool) -> None:
+        if key not in self._keys:
+            return
+        widget = self.cellWidget(self._keys.index(key), column)
+        if isinstance(widget, QComboBox):
+            widget.setEnabled(enabled)
 
     def clear_rows(self) -> None:
         self.setRowCount(0)
@@ -459,10 +494,10 @@ class AutoQuantApp(QMainWindow):
         layout.addLayout(controls)
 
         headers = [
-            "股票", "状态", "日线方向", "最新价", "MA", "预热", "今日交易",
+            "股票", "状态", "实际方向", "手动方向", "最新价", "MA", "预热", "今日交易",
             "程序持仓", "持仓均价", "未决订单", "今日买入额", "信息",
         ]
-        widths = [80, 80, 85, 90, 90, 75, 80, 85, 85, 75, 90, 300]
+        widths = [80, 80, 85, 90, 90, 90, 75, 80, 85, 85, 75, 90, 300]
         self.tree = KeyedTable(headers, widths, multi_select=True)
         self.tree.setMinimumHeight(250)
 
@@ -911,8 +946,19 @@ class AutoQuantApp(QMainWindow):
         return f"{remaining_seconds}秒"
 
     def _current_config(self) -> AppConfig:
+        manual_directions = {
+            symbol: direction
+            for symbol in self.tree.get_children()
+            if (
+                direction := self.tree.combo_text(
+                    symbol, MANUAL_DIRECTION_COLUMN
+                )
+            ) != "AUTO"
+        }
         config = AppConfig(
-            symbols=list(self.tree.get_children()), provider=self.provider_var.get(),
+            symbols=list(self.tree.get_children()),
+            manual_directions=manual_directions,
+            provider=self.provider_var.get(),
             api_key=self.api_key_var.get().strip(),
             api_secret=self.api_secret_var.get().strip(),
             strategy=self.strategy_var.get(), trading_mode=self.mode_var.get(),
@@ -957,8 +1003,22 @@ class AutoQuantApp(QMainWindow):
             return
         self.tree.insert(
             "", None, iid=symbol, text=symbol,
-            values=("已停止", "UNKNOWN", "-", "-", "0/0", "0", "0", "-", "0", "0", "未启动"),
+            values=("已停止", "UNKNOWN", "AUTO", "-", "-", "0/0", "0", "0", "-", "0", "0", "未启动"),
         )
+        self.tree.set_combo(
+            symbol,
+            MANUAL_DIRECTION_COLUMN,
+            MANUAL_DIRECTION_OPTIONS,
+            self.config.manual_directions.get(symbol, "AUTO"),
+            tooltip=(
+                "日线正常时使用自动判断；日线加载失败或不足两根时，"
+                "使用这里选择的 LONG、SHORT 或 FLAT。启动后不可修改。"
+            ),
+        )
+
+    def _manual_direction(self, symbol: str) -> Direction:
+        value = self.tree.combo_text(symbol, MANUAL_DIRECTION_COLUMN)
+        return Direction.UNKNOWN if value == "AUTO" else Direction(value)
 
     def _add_symbols(self) -> None:
         try:
@@ -1028,7 +1088,10 @@ class AutoQuantApp(QMainWindow):
         if config.app.trading_mode == "REAL" and not self._confirm_real_mode(config.app):
             return
         for symbol in symbols:
-            self.controller.start(symbol, config)
+            self.controller.start(
+                symbol,
+                replace(config, manual_direction=self._manual_direction(symbol)),
+            )
 
     def _stop_selected(self) -> None:
         self._stop_symbols(self._selected_symbols())
@@ -1264,14 +1327,22 @@ class AutoQuantApp(QMainWindow):
         if snapshot.last_price is not None and snapshot.last_price > 0:
             self._latest_prices[snapshot.symbol] = snapshot.last_price
         tag = "error" if snapshot.state is RunState.ERROR else "running" if snapshot.state is RunState.RUNNING else "signal" if snapshot.state is RunState.SIGNAL else ""
+        manual_direction = self.tree.combo_text(
+            snapshot.symbol, MANUAL_DIRECTION_COLUMN
+        )
         values = (
-            STATE_TEXT[snapshot.state], snapshot.direction.value,
+            STATE_TEXT[snapshot.state], snapshot.direction.value, manual_direction,
             self._format_decimal(snapshot.last_price), self._format_decimal(snapshot.ma_value),
             f"{snapshot.warmup_bars}/{snapshot.warmup_required}", str(snapshot.trades_today),
             self._format_decimal(snapshot.position_quantity), self._format_decimal(snapshot.average_entry_price),
             str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional), snapshot.message,
         )
         self.tree.item_update(snapshot.symbol, values=values, tags=(tag,) if tag else ())
+        self.tree.set_combo_enabled(
+            snapshot.symbol,
+            MANUAL_DIRECTION_COLUMN,
+            snapshot.state in {RunState.STOPPED, RunState.ERROR},
+        )
 
     def _append_log(self, level: str, symbol: str, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

@@ -3,6 +3,7 @@
     "AAPL",
     "NVDA"
   ],
+  "manual_directions": {},
   "provider": "binance_stocks",
   "api_key": "",
   "api_secret": "",

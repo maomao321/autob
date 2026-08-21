@@ -94,6 +94,13 @@ class ShortSignalProvider(FakeProvider):
         return []
 
 
+class MissingDailyHistoryProvider(FakeProvider):
+    def get_historical_bars(
+        self, symbol, interval, start_time, end_time, limit
+    ):
+        return []
+
+
 class HistoricalWarmupProvider(FakeProvider):
     def __init__(self, history: list[Bar], live: list[Bar] | None = None) -> None:
         super().__init__()
@@ -203,6 +210,105 @@ class FlatOpeningDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_manual_direction_is_used_when_daily_history_is_missing(self) -> None:
+        snapshots = []
+        logs = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], ma_period=3),
+                    manual_direction=Direction.LONG,
+                ),
+                snapshots.append,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
+                ledger,
+            )
+            provider = MissingDailyHistoryProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            self.assertTrue(
+                any(snapshot.direction is Direction.LONG for snapshot in snapshots)
+            )
+            self.assertTrue(
+                any(
+                    "实际方向 LONG，等待 5 分钟 K 线" in snapshot.message
+                    for snapshot in snapshots
+                )
+            )
+            self.assertTrue(any("手动开仓方向 LONG" in item[2] for item in logs))
+
+    def test_manual_direction_is_visible_before_first_daily_bar(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], ma_period=3),
+                    manual_direction=Direction.SHORT,
+                ),
+                snapshots.append,
+                lambda *_args: None,
+                OrderLedger(Path(directory) / "orders.sqlite3"),
+            )
+
+            runner._refresh_market_snapshot()
+
+            self.assertIs(Direction.SHORT, snapshots[-1].direction)
+            self.assertIn("手动方向 SHORT 已登记", snapshots[-1].message)
+            self.assertNotIn("等待日线方向", snapshots[-1].message)
+
+    def test_missing_daily_history_without_manual_direction_stays_unknown(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"], ma_period=3)),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = MissingDailyHistoryProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual([], provider.orders)
+            self.assertFalse(
+                any(snapshot.direction is Direction.LONG for snapshot in snapshots)
+            )
+
+    def test_daily_direction_takes_priority_over_manual_direction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], ma_period=3),
+                    manual_direction=Direction.SHORT,
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            self.assertIs(Side.BUY, provider.orders[0].side)
+
     def test_historical_bars_complete_warmup_before_live_signal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")

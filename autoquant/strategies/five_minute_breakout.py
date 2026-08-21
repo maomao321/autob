@@ -30,6 +30,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._trades_by_day: dict[int, int] = {}
         self._opening_direction: Direction | None = None
         self._opening_direction_reason = ""
+        self._fallback_direction: Direction | None = None
+        self._fallback_direction_reason = ""
         self.last_price: Decimal | None = None
         self.ma_value: Decimal | None = None
 
@@ -38,7 +40,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         if self._opening_direction is not None:
             return self._opening_direction
         if self._direction_daily_bars is None:
-            return Direction.UNKNOWN
+            return self._fallback_direction or Direction.UNKNOWN
         older, newer = self._direction_daily_bars
         if newer.close > older.close:
             return Direction.LONG
@@ -49,6 +51,16 @@ class FiveMinuteBreakoutStrategy(Strategy):
     @property
     def opening_direction_reason(self) -> str:
         return self._opening_direction_reason
+
+    @property
+    def direction_source(self) -> str:
+        if self._opening_direction is not None:
+            return "MODEL"
+        if self._direction_daily_bars is not None:
+            return "DAILY"
+        if self._fallback_direction is not None:
+            return "MANUAL"
+        return "UNKNOWN"
 
     def set_opening_direction(
         self, direction: Direction, reason: str = ""
@@ -61,6 +73,18 @@ class FiveMinuteBreakoutStrategy(Strategy):
             raise ValueError("opening direction must be LONG, SHORT or FLAT")
         self._opening_direction = direction
         self._opening_direction_reason = " ".join(str(reason).split())[:500]
+
+    def set_fallback_direction(
+        self, direction: Direction, reason: str = ""
+    ) -> None:
+        if direction not in {
+            Direction.LONG,
+            Direction.SHORT,
+            Direction.FLAT,
+        }:
+            raise ValueError("fallback direction must be LONG, SHORT or FLAT")
+        self._fallback_direction = direction
+        self._fallback_direction_reason = " ".join(str(reason).split())[:500]
 
     def seed_daily_history(self, bars: list[Bar]) -> None:
         eligible = sorted(
@@ -115,6 +139,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
             if self._daily_bar is None or bar.open_time > self._daily_bar.open_time:
                 self._bars.clear()
                 self._direction_daily_bars = None
+                self._fallback_direction = None
+                self._fallback_direction_reason = ""
                 self._last_evaluated_open_time = None
                 self.ma_value = None
             self._daily_bar = bar
@@ -151,11 +177,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         crossed_up = previous_bar.close <= previous_ma and bar.close > current_ma
         broke_previous_high = bar.close > previous_bar.high
         if self.direction is Direction.LONG and crossed_up and broke_previous_high:
-            direction_reason = (
-                f"大模型今日偏多（{self._opening_direction_reason}）"
-                if self._opening_direction is not None
-                else "前两交易日收盘趋势偏多"
-            )
+            direction_reason = self._direction_reason(long=True)
             return Signal(
                 symbol=self.symbol,
                 side=Side.BUY,
@@ -172,11 +194,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         crossed_down = previous_bar.close >= previous_ma and bar.close < current_ma
         broke_previous_low = bar.close < previous_bar.low
         if self.direction is Direction.SHORT and crossed_down and broke_previous_low:
-            direction_reason = (
-                f"大模型今日偏空（{self._opening_direction_reason}）"
-                if self._opening_direction is not None
-                else "前两交易日收盘趋势偏空"
-            )
+            direction_reason = self._direction_reason(long=False)
             return Signal(
                 symbol=self.symbol,
                 side=Side.SELL,
@@ -190,6 +208,21 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 ),
             )
         return None
+
+    def _direction_reason(self, *, long: bool) -> str:
+        bias = "偏多" if long else "偏空"
+        if self._opening_direction is not None:
+            return f"大模型今日{bias}（{self._opening_direction_reason}）"
+        if self._direction_daily_bars is not None:
+            return f"前两交易日收盘趋势{bias}"
+        if self._fallback_direction is not None:
+            detail = (
+                f"（{self._fallback_direction_reason}）"
+                if self._fallback_direction_reason
+                else ""
+            )
+            return f"日线不可用，采用手动方向{bias}{detail}"
+        return f"今日方向{bias}"
 
     def mark_executed(self, signal: Signal) -> None:
         if self._daily_bar is None or signal.symbol != self.symbol:
