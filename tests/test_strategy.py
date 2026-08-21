@@ -55,6 +55,28 @@ def seed_direction(
 
 
 class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
+    def test_manual_mode_rejects_unknown_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "manual direction"):
+            FiveMinuteBreakoutStrategy(
+                "AAPL", manual_direction=Direction.UNKNOWN
+            )
+
+    def test_manual_mode_uses_live_five_minute_bars_without_daily_bar(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy(
+            "AAPL", ma_period=3, manual_direction=Direction.LONG
+        )
+        for index in range(3):
+            self.assertIsNone(strategy.on_bar(bar("10", index)))
+
+        signal = strategy.on_bar(bar("12", 3))
+
+        self.assertIsNotNone(signal)
+        assert signal is not None
+        self.assertIs(Side.BUY, signal.side)
+        self.assertEqual(Direction.LONG, strategy.direction)
+        self.assertEqual(0, strategy.current_day_key)
+        self.assertIn("手动开仓方向偏多", signal.reason)
+
     def test_long_signal_requires_daily_bias_ma_cross_and_previous_high(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(

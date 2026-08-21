@@ -6,6 +6,8 @@ from decimal import Decimal
 from autoquant.models import Bar, Direction, Side, Signal
 from autoquant.strategies.base import Strategy
 
+DAY_MS = 86_400_000
+
 
 class FiveMinuteBreakoutStrategy(Strategy):
     """Daily direction filter plus five-minute MA and prior-bar breakout."""
@@ -17,14 +19,24 @@ class FiveMinuteBreakoutStrategy(Strategy):
         symbol: str,
         ma_period: int = 5,
         max_trades_per_day: int = 1,
+        manual_direction: Direction | None = None,
     ) -> None:
         if ma_period < 2:
             raise ValueError("ma_period must be at least 2")
+        if manual_direction not in {
+            None,
+            Direction.LONG,
+            Direction.SHORT,
+            Direction.FLAT,
+        }:
+            raise ValueError("manual direction must be LONG, SHORT or FLAT")
         self.symbol = symbol.upper()
         self.ma_period = ma_period
         self.max_trades_per_day = max_trades_per_day
         self._bars: deque[Bar] = deque(maxlen=ma_period + 1)
         self._daily_bar: Bar | None = None
+        self._manual_day_key: int | None = None
+        self._manual_direction = manual_direction
         self._direction_daily_bars: tuple[Bar, Bar] | None = None
         self._last_evaluated_open_time: int | None = None
         self._trades_by_day: dict[int, int] = {}
@@ -37,6 +49,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     @property
     def direction(self) -> Direction:
+        if self._manual_direction is not None:
+            return self._manual_direction
         if self._opening_direction is not None:
             return self._opening_direction
         if self._direction_daily_bars is None:
@@ -54,6 +68,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     @property
     def direction_source(self) -> str:
+        if self._manual_direction is not None:
+            return "MANUAL"
         if self._opening_direction is not None:
             return "MODEL"
         if self._direction_daily_bars is not None:
@@ -115,12 +131,15 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     @property
     def trades_today(self) -> int:
-        if self._daily_bar is None:
+        day_key = self.current_day_key
+        if day_key is None:
             return 0
-        return self._trades_by_day.get(self._daily_bar.open_time, 0)
+        return self._trades_by_day.get(day_key, 0)
 
     @property
     def current_day_key(self) -> int | None:
+        if self._manual_direction is not None:
+            return self._manual_day_key
         if self._daily_bar is None:
             return None
         return self._daily_bar.open_time
@@ -134,6 +153,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
             return None
         self.last_price = bar.close
         if bar.interval == "1d":
+            if self._manual_direction is not None:
+                return None
             if self._daily_bar is not None and bar.open_time < self._daily_bar.open_time:
                 return None
             if self._daily_bar is None or bar.open_time > self._daily_bar.open_time:
@@ -148,14 +169,23 @@ class FiveMinuteBreakoutStrategy(Strategy):
             return None
         if bar.interval != "5m" or not bar.closed:
             return None
-        if self._daily_bar is None:
-            return None
-        if not (
-            self._daily_bar.open_time
-            <= bar.open_time
-            <= self._daily_bar.close_time
-        ):
-            return None
+        if self._manual_direction is not None:
+            day_key = bar.open_time - (bar.open_time % DAY_MS)
+            if self._manual_day_key is None or day_key > self._manual_day_key:
+                self._reset_intraday_state()
+                self._manual_day_key = day_key
+                self._remove_old_trade_counters(day_key)
+            elif day_key < self._manual_day_key:
+                return None
+        else:
+            if self._daily_bar is None:
+                return None
+            if not (
+                self._daily_bar.open_time
+                <= bar.open_time
+                <= self._daily_bar.close_time
+            ):
+                return None
         if (
             self._last_evaluated_open_time is not None
             and bar.open_time <= self._last_evaluated_open_time
@@ -211,6 +241,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     def _direction_reason(self, *, long: bool) -> str:
         bias = "偏多" if long else "偏空"
+        if self._manual_direction is not None:
+            return f"手动开仓方向{bias}"
         if self._opening_direction is not None:
             return f"大模型今日{bias}（{self._opening_direction_reason}）"
         if self._direction_daily_bars is not None:
@@ -225,10 +257,15 @@ class FiveMinuteBreakoutStrategy(Strategy):
         return f"今日方向{bias}"
 
     def mark_executed(self, signal: Signal) -> None:
-        if self._daily_bar is None or signal.symbol != self.symbol:
+        day_key = self.current_day_key
+        if day_key is None or signal.symbol != self.symbol:
             return
-        day_key = self._daily_bar.open_time
         self._trades_by_day[day_key] = self._trades_by_day.get(day_key, 0) + 1
+
+    def _reset_intraday_state(self) -> None:
+        self._bars.clear()
+        self._last_evaluated_open_time = None
+        self.ma_value = None
 
     def _append_closed_bar(self, bar: Bar) -> None:
         if self._bars and self._bars[-1].open_time == bar.open_time:

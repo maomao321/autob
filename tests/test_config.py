@@ -37,7 +37,7 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(["AAPL", "NVDA"], loaded.symbols)
             self.assertEqual(
-                {"AAPL": "LONG", "NVDA": "AUTO"},
+                {"AAPL": "LONG", "NVDA": "FLAT"},
                 loaded.manual_directions,
             )
             self.assertEqual(8, loaded.ma_period)

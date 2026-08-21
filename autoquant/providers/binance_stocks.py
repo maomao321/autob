@@ -70,6 +70,7 @@ class BinanceStocksProvider(TradingProvider):
         websocket_base_url: str = "wss://nbstream.binance.com/equity",
         recv_window: int = 5000,
         request_timeout: float = 10.0,
+        include_daily_stream: bool = True,
     ) -> None:
         self.api_key = api_key.strip()
         self.api_secret = api_secret.strip()
@@ -78,6 +79,7 @@ class BinanceStocksProvider(TradingProvider):
         self.websocket_base_url = websocket_base_url.rstrip("/")
         self.recv_window = recv_window
         self.request_timeout = request_timeout
+        self.include_daily_stream = include_daily_stream
         self._server_time_offset_ms = 0
         self._symbol_info: dict[str, dict[str, Any]] = {}
         self._symbol_info_cached_at: dict[str, float] = {}
@@ -98,7 +100,9 @@ class BinanceStocksProvider(TradingProvider):
             ) from exc
 
         symbol = symbol.upper()
-        streams = f"{symbol}@kline_5m/{symbol}@kline_1d"
+        streams = f"{symbol}@kline_5m"
+        if self.include_daily_stream:
+            streams += f"/{symbol}@kline_1d"
         url = f"{self.websocket_base_url}/stream?streams={streams}"
         reconnect_delay = 1.0
 

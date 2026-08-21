@@ -63,12 +63,12 @@ from autoquant.models import AccountOverview, Direction, RunState, RuntimeSnapsh
 
 ACCOUNT_REFRESH_MS = 30_000
 MANUAL_DIRECTION_COLUMN = 3
-MANUAL_DIRECTION_OPTIONS = ("AUTO", "LONG", "SHORT", "FLAT")
+MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
 
 STATE_TEXT = {
     RunState.STOPPED: "已停止",
     RunState.STARTING: "启动中",
-    RunState.WARMING_UP: "预热中",
+    RunState.WARMING_UP: "收集K线",
     RunState.RUNNING: "运行中",
     RunState.SIGNAL: "信号",
     RunState.ERROR: "错误",
@@ -340,7 +340,7 @@ class AutoQuantApp(QMainWindow):
         self.stop_loss_var = TextValue(self.config.stop_loss_percent)
         self.take_profit_var = TextValue(self.config.take_profit_percent)
         self.max_signal_age_var = TextValue(str(self.config.max_signal_age_seconds))
-        self.ai_provider_var = TextValue(self.config.ai_provider)
+        self.ai_provider_var = TextValue("DISABLED")
         self.openai_model_var = TextValue(self.config.openai_model)
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
         self.openai_api_key_var = TextValue(os.environ.get("OPENAI_API_KEY", ""))
@@ -494,7 +494,7 @@ class AutoQuantApp(QMainWindow):
         layout.addLayout(controls)
 
         headers = [
-            "股票", "状态", "实际方向", "手动方向", "最新价", "MA", "预热", "今日交易",
+            "股票", "状态", "实际方向", "手动方向", "最新价", "MA", "实时K线", "今日交易",
             "程序持仓", "持仓均价", "未决订单", "今日买入额", "信息",
         ]
         widths = [80, 80, 85, 90, 90, 90, 75, 80, 85, 85, 75, 90, 300]
@@ -589,40 +589,31 @@ class AutoQuantApp(QMainWindow):
         warning = QLabel(
             "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的多头，"
             "不会建立空头。“停止并平仓”会卖出全部程序多头；未知订单会锁定实盘。"
-            "API Secret 仅驻留内存且不会保存。"
+            "API Key/Secret 会随配置保存，请保护本地配置文件。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(f"color: {COLORS['warning']};")
         grid.addWidget(warning, 4, 0, 1, 8)
         content_layout.addWidget(settings)
 
-        ai_settings = QGroupBox("大模型今日开仓方向")
+        ai_settings = QGroupBox("交易经验库上传")
         ai_grid = QGridLayout(ai_settings)
         ai_grid.setHorizontalSpacing(12)
         ai_grid.setVerticalSpacing(10)
-        for column in (1, 3, 5, 7):
-            ai_grid.setColumnStretch(column, 1)
-        self._grid_field(ai_grid, 0, 0, "决策模式", self._combo(self.ai_provider_var, ["DISABLED", "CHATGPT", "DEEPSEEK", "DUAL"]))
-        self._grid_field(ai_grid, 0, 2, "OpenAI 模型", self._line(self.openai_model_var))
-        self._grid_field(ai_grid, 0, 4, "OpenAI API Key", self._line(self.openai_api_key_var, secret=True), span=3)
-        self._grid_field(ai_grid, 1, 0, "DeepSeek 模型", self._line(self.deepseek_model_var))
-        self._grid_field(ai_grid, 1, 2, "DeepSeek API Key", self._line(self.deepseek_api_key_var, secret=True), span=5)
-        self._grid_field(ai_grid, 2, 0, "最低置信度", self._line(self.ai_min_confidence_var))
-        self._grid_field(ai_grid, 2, 2, "走势天数", self._line(self.ai_history_days_var))
-        news = QWidget()
-        news_layout = QHBoxLayout(news)
-        news_layout.setContentsMargins(0, 0, 0, 0)
-        news_layout.addWidget(self._line(self.ai_news_days_var))
-        news_layout.addWidget(QLabel("/"))
-        news_layout.addWidget(self._line(self.ai_news_limit_var))
-        self._grid_field(ai_grid, 2, 4, "新闻天数/条数", news)
-        self._grid_field(ai_grid, 2, 6, "请求超时(秒)", self._line(self.ai_timeout_var))
+        ai_grid.setColumnStretch(1, 1)
+        self._grid_field(
+            ai_grid,
+            0,
+            0,
+            "OpenAI API Key",
+            self._line(self.openai_api_key_var, secret=True),
+        )
         ai_note = QLabel(
-            "DUAL 仅在 ChatGPT 与 DeepSeek 同向且都达到阈值时放行；失败、低置信度或数据不足一律 FLAT。API Key 仅驻留内存。"
+            "仅在“交易经验”页点击上传时使用；不会参与开仓方向判断，也不会写入配置文件。"
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 3, 0, 1, 8)
+        ai_grid.addWidget(ai_note, 1, 0, 1, 2)
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -947,13 +938,8 @@ class AutoQuantApp(QMainWindow):
 
     def _current_config(self) -> AppConfig:
         manual_directions = {
-            symbol: direction
+            symbol: self.tree.combo_text(symbol, MANUAL_DIRECTION_COLUMN)
             for symbol in self.tree.get_children()
-            if (
-                direction := self.tree.combo_text(
-                    symbol, MANUAL_DIRECTION_COLUMN
-                )
-            ) != "AUTO"
         }
         config = AppConfig(
             symbols=list(self.tree.get_children()),
@@ -970,7 +956,7 @@ class AutoQuantApp(QMainWindow):
             stop_loss_percent=self.stop_loss_var.get().strip(),
             take_profit_percent=self.take_profit_var.get().strip(),
             max_signal_age_seconds=int(self.max_signal_age_var.get()),
-            ai_provider=self.ai_provider_var.get(), openai_model=self.openai_model_var.get().strip(),
+            ai_provider="DISABLED", openai_model=self.openai_model_var.get().strip(),
             deepseek_model=self.deepseek_model_var.get().strip(),
             ai_min_confidence=self.ai_min_confidence_var.get().strip(),
             ai_history_days=int(self.ai_history_days_var.get()),
@@ -988,10 +974,6 @@ class AutoQuantApp(QMainWindow):
         app = self._current_config()
         openai_api_key = self.openai_api_key_var.get().strip()
         deepseek_api_key = self.deepseek_api_key_var.get().strip()
-        if app.ai_provider in {"CHATGPT", "DUAL"} and not openai_api_key:
-            raise ValueError("CHATGPT/DUAL 模式必须填写 OpenAI API Key")
-        if app.ai_provider in {"DEEPSEEK", "DUAL"} and not deepseek_api_key:
-            raise ValueError("DEEPSEEK/DUAL 模式必须填写 DeepSeek API Key")
         return RunnerConfig(
             app=app, api_key=self.api_key_var.get(), api_secret=self.api_secret_var.get(),
             openai_api_key=openai_api_key, deepseek_api_key=deepseek_api_key,
@@ -1003,22 +985,22 @@ class AutoQuantApp(QMainWindow):
             return
         self.tree.insert(
             "", None, iid=symbol, text=symbol,
-            values=("已停止", "UNKNOWN", "AUTO", "-", "-", "0/0", "0", "0", "-", "0", "0", "未启动"),
+            values=("已停止", "FLAT", "FLAT", "-", "-", "0/0", "0", "0", "-", "0", "0", "未启动"),
         )
         self.tree.set_combo(
             symbol,
             MANUAL_DIRECTION_COLUMN,
             MANUAL_DIRECTION_OPTIONS,
-            self.config.manual_directions.get(symbol, "AUTO"),
+            self.config.manual_directions.get(symbol, "FLAT"),
             tooltip=(
-                "日线正常时使用自动判断；日线加载失败或不足两根时，"
-                "使用这里选择的 LONG、SHORT 或 FLAT。启动后不可修改。"
+                "选择 LONG、SHORT 或 FLAT 作为唯一开仓方向。"
+                "启动后不可修改。"
             ),
         )
 
     def _manual_direction(self, symbol: str) -> Direction:
         value = self.tree.combo_text(symbol, MANUAL_DIRECTION_COLUMN)
-        return Direction.UNKNOWN if value == "AUTO" else Direction(value)
+        return Direction(value)
 
     def _add_symbols(self) -> None:
         try:

@@ -52,7 +52,7 @@ class RunnerConfig:
     api_secret: str = ""
     openai_api_key: str = ""
     deepseek_api_key: str = ""
-    manual_direction: Direction = Direction.UNKNOWN
+    manual_direction: Direction = Direction.FLAT
 
 
 class OpeningDecider(Protocol):
@@ -69,6 +69,7 @@ def create_provider(config: RunnerConfig) -> TradingProvider:
             rest_base_url=config.app.rest_base_url,
             websocket_base_url=config.app.websocket_base_url,
             recv_window=config.app.recv_window,
+            include_daily_stream=config.manual_direction is Direction.UNKNOWN,
         )
     raise ValueError(f"未知 API 供应商: {config.app.provider}")
 
@@ -79,6 +80,11 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
             symbol=symbol,
             ma_period=config.app.ma_period,
             max_trades_per_day=config.app.max_trades_per_day,
+            manual_direction=(
+                None
+                if config.manual_direction is Direction.UNKNOWN
+                else config.manual_direction
+            ),
         )
     raise ValueError(f"未知策略: {config.app.strategy}")
 
@@ -136,17 +142,12 @@ class SymbolRunner:
         self.config = config
         self.provider = create_provider(config)
         self.strategy = create_strategy(self.symbol, config)
-        if config.manual_direction is not Direction.UNKNOWN:
-            fallback_setter = getattr(
-                self.strategy, "set_fallback_direction", None
-            )
-            if callable(fallback_setter):
-                fallback_setter(
-                    config.manual_direction,
-                    "启动时预设；仅在自动日线方向不可用时生效",
-                )
         self.opening_decider = opening_decider
-        if self.opening_decider is None and config.app.ai_provider != "DISABLED":
+        if (
+            config.manual_direction is Direction.UNKNOWN
+            and self.opening_decider is None
+            and config.app.ai_provider != "DISABLED"
+        ):
             self.opening_decider = create_opening_decider(config)
         self.snapshot_callback = snapshot_callback
         self.log_callback = log_callback
@@ -245,7 +246,7 @@ class SymbolRunner:
                 if not is_paper:
                     raise RuntimeError(f"实盘安全锁定：{message}")
             self._update_risk_cache(paper=is_paper)
-            self._update(RunState.WARMING_UP, "等待日线和 5 分钟 K 线")
+            self._refresh_market_snapshot("等待实时 5 分钟收盘 K 线")
             for bar in self.provider.stream_bars(
                 self.symbol, self.stop_event, self._on_provider_status
             ):
@@ -266,12 +267,18 @@ class SymbolRunner:
                 if bar.interval == "5m" and bar.closed:
                     self._sync_trade_count()
                     self._update_risk_cache(paper=is_paper)
-                if bar.interval == "1d":
+                if (
+                    self.config.manual_direction is Direction.UNKNOWN
+                    and bar.interval == "1d"
+                ):
                     self._apply_opening_decision(bar)
                     if self.stop_event.is_set():
                         break
                 signal = self.strategy.on_bar(bar)
-                if bar.interval == "1d":
+                if (
+                    self.config.manual_direction is Direction.UNKNOWN
+                    and bar.interval == "1d"
+                ):
                     self._backfill_daily_direction(bar)
                     self._backfill_warmup(bar)
                     if self.stop_event.is_set():
@@ -968,17 +975,17 @@ class SymbolRunner:
                     message = "等待当日日线和开仓方向"
                 else:
                     message = (
-                        "等待当日日线以确定交易日边界；"
-                        f"手动方向 {direction.value} 已登记"
+                        "等待首根实时 5 分钟收盘 K 线；"
+                        f"手动方向 {direction.value} 已设置"
                     )
             elif direction is Direction.UNKNOWN:
                 message = (
-                    f"预热 {warmup_bars}/{warmup_required}，等待日线方向"
+                    f"实时 K 线 {warmup_bars}/{warmup_required}，等待开仓方向"
                 )
             else:
                 message = (
-                    f"预热 {warmup_bars}/{warmup_required}；实际方向 "
-                    f"{direction.value}，等待 5 分钟 K 线"
+                    f"实时 K 线 {warmup_bars}/{warmup_required}；手动方向 "
+                    f"{direction.value}"
                 )
         with self._snapshot_lock:
             self._snapshot.state = state

@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event
 
 from autoquant.config import AppConfig
-from autoquant.engine import RunnerConfig, SymbolRunner
+from autoquant.engine import RunnerConfig, SymbolRunner, create_provider
 from autoquant.ai_decision import OpeningDecision
 from autoquant.models import (
     Bar,
@@ -95,9 +95,16 @@ class ShortSignalProvider(FakeProvider):
 
 
 class MissingDailyHistoryProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history_requests = []
+
     def get_historical_bars(
         self, symbol, interval, start_time, end_time, limit
     ):
+        self.history_requests.append(
+            (symbol, interval, start_time, end_time, limit)
+        )
         return []
 
 
@@ -210,6 +217,16 @@ class FlatOpeningDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_manual_mode_subscribes_only_to_five_minute_stream(self) -> None:
+        provider = create_provider(
+            RunnerConfig(
+                AppConfig(symbols=["AAPL"]),
+                manual_direction=Direction.FLAT,
+            )
+        )
+
+        self.assertFalse(provider.include_daily_stream)
+
     def test_manual_direction_is_used_when_daily_history_is_missing(self) -> None:
         snapshots = []
         logs = []
@@ -239,11 +256,11 @@ class SymbolRunnerTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
-                    "实际方向 LONG，等待 5 分钟 K 线" in snapshot.message
+                    "实时 K 线" in snapshot.message
                     for snapshot in snapshots
                 )
             )
-            self.assertTrue(any("手动开仓方向 LONG" in item[2] for item in logs))
+            self.assertEqual([], provider.history_requests)
 
     def test_manual_direction_is_visible_before_first_daily_bar(self) -> None:
         snapshots = []
@@ -262,7 +279,7 @@ class SymbolRunnerTests(unittest.TestCase):
             runner._refresh_market_snapshot()
 
             self.assertIs(Direction.SHORT, snapshots[-1].direction)
-            self.assertIn("手动方向 SHORT 已登记", snapshots[-1].message)
+            self.assertIn("手动方向 SHORT 已设置", snapshots[-1].message)
             self.assertNotIn("等待日线方向", snapshots[-1].message)
 
     def test_missing_daily_history_without_manual_direction_stays_unknown(self) -> None:
@@ -287,7 +304,8 @@ class SymbolRunnerTests(unittest.TestCase):
                 any(snapshot.direction is Direction.LONG for snapshot in snapshots)
             )
 
-    def test_daily_direction_takes_priority_over_manual_direction(self) -> None:
+    def test_manual_direction_replaces_daily_direction(self) -> None:
+        snapshots = []
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
             runner = SymbolRunner(
@@ -296,7 +314,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     AppConfig(symbols=["AAPL"], ma_period=3),
                     manual_direction=Direction.SHORT,
                 ),
-                lambda _snapshot: None,
+                snapshots.append,
                 lambda *_args: None,
                 ledger,
             )
@@ -306,15 +324,20 @@ class SymbolRunnerTests(unittest.TestCase):
             runner.start()
             runner.join(timeout=2)
 
-            self.assertEqual(1, len(provider.orders))
-            self.assertIs(Side.BUY, provider.orders[0].side)
+            self.assertEqual([], provider.orders)
+            self.assertTrue(
+                any(snapshot.direction is Direction.SHORT for snapshot in snapshots)
+            )
 
-    def test_historical_bars_complete_warmup_before_live_signal(self) -> None:
+    def test_manual_mode_does_not_load_historical_warmup_bars(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
             runner = SymbolRunner(
                 "AAPL",
-                RunnerConfig(AppConfig(symbols=["AAPL"], ma_period=3)),
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], ma_period=3),
+                    manual_direction=Direction.LONG,
+                ),
                 lambda _snapshot: None,
                 lambda *_args: None,
                 ledger,
@@ -328,9 +351,8 @@ class SymbolRunnerTests(unittest.TestCase):
             runner.start()
             runner.join(timeout=2)
 
-            self.assertEqual(1, len(provider.history_requests))
-            self.assertEqual(4, provider.history_requests[0][-1])
-            self.assertEqual(1, len(provider.orders))
+            self.assertEqual([], provider.history_requests)
+            self.assertEqual([], provider.orders)
 
     def test_signal_found_only_in_history_is_not_submitted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -524,7 +546,8 @@ class SymbolRunnerTests(unittest.TestCase):
                         ma_period=3,
                         buy_notional="100",
                         sell_quantity="1",
-                    )
+                    ),
+                    manual_direction=Direction.LONG,
                 ),
                 snapshots.append,
                 lambda level, symbol, message: logs.append((level, symbol, message)),
@@ -555,6 +578,7 @@ class SymbolRunnerTests(unittest.TestCase):
                         ai_provider="CHATGPT",
                     ),
                     openai_api_key="test-key",
+                    manual_direction=Direction.UNKNOWN,
                 ),
                 lambda _snapshot: None,
                 lambda level, symbol, message: logs.append(
@@ -585,7 +609,8 @@ class SymbolRunnerTests(unittest.TestCase):
                         buy_notional="75",
                         sell_quantity="0.5",
                         max_order_notional="150",
-                    )
+                    ),
+                    manual_direction=Direction.LONG,
                 ),
                 lambda _snapshot: None,
                 lambda *_args: None,
@@ -608,7 +633,8 @@ class SymbolRunnerTests(unittest.TestCase):
             runner = SymbolRunner(
                 "AAPL",
                 RunnerConfig(
-                    AppConfig(symbols=["AAPL"], ma_period=3)
+                    AppConfig(symbols=["AAPL"], ma_period=3),
+                    manual_direction=Direction.LONG,
                 ),
                 snapshots.append,
                 lambda *_args: None,
@@ -638,6 +664,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     ),
                     api_key="key",
                     api_secret="secret",
+                    manual_direction=Direction.SHORT,
                 ),
                 lambda _snapshot: None,
                 lambda level, symbol, message: logs.append(
@@ -668,6 +695,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     ),
                     api_key="key",
                     api_secret="secret",
+                    manual_direction=Direction.LONG,
                 ),
                 lambda _snapshot: None,
                 lambda *_args: None,
@@ -708,6 +736,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     AppConfig(symbols=["AAPL"], trading_mode="REAL", ma_period=3),
                     api_key="key",
                     api_secret="secret",
+                    manual_direction=Direction.LONG,
                 ),
                 snapshots.append,
                 lambda *_args: None,
@@ -781,6 +810,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     AppConfig(symbols=["AAPL"], trading_mode="REAL", ma_period=3),
                     api_key="key",
                     api_secret="secret",
+                    manual_direction=Direction.LONG,
                 ),
                 lambda _snapshot: None,
                 lambda *_args: None,
@@ -810,6 +840,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     AppConfig(symbols=["AAPL"], trading_mode="REAL", ma_period=3),
                     api_key="key",
                     api_secret="secret",
+                    manual_direction=Direction.LONG,
                 ),
                 snapshots.append,
                 lambda *_args: None,

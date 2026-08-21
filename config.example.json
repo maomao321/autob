@@ -3,7 +3,10 @@
     "AAPL",
     "NVDA"
   ],
-  "manual_directions": {},
+  "manual_directions": {
+    "AAPL": "FLAT",
+    "NVDA": "FLAT"
+  },
   "provider": "binance_stocks",
   "api_key": "",
   "api_secret": "",

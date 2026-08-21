@@ -82,7 +82,11 @@ class AppConfig:
                     f"{symbols[0]} 的手动方向必须是 AUTO、LONG、SHORT 或 FLAT"
                 )
             if symbols[0] in self.symbols:
-                normalized_manual_directions[symbols[0]] = direction
+                # AUTO belonged to the previous fallback-only mode. Manual-only
+                # mode migrates it to the safest no-entry direction.
+                normalized_manual_directions[symbols[0]] = (
+                    "FLAT" if direction == "AUTO" else direction
+                )
         self.manual_directions = normalized_manual_directions
         if self.provider != "binance_stocks":
             raise ValueError(f"暂不支持 API 供应商: {self.provider}")
