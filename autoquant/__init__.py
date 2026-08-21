@@ -1,3 +1,3 @@
-"""Binance Stocks desktop auto-trading application."""
+"""Binance Stocks backend service and remote trading frontend."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

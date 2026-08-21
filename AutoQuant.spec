@@ -54,8 +54,8 @@ if is_macos:
         info_plist={
             "CFBundleDisplayName": "AutoQuant",
             "CFBundleName": "AutoQuant",
-            "CFBundleShortVersionString": "0.4.0",
-            "CFBundleVersion": "0.4.0",
+            "CFBundleShortVersionString": "0.5.0",
+            "CFBundleVersion": "0.5.0",
             "NSHighResolutionCapable": True,
         },
     )

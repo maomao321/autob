@@ -845,7 +845,7 @@ def _upload_openai_file(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.4.0",
+            "User-Agent": "AutoQuant/0.5.0",
         },
         method="POST",
     )
@@ -865,7 +865,7 @@ def _post_json(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.4.0",
+            "User-Agent": "AutoQuant/0.5.0",
         },
         method="POST",
     )

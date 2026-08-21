@@ -45,7 +45,12 @@ from autoquant.config import (
     credential_or_environment,
     normalize_symbols,
 )
-from autoquant.engine import RunnerConfig, TradingController, create_provider
+from autoquant.client import (
+    BackendClient,
+    RemoteConfigStore,
+    RemoteRunnerConfig,
+    RemoteTradingController,
+)
 from autoquant.experience import (
     ExperienceError,
     ExperienceImportResult,
@@ -311,12 +316,18 @@ def ask_yes_no(title: str, message: str) -> bool:
 
 
 class AutoQuantApp(QMainWindow):
-    def __init__(self, config_store: ConfigStore | None = None) -> None:
+    def __init__(
+        self,
+        config_store: ConfigStore | RemoteConfigStore | None = None,
+        backend_client: BackendClient | None = None,
+        controller: RemoteTradingController | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("AutoQuant - Binance Stocks 量化控制台")
         self.resize(1280, 820)
         self.setMinimumSize(1020, 680)
-        self.store = config_store or ConfigStore()
+        self.backend_client = backend_client or BackendClient()
+        self.store = config_store or RemoteConfigStore(self.backend_client)
         self.events: queue.Queue[tuple] = queue.Queue(maxsize=1000)
         self.config = self._load_config()
 
@@ -371,7 +382,8 @@ class AutoQuantApp(QMainWindow):
         self._account_refresh_inflight = False
         self._closed = False
 
-        self.controller = TradingController(
+        self.controller = controller or RemoteTradingController(
+            self.backend_client,
             snapshot_callback=lambda snapshot: self._enqueue_event(("snapshot", snapshot)),
             log_callback=lambda level, symbol, message: self._enqueue_event(
                 ("log", level, symbol, message)
@@ -392,7 +404,7 @@ class AutoQuantApp(QMainWindow):
     def _load_config(self) -> AppConfig:
         try:
             return self.store.load()
-        except ValueError as exc:
+        except Exception as exc:
             message = str(exc)
             QTimer.singleShot(0, lambda: show_warning("配置警告", message))
             return AppConfig()
@@ -589,7 +601,7 @@ class AutoQuantApp(QMainWindow):
         warning = QLabel(
             "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的多头，"
             "不会建立空头。“停止并平仓”会卖出全部程序多头；未知订单会锁定实盘。"
-            "API Key/Secret 会随配置保存，请保护本地配置文件。"
+            "API Key/Secret 会保存到后端服务器，请保护服务器配置和访问令牌。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(f"color: {COLORS['warning']};")
@@ -970,11 +982,11 @@ class AutoQuantApp(QMainWindow):
         config.validate()
         return config
 
-    def _runner_config(self) -> RunnerConfig:
+    def _runner_config(self) -> RemoteRunnerConfig:
         app = self._current_config()
         openai_api_key = self.openai_api_key_var.get().strip()
         deepseek_api_key = self.deepseek_api_key_var.get().strip()
-        return RunnerConfig(
+        return RemoteRunnerConfig(
             app=app, api_key=self.api_key_var.get(), api_secret=self.api_secret_var.get(),
             openai_api_key=openai_api_key, deepseek_api_key=deepseek_api_key,
         )
@@ -1017,7 +1029,12 @@ class AutoQuantApp(QMainWindow):
 
     def _remove_selected(self) -> None:
         selected = list(self.tree.selection())
-        if self.controller.stop_targets(selected):
+        try:
+            stop_targets = self.controller.stop_targets(selected)
+        except Exception as exc:
+            show_error("后端不可用", str(exc))
+            return
+        if stop_targets:
             show_info(
                 "请先停止并平仓",
                 "运行中或仍有程序持仓的股票不能直接移除。请先使用“停止所选并平仓”。",
@@ -1030,7 +1047,15 @@ class AutoQuantApp(QMainWindow):
         selected = self._selected_symbols()
         if not selected:
             return
-        locked = [symbol for symbol in selected if self.controller.unknown_live_orders(symbol) > 0]
+        try:
+            locked = [
+                symbol
+                for symbol in selected
+                if self.controller.unknown_live_orders(symbol) > 0
+            ]
+        except Exception as exc:
+            show_error("后端不可用", str(exc))
+            return
         if not locked:
             show_info("没有锁定", "所选股票没有未知实盘订单。")
             return
@@ -1069,11 +1094,14 @@ class AutoQuantApp(QMainWindow):
             return
         if config.app.trading_mode == "REAL" and not self._confirm_real_mode(config.app):
             return
-        for symbol in symbols:
-            self.controller.start(
-                symbol,
-                replace(config, manual_direction=self._manual_direction(symbol)),
-            )
+        try:
+            for symbol in symbols:
+                self.controller.start(
+                    symbol,
+                    replace(config, manual_direction=self._manual_direction(symbol)),
+                )
+        except Exception as exc:
+            show_error("启动失败", str(exc))
 
     def _stop_selected(self) -> None:
         self._stop_symbols(self._selected_symbols())
@@ -1084,7 +1112,11 @@ class AutoQuantApp(QMainWindow):
     def _stop_symbols(self, symbols: list[str]) -> None:
         if not symbols:
             return
-        targets = self.controller.stop_targets(symbols)
+        try:
+            targets = self.controller.stop_targets(symbols)
+        except Exception as exc:
+            show_error("后端不可用", str(exc))
+            return
         if not targets:
             show_info("无需停止", "所选股票均已停止且没有程序多头持仓。")
             return
@@ -1111,8 +1143,11 @@ class AutoQuantApp(QMainWindow):
         )
         if not confirmed:
             return
-        for symbol, _mode, _quantity in targets:
-            self.controller.stop(symbol, close_position=True)
+        try:
+            for symbol, _mode, _quantity in targets:
+                self.controller.stop(symbol, close_position=True)
+        except Exception as exc:
+            show_error("停止失败", str(exc))
 
     def _confirm_real_mode(self, config: AppConfig) -> bool:
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
@@ -1151,10 +1186,7 @@ class AutoQuantApp(QMainWindow):
 
         def check() -> None:
             try:
-                provider = create_provider(runner_config)
-                info = provider.check_symbol(symbol)
-                validation = info.get("validation", "")
-                message = validation or f"连接成功；{symbol} tradability={info.get('tradability', 'UNKNOWN')}"
+                message = self.controller.check_connection(symbol, runner_config)
                 self._enqueue_event(("dialog", "info", "连接检查", message))
                 self._enqueue_event(("log", "INFO", symbol, message))
                 self._enqueue_event(("account_refresh",))
@@ -1164,10 +1196,15 @@ class AutoQuantApp(QMainWindow):
 
         threading.Thread(target=check, name="api-check", daemon=True).start()
 
-    def _account_runner_config(self) -> RunnerConfig:
-        account_config = replace(self.config, trading_mode=self.mode_var.get().strip().upper())
+    def _account_runner_config(self) -> RemoteRunnerConfig:
+        account_config = replace(
+            self.config,
+            trading_mode=self.mode_var.get().strip().upper(),
+            api_key=self.api_key_var.get().strip(),
+            api_secret=self.api_secret_var.get().strip(),
+        )
         account_config.validate()
-        return RunnerConfig(
+        return RemoteRunnerConfig(
             app=account_config, api_key=self.api_key_var.get().strip(),
             api_secret=self.api_secret_var.get().strip(),
         )
@@ -1186,56 +1223,17 @@ class AutoQuantApp(QMainWindow):
         except (TypeError, ValueError) as exc:
             self.account_status_var.set(f"账户概览配置无效：{exc}")
             return
-        paper = runner_config.app.trading_mode != "REAL"
         prices = dict(self._latest_prices)
-        if not runner_config.api_key or not runner_config.api_secret:
-            performance = self.controller.portfolio_performance(paper=paper, market_prices=prices)
-            ledger_name = "模拟" if paper else "实盘"
-            self._apply_account_overview(AccountOverview(
-                total_balance=None, realized_pnl=performance.realized_pnl,
-                unrealized_pnl=performance.unrealized_pnl,
-                missing_price_symbols=performance.missing_price_symbols,
-                message="请在“运行配置”页填写 API Key 和 Secret，"
-                f"才能查询 Binance 账户总金额；盈亏来自{ledger_name}订单账本",
-                updated_at=int(time.time() * 1000),
-            ))
-            return
         self._account_refresh_inflight = True
-        self.account_status_var.set("正在刷新 Binance 钱包余额和程序盈亏…")
+        self.account_status_var.set("正在通过后端刷新 Binance 钱包余额和程序盈亏…")
 
         def refresh() -> None:
-            total_balance: Decimal | None = None
-            errors: list[str] = []
             try:
-                provider = create_provider(runner_config)
-                try:
-                    total_balance = provider.get_account_total("USDC")
-                except Exception as exc:
-                    errors.append(f"账户总金额不可用：{exc}")
-                for symbol in self.controller.open_position_symbols(paper=paper):
-                    try:
-                        prices[symbol] = provider.get_latest_price(symbol)
-                    except Exception as exc:
-                        prices.pop(symbol, None)
-                        errors.append(f"{symbol} 报价不可用：{exc}")
-                performance = self.controller.portfolio_performance(paper=paper, market_prices=prices)
-                message = "；".join(errors) if errors else (
-                    "账户总金额来自 Binance 全部激活钱包的 USDC 折算；"
-                    f"盈亏仅统计本程序{'模拟' if paper else '实盘'}订单"
-                )
-                overview = AccountOverview(
-                    total_balance=total_balance, realized_pnl=performance.realized_pnl,
-                    unrealized_pnl=performance.unrealized_pnl,
-                    missing_price_symbols=performance.missing_price_symbols,
-                    message=message, updated_at=int(time.time() * 1000),
-                )
+                overview = self.controller.account_overview(runner_config, prices)
             except Exception as exc:
-                performance = self.controller.portfolio_performance(paper=paper, market_prices=prices)
                 overview = AccountOverview(
-                    total_balance=None, realized_pnl=performance.realized_pnl,
-                    unrealized_pnl=performance.unrealized_pnl,
-                    missing_price_symbols=performance.missing_price_symbols,
-                    message=f"账户概览刷新失败：{exc}", updated_at=int(time.time() * 1000),
+                    message=f"后端账户概览刷新失败：{exc}",
+                    updated_at=int(time.time() * 1000),
                 )
             self._enqueue_event(("account", overview))
 
@@ -1344,46 +1342,10 @@ class AutoQuantApp(QMainWindow):
         return "-" if value is None else format(value, "f")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        targets = self.controller.stop_targets()
-        if targets:
-            details = "\n".join(
-                f"{symbol}：{mode}，程序多头 {quantity}"
-                for symbol, mode, quantity in targets
-            )
-            if not ask_yes_no(
-                "确认退出并强制平仓",
-                "退出前将停止所有量化线程，并尝试平掉本地账本记录的全部多头。"
-                "REAL 持仓会提交真实 MARKET SELL。\n\n"
-                f"{details}\n\n确认继续退出吗？",
-            ):
-                event.ignore()
-                return
-            self.controller.stop_all(close_position=True)
-            if not self.controller.wait_for_all(timeout=15.0):
-                show_error(
-                    "尚未停止完成",
-                    "部分量化线程或平仓订单仍在处理，程序暂不退出。请稍后重试并查看日志。",
-                )
-                event.ignore()
-                return
-            remaining = [
-                f"{symbol}({mode})={quantity}"
-                for symbol, mode, quantity in self.controller.stop_targets()
-            ]
-            if remaining:
-                show_error(
-                    "平仓未完成",
-                    "以下程序持仓或订单状态未能确认清零，程序暂不退出：\n"
-                    + "\n".join(remaining)
-                    + "\n\n请查看日志并登录 Binance 核对。",
-                )
-                event.ignore()
-                return
         self._closed = True
         self.event_timer.stop()
         self.account_timer.stop()
-        self.controller.stop_all()
-        self.controller.join_all(timeout_per_runner=0.5)
+        self.controller.close()
         event.accept()
 
 

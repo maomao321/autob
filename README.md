@@ -1,6 +1,6 @@
-# AutoQuant：Binance Stocks 桌面量化程序
+# AutoQuant：Binance Stocks 前后端量化系统
 
-这是按 `需求文档.txt` 需求实现的 Python/Qt 桌面程序。界面基于 PySide6，可在 Windows、macOS 和 Linux 上运行。程序支持按股票独立启动、停止，供应商和策略均通过工厂隔离；本版接入 Binance Stocks Trading，并实现“手动开仓方向 + 五分钟 MA5/前一根 K 线突破”策略。
+系统已经拆分为独立后端服务和 PySide6/Qt 前端。后端持有 Binance 连接、策略线程、风控、配置和 SQLite 订单账本，可以在服务器持续运行；前端只通过带鉴权的 REST API 读取状态和发送控制命令，关闭前端不会停止策略或触发平仓。
 
 程序默认使用 `PAPER` 模拟交易。除非在界面中主动切换为 `REAL` 并再次确认，否则不会向 Binance 提交真实订单。
 
@@ -8,16 +8,53 @@
 
 要求 Python 3.10 或更高版本。安装项目时会一并安装 PySide6 Qt 运行时。
 
-```powershell
-py -m pip install -e .
-py -m autoquant
+```bash
+python3 -m pip install -e .
 ```
 
-Windows 可以双击 `run.bat`，macOS 可以双击 `run.command`（首次使用若无执行权限，先运行 `chmod +x run.command packaging/build_macos.sh`）。这两个启动脚本只从当前项目源码运行 `autoquant`，不会启动 `dist` 中的构建产物。首次运行会通过系统 Python 创建项目 `.venv`；如果缺少 PySide6 等运行依赖，脚本会自动执行 `pip install -e .` 安装到该虚拟环境。安装后还可执行：
+先在服务器启动后端：
 
-```powershell
+```bash
+export AUTOQUANT_API_TOKEN='请替换为足够长的随机令牌'
+autoquant-server --host 127.0.0.1 --port 8765
+```
+
+再在前端电脑启动 Qt 客户端：
+
+```bash
+export AUTOQUANT_SERVER_URL='http://127.0.0.1:8765'
+export AUTOQUANT_API_TOKEN='与服务器相同的令牌'
 autoquant
 ```
+
+同一台电脑运行时，可以分别双击 `run-server.command` 和 `run.command`；Windows 对应 `run-server.bat` 和 `run.bat`。默认仅监听本机回环地址，本机模式可以不设置令牌。
+
+### 远程服务器部署
+
+生产环境建议让后端继续监听 `127.0.0.1`，再通过带 HTTPS 的反向代理或 SSH 隧道访问。不要把无 TLS 的交易接口直接暴露到公网。若确实使用 `--host 0.0.0.0`，服务会强制要求设置 `AUTOQUANT_API_TOKEN`。前端也会默认拒绝连接非本机的明文 HTTP 地址；仅受信任内网临时调试可显式设置 `AUTOQUANT_ALLOW_INSECURE_HTTP=1`。
+
+Linux 可参考 `packaging/autoquant.service.example` 配置 systemd。后端收到退出信号时只停止本进程内的行情线程，不会自动提交平仓订单；已启动的 PAPER 策略会记录在 `running.json` 并在服务重启后恢复。REAL 策略只有明确设置 `AUTOQUANT_RESTORE_REAL=1` 才会自动恢复，避免服务器重启后未经授权恢复实盘交易。
+
+后端健康检查：
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+### REST API
+
+除 `/health` 外，设置令牌后所有接口都要求请求头 `Authorization: Bearer <token>`。当前前端使用以下版本化接口：
+
+- `GET /api/v1/config`、`PUT /api/v1/config`：读取或更新服务器配置，读取结果只返回凭据掩码。
+- `GET /api/v1/status?after_log=<序号>`：增量读取运行快照与日志。
+- `POST /api/v1/runners/{symbol}/start`：按指定手动方向启动服务器策略。
+- `POST /api/v1/runners/{symbol}/stop`：停止策略，可明确要求按服务器账本持仓平仓。
+- `POST /api/v1/stop-targets`：查询运行中、持仓中或存在阻塞订单的目标。
+- `POST /api/v1/connection/check`：由服务器检查 Binance API 和股票代码。
+- `POST /api/v1/account/overview`：由服务器查询钱包并计算程序账本盈亏。
+- `GET /api/v1/runners/{symbol}/unknown-orders`、`POST /api/v1/runners/{symbol}/resolve-unknown`：查询或人工确认后解除未知实盘订单锁。
+
+控制类接口不会因为 HTTP 客户端断开而取消已经启动的策略。停止并平仓仍必须由前端显式调用，关闭前端本身只会停止状态轮询。
 
 ### Windows EXE
 
@@ -50,13 +87,13 @@ chmod +x packaging/build_macos.sh run.command
 
 交易监控表格的“手动方向”是唯一的开仓方向来源，支持按股票选择 `LONG`、`SHORT` 或 `FLAT`。该选择在启动股票时读取并锁定，停止后才可修改，并随“保存配置”写入配置文件。`FLAT` 表示禁止该股票产生普通开仓信号，是默认值。
 
-配置保存在 `%LOCALAPPDATA%\AutoQuant\config.json`。Binance API Key/Secret 优先从配置文件的 `api_key` / `api_secret` 读取；字段缺失或为空时，回退到环境变量。点击界面的“保存配置”会将当前 Binance 凭据以明文写入该文件，请妥善保护文件权限。也可将配置中的凭据留空，并在启动前设置环境变量：
+配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。Binance API Key/Secret 不会通过读取配置接口回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
 $env:BINANCE_API_SECRET = "你的 API Secret"
-$env:OPENAI_API_KEY = "你的 OpenAI API Key"
-py -m autoquant
+$env:AUTOQUANT_API_TOKEN = "前后端共享的随机令牌"
+py -m autoquant.server
 ```
 
 ### 手动开仓方向
@@ -65,9 +102,9 @@ py -m autoquant
 - `SHORT`：只允许五分钟做空/卖出信号；REAL 模式仍只会平掉程序确认的多头，不建立空头。
 - `FLAT`：不产生普通开仓信号。
 
-程序不再使用历史日线、当日日线或大模型生成开仓方向，也不会为策略预热请求 Nasdaq 历史日线或分钟数据。OpenAI Key 仍可用于手动上传交易经验库；OpenAI/DeepSeek Key 不写入配置文件。Binance API Key/Secret 会在点击“保存配置”后写入本地配置文件。
+程序不再使用历史日线、当日日线或大模型生成开仓方向，也不会为策略预热请求 Nasdaq 历史日线或分钟数据。OpenAI Key 仍可用于手动上传交易经验库；OpenAI/DeepSeek Key 不写入配置文件。Binance API Key/Secret 会在点击“保存配置”后写入后端服务器配置。
 
-订单保护账本保存在 `%LOCALAPPDATA%\AutoQuant\orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交数量和程序持仓，不保存 API 凭据。该文件用于恢复交易次数、持仓和资金限额，不能在交易运行期间删除或修改。
+订单保护账本保存在后端服务器的 `orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交数量和程序持仓，不保存 API 凭据。该文件用于恢复交易次数、持仓和资金限额，不能在后端运行期间删除或修改。
 
 “交易监控”页顶部每 30 秒刷新一次账户概览，也可以手动刷新：
 
@@ -132,7 +169,10 @@ py -m autoquant
 - `autoquant/experience.py`：外部 Excel/CSV 交易与K线导入、形态标准化、本地经验库及 OpenAI Vector Store 上传。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 - `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
-- `autoquant/app.py`：PySide6/Qt 桌面界面。
+- `autoquant/backend.py`：常驻后端运行时、配置、状态快照与日志缓存。
+- `autoquant/server.py`：带 Bearer Token 鉴权的 REST 服务。
+- `autoquant/client.py`：前端 HTTP 客户端和远程控制器。
+- `autoquant/app.py`：只通过后端接口工作的 PySide6/Qt 前端。
 
 添加供应商或策略时，实现相应抽象接口，并在 `autoquant/engine.py` 的工厂函数中注册即可。
 

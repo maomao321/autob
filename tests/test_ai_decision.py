@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from email.utils import format_datetime
 
 from autoquant.ai_decision import (
     DecisionError,
@@ -87,11 +89,14 @@ class AiDecisionTests(unittest.TestCase):
 
         def get_bytes(url, _timeout):
             if "news.google.com" in url:
+                published = format_datetime(
+                    datetime.now(timezone.utc) - timedelta(days=1), usegmt=True
+                )
                 return (
                     "<rss><channel><item><title>AAPL launches product</title>"
                     "<link>https://example.com/story</link>"
                     "<source>Example</source>"
-                    "<pubDate>Thu, 13 Aug 2026 10:00:00 GMT</pubDate>"
+                    f"<pubDate>{published}</pubDate>"
                     "</item></channel></rss>"
                 ).encode()
             return json.dumps(

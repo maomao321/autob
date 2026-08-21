@@ -559,7 +559,7 @@ def _post_json(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "AutoQuant/0.4.0",
+            "User-Agent": "AutoQuant/0.5.0",
         },
         method="POST",
     )
@@ -604,7 +604,7 @@ def _get_bytes(url: str, timeout_seconds: int) -> bytes:
                 "application/json, application/rss+xml, application/xml, "
                 "text/xml, text/csv"
             ),
-            "User-Agent": "AutoQuant/0.4.0",
+            "User-Agent": "AutoQuant/0.5.0",
         },
         method="GET",
     )
