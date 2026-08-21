@@ -38,7 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant.config import MAX_SYMBOLS, AppConfig, ConfigStore, normalize_symbols
+from autoquant.config import (
+    MAX_SYMBOLS,
+    AppConfig,
+    ConfigStore,
+    credential_or_environment,
+    normalize_symbols,
+)
 from autoquant.engine import RunnerConfig, TradingController, create_provider
 from autoquant.experience import (
     ExperienceError,
@@ -282,8 +288,12 @@ class AutoQuantApp(QMainWindow):
         self.provider_var = TextValue(self.config.provider)
         self.strategy_var = TextValue(self.config.strategy)
         self.mode_var = TextValue(self.config.trading_mode)
-        self.api_key_var = TextValue(os.environ.get("BINANCE_API_KEY", ""))
-        self.api_secret_var = TextValue(os.environ.get("BINANCE_API_SECRET", ""))
+        self.api_key_var = TextValue(
+            credential_or_environment(self.config.api_key, "BINANCE_API_KEY")
+        )
+        self.api_secret_var = TextValue(
+            credential_or_environment(self.config.api_secret, "BINANCE_API_SECRET")
+        )
         self.ma_var = TextValue(str(self.config.ma_period))
         self.buy_notional_var = TextValue(self.config.buy_notional)
         self.sell_quantity_var = TextValue(self.config.sell_quantity)
@@ -520,7 +530,7 @@ class AutoQuantApp(QMainWindow):
         self._grid_field(grid, 0, 0, "API 供应商", self._combo(self.provider_var, ["binance_stocks"]))
         self._grid_field(grid, 0, 2, "量化策略", self._combo(self.strategy_var, ["five_minute_breakout"]))
         self._grid_field(grid, 0, 4, "交易模式", self._combo(self.mode_var, ["PAPER", "REAL"]))
-        save_button = self._button("保存非敏感配置", self._save_config, primary=True)
+        save_button = self._button("保存配置", self._save_config, primary=True)
         grid.addWidget(save_button, 0, 6, 1, 2)
 
         self._grid_field(grid, 1, 0, "API Key", self._line(self.api_key_var), span=2)
@@ -903,6 +913,8 @@ class AutoQuantApp(QMainWindow):
     def _current_config(self) -> AppConfig:
         config = AppConfig(
             symbols=list(self.tree.get_children()), provider=self.provider_var.get(),
+            api_key=self.api_key_var.get().strip(),
+            api_secret=self.api_secret_var.get().strip(),
             strategy=self.strategy_var.get(), trading_mode=self.mode_var.get(),
             ma_period=int(self.ma_var.get()), buy_notional=self.buy_notional_var.get().strip(),
             sell_quantity=self.sell_quantity_var.get().strip(),

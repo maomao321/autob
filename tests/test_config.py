@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from autoquant.config import AppConfig, ConfigStore, normalize_symbols
+from autoquant.config import (
+    AppConfig,
+    ConfigStore,
+    credential_or_environment,
+    normalize_symbols,
+)
 
 
 class ConfigTests(unittest.TestCase):
     def test_normalize_symbols_deduplicates_and_uppercases(self) -> None:
         self.assertEqual(["AAPL", "BRK.B"], normalize_symbols([" aapl ", "BRK.B", "AAPL"]))
 
-    def test_config_round_trip_does_not_have_credentials(self) -> None:
+    def test_config_round_trip_includes_binance_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             store = ConfigStore(path)
             config = AppConfig(
                 symbols=["AAPL", "NVDA"],
+                api_key="binance-key",
+                api_secret="binance-secret",
                 ma_period=8,
                 max_order_notional="250",
                 ai_provider="dual",
@@ -30,9 +38,22 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(8, loaded.ma_period)
             self.assertEqual("DUAL", loaded.ai_provider)
             self.assertEqual("0.75", loaded.ai_min_confidence)
+            self.assertEqual("binance-key", loaded.api_key)
+            self.assertEqual("binance-secret", loaded.api_secret)
             content = path.read_text(encoding="utf-8")
-            self.assertNotIn("api_secret", content.lower())
-            self.assertNotIn("api_key", content.lower())
+            self.assertIn('"api_key": "binance-key"', content)
+            self.assertIn('"api_secret": "binance-secret"', content)
+
+    def test_configured_credential_takes_priority_over_environment(self) -> None:
+        with patch.dict("os.environ", {"BINANCE_API_KEY": "environment-key"}):
+            self.assertEqual(
+                "configured-key",
+                credential_or_environment(" configured-key ", "BINANCE_API_KEY"),
+            )
+            self.assertEqual(
+                "environment-key",
+                credential_or_environment("", "BINANCE_API_KEY"),
+            )
 
     def test_invalid_live_parameters_are_rejected(self) -> None:
         config = AppConfig(symbols=["AAPL"], trading_mode="REAL", buy_notional="0")

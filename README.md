@@ -48,7 +48,7 @@ chmod +x packaging/build_macos.sh run.command
 4. 选择股票后点击“启动所选”，或点击“全部启动”。每只股票有独立运行器，可分别停止。
 5. 查看状态、程序持仓、持仓均价、未决订单、今日买入金额和日志。
 
-非敏感配置保存在 `%LOCALAPPDATA%\AutoQuant\config.json`。API Key/Secret 不写入配置文件；可以每次在界面填写，也可在启动前设置环境变量：
+配置保存在 `%LOCALAPPDATA%\AutoQuant\config.json`。Binance API Key/Secret 优先从配置文件的 `api_key` / `api_secret` 读取；字段缺失或为空时，回退到环境变量。点击界面的“保存配置”会将当前 Binance 凭据以明文写入该文件，请妥善保护文件权限。也可将配置中的凭据留空，并在启动前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
@@ -67,7 +67,7 @@ py -m autoquant
 
 每个股票在收到新的 Binance 日 K 线后只决策一次。上下文包含近期新闻标题、`SPY/QQQ` 大盘日线统计、个股日线统计以及 Binance 当前日线；公开历史价格来自 Nasdaq 网站的历史行情端点，新闻来自 Google News RSS。大模型只能设置方向过滤器，不能修改金额、止损止盈，也不能直接下单。上下文获取失败、API 超时、返回字段非法、模型拒绝、低置信度或双模型不一致时，程序会安全降级为 `FLAT`，当天不新开仓。
 
-OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。股票代码、新闻和走势摘要会发送给选择的大模型服务；同时程序会访问 Nasdaq 与 Google News。使用前应自行确认这些服务的账号权限、费用、数据许可和所在地区可用性。公开数据和模型结论都可能延迟或错误，不能替代交易所行情、人工核对或风险管理。
+OpenAI/DeepSeek Key 只驻留内存，不写入配置文件。Binance API Key/Secret 会在点击“保存配置”后写入本地配置文件。股票代码、新闻和走势摘要会发送给选择的大模型服务；同时程序会访问 Nasdaq 与 Google News。使用前应自行确认这些服务的账号权限、费用、数据许可和所在地区可用性。公开数据和模型结论都可能延迟或错误，不能替代交易所行情、人工核对或风险管理。
 
 订单保护账本保存在 `%LOCALAPPDATA%\AutoQuant\orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交数量和程序持仓，不保存 API 凭据。该文件用于恢复交易次数、持仓和资金限额，不能在交易运行期间删除或修改。
 

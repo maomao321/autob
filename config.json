@@ -1,11 +1,11 @@
 {
   "symbols": [
     "AAPL",
-    "NVDA"
+    "DRAM"
   ],
   "provider": "binance_stocks",
-  "api_key": "",
-  "api_secret": "",
+  "api_key": "d3lt7jkpt5lkLACM8WhGfrqcXYzhfLahVp3of0SBBlMpQiyYREaQNguaeOmAg2eg",
+  "api_secret": "3QCCfo05FjMHIH8NVR3vBPiIOP8Wf70RcubzWYdGb2v5Iy5UWr6b4YLQutR87ULN",
   "strategy": "five_minute_breakout",
   "trading_mode": "PAPER",
   "ma_period": 5,

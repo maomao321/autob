@@ -30,6 +30,8 @@ MAX_SYMBOLS = 20
 class AppConfig:
     symbols: list[str] = field(default_factory=lambda: ["AAPL"])
     provider: str = "binance_stocks"
+    api_key: str = ""
+    api_secret: str = ""
     strategy: str = "five_minute_breakout"
     trading_mode: str = "PAPER"
     ma_period: int = 5
@@ -54,6 +56,8 @@ class AppConfig:
     recv_window: int = 5000
 
     def validate(self) -> None:
+        self.api_key = str(self.api_key).strip()
+        self.api_secret = str(self.api_secret).strip()
         if not isinstance(self.symbols, list):
             raise ValueError("symbols 必须是股票代码列表")
         self.symbols = normalize_symbols(self.symbols)
@@ -185,6 +189,14 @@ def default_config_path() -> Path:
     if root:
         return Path(root) / "AutoQuant" / "config.json"
     return Path.home() / ".autoquant" / "config.json"
+
+
+def credential_or_environment(configured_value: str, environment_name: str) -> str:
+    """Prefer a configured credential and fall back to its environment variable."""
+    configured = str(configured_value).strip()
+    if configured:
+        return configured
+    return os.environ.get(environment_name, "").strip()
 
 
 class ConfigStore:
