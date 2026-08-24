@@ -8,6 +8,7 @@
     "NVDA": "FLAT"
   },
   "provider": "binance_stocks",
+  "leverage": 1,
   "api_key": "",
   "api_secret": "",
   "strategy": "five_minute_breakout",

@@ -52,6 +52,7 @@ class OrderRecord:
     filled_quantity: Decimal
     average_price: Decimal
     fee: Decimal
+    reduce_only: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +105,8 @@ class OrderLedger:
                     requested_quantity TEXT NOT NULL DEFAULT '0',
                     filled_quantity TEXT NOT NULL DEFAULT '0',
                     average_price TEXT NOT NULL DEFAULT '0',
-                    fee TEXT NOT NULL DEFAULT '0'
+                    fee TEXT NOT NULL DEFAULT '0',
+                    reduce_only INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -142,6 +144,16 @@ class OrderLedger:
                     "ALTER TABLE orders ADD COLUMN fee "
                     "TEXT NOT NULL DEFAULT '0'"
                 )
+            if "reduce_only" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE orders ADD COLUMN reduce_only "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                # Older versions only supported long positions, so every
+                # historical SELL was a long-position reduction.
+                connection.execute(
+                    "UPDATE orders SET reduce_only = 1 WHERE side = 'SELL'"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_orders_symbol_day "
                 "ON orders(symbol, trading_day)"
@@ -176,7 +188,7 @@ class OrderLedger:
             # both observe the same remaining allowance before either inserts.
             connection.execute("BEGIN IMMEDIATE")
             requested_notional = (
-                order.buy_notional if order.side is Side.BUY else Decimal("0")
+                Decimal("0") if order.reduce_only else order.buy_notional
             )
             blocking_statuses = sorted(
                 RECONCILABLE_STATUSES | {"SUBMITTING", "UNKNOWN"}
@@ -195,36 +207,49 @@ class OrderLedger:
                 raise RiskLimitError(
                     f"{order.symbol} 仍有 {blocking['status']} 订单，禁止重复下单"
                 )
-            if not paper:
-                rows = connection.execute(
-                    """
-                    SELECT side, filled_quantity, average_price
-                    FROM orders
-                    WHERE symbol = ? AND paper = 0
-                      AND CAST(filled_quantity AS REAL) > 0
-                    ORDER BY created_at, client_order_id
-                    """,
-                    (order.symbol,),
-                ).fetchall()
-                position = self._position_summary_from_rows(rows)
-                if order.side is Side.BUY and position.quantity > 0:
+            rows = connection.execute(
+                """
+                SELECT side, filled_quantity, average_price, reduce_only
+                FROM orders
+                WHERE symbol = ? AND paper = ?
+                  AND CAST(filled_quantity AS REAL) > 0
+                ORDER BY created_at, client_order_id
+                """,
+                (order.symbol, int(paper)),
+            ).fetchall()
+            position = self._position_summary_from_rows(rows)
+            quantity = position.quantity
+            if order.reduce_only:
+                if quantity == 0:
                     raise RiskLimitError(
-                        f"{order.symbol} 已有程序持仓，禁止重复买入"
+                        f"{order.symbol} 没有程序持仓，不能提交减仓单"
                     )
-                if order.side is Side.SELL:
-                    if position.quantity <= 0:
-                        raise RiskLimitError(
-                            f"{order.symbol} 没有程序持仓，禁止卖空"
-                        )
-                    if order.sell_quantity > position.quantity:
-                        raise RiskLimitError(
-                            f"{order.symbol} 卖出数量超过程序持仓"
-                        )
+                expected_side = Side.SELL if quantity > 0 else Side.BUY
+                if order.side is not expected_side:
+                    raise RiskLimitError(
+                        f"{order.symbol} 当前为"
+                        f"{'多头' if quantity > 0 else '空头'}持仓，"
+                        f"减仓方向必须是 {expected_side.value}"
+                    )
+                if order.sell_quantity > abs(quantity):
+                    raise RiskLimitError(
+                        f"{order.symbol} 减仓数量超过程序持仓"
+                    )
+            else:
+                if quantity != 0:
+                    raise RiskLimitError(
+                        f"{order.symbol} 已有程序"
+                        f"{'多头' if quantity > 0 else '空头'}持仓，禁止双向或重复开仓"
+                    )
+                if order.side is Side.SELL and not order.allow_short:
+                    raise RiskLimitError(
+                        f"{order.symbol} 当前供应商不允许建立空头"
+                    )
             if max_daily_buy_notional is not None and requested_notional > 0:
                 rows = connection.execute(
                     """
                     SELECT requested_notional FROM orders
-                    WHERE trading_day = ? AND paper = ? AND side = 'BUY'
+                    WHERE trading_day = ? AND paper = ? AND reduce_only = 0
                       AND status != 'REJECTED'
                       AND status != 'MANUALLY_RESOLVED'
                     """,
@@ -236,7 +261,7 @@ class OrderLedger:
                 )
                 if reserved + requested_notional > max_daily_buy_notional:
                     raise RiskLimitError(
-                        f"账户当日买入金额 {reserved + requested_notional} "
+                        f"账户当日开仓金额 {reserved + requested_notional} "
                         f"将超过上限 {max_daily_buy_notional}"
                     )
             connection.execute(
@@ -245,8 +270,8 @@ class OrderLedger:
                     client_order_id, symbol, side, trading_day, status,
                     order_id, paper, created_at, updated_at, message,
                     requested_notional, requested_quantity,
-                    filled_quantity, average_price
-                ) VALUES (?, ?, ?, ?, 'SUBMITTING', '', ?, ?, ?, '', ?, ?, '0', '0')
+                    filled_quantity, average_price, reduce_only
+                ) VALUES (?, ?, ?, ?, 'SUBMITTING', '', ?, ?, ?, '', ?, ?, '0', '0', ?)
                 """,
                 (
                     order.client_order_id,
@@ -257,7 +282,8 @@ class OrderLedger:
                     now,
                     now,
                     str(requested_notional),
-                    str(order.sell_quantity if order.side is Side.SELL else 0),
+                    str(order.sell_quantity if order.reduce_only else 0),
+                    int(order.reduce_only),
                 ),
             )
 
@@ -371,6 +397,7 @@ class OrderLedger:
                 SELECT COUNT(*) AS total
                 FROM orders
                 WHERE symbol = ? AND trading_day = ?
+                  AND reduce_only = 0
                   AND status IN ({placeholders})
                 """,
                 (symbol, trading_day, *statuses),
@@ -460,7 +487,7 @@ class OrderLedger:
             rows = connection.execute(
                 """
                 SELECT requested_notional FROM orders
-                WHERE trading_day = ? AND paper = ? AND side = 'BUY'
+                WHERE trading_day = ? AND paper = ? AND reduce_only = 0
                   AND status != 'REJECTED'
                   AND status != 'MANUALLY_RESOLVED'
                 """,
@@ -474,7 +501,7 @@ class OrderLedger:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT side, filled_quantity, average_price
+                SELECT side, filled_quantity, average_price, reduce_only
                 FROM orders
                 WHERE symbol = ? AND paper = ?
                   AND CAST(filled_quantity AS REAL) > 0
@@ -488,7 +515,7 @@ class OrderLedger:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT symbol, side, filled_quantity, average_price
+                SELECT symbol, side, filled_quantity, average_price, reduce_only
                 FROM orders
                 WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
                 ORDER BY symbol, created_at, client_order_id
@@ -501,7 +528,7 @@ class OrderLedger:
         return sorted(
             symbol
             for symbol, symbol_rows in grouped.items()
-            if self._position_summary_from_rows(symbol_rows).quantity > 0
+            if self._position_summary_from_rows(symbol_rows).quantity != 0
         )
 
     def portfolio_performance(
@@ -513,44 +540,83 @@ class OrderLedger:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT symbol, side, filled_quantity, average_price, fee
+                SELECT symbol, side, filled_quantity, average_price, fee,
+                       reduce_only
                 FROM orders
                 WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
                 ORDER BY created_at, client_order_id
                 """,
                 (int(paper),),
             ).fetchall()
-        positions: dict[str, tuple[Decimal, Decimal]] = {}
+        positions: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         realized = Decimal("0")
         for row in rows:
             symbol = str(row["symbol"])
-            quantity, cost = positions.get(
-                symbol, (Decimal("0"), Decimal("0"))
+            quantity, basis, open_fees = positions.get(
+                symbol, (Decimal("0"), Decimal("0"), Decimal("0"))
             )
             filled = Decimal(row["filled_quantity"])
             price = Decimal(row["average_price"])
             fee = Decimal(row["fee"])
-            if row["side"] == Side.BUY.value:
-                quantity += filled
-                cost += filled * price + fee
-            elif quantity > 0:
-                sold = min(filled, quantity)
-                average_cost = cost / quantity
-                realized += sold * price - sold * average_cost - fee
-                quantity -= sold
-                cost -= sold * average_cost
-            positions[symbol] = (quantity, cost)
+            reduce_only = bool(row["reduce_only"])
+            delta = filled if row["side"] == Side.BUY.value else -filled
+            if not reduce_only and quantity == 0:
+                quantity = delta
+                basis = filled * price
+                open_fees = fee
+            elif not reduce_only and quantity * delta > 0:
+                quantity += delta
+                basis += filled * price
+                open_fees += fee
+            elif reduce_only and quantity * delta < 0:
+                before = abs(quantity)
+                closed = min(filled, before)
+                average_entry = basis / before if before else Decimal("0")
+                allocated_open_fee = (
+                    open_fees * closed / before if before else Decimal("0")
+                )
+                allocated_close_fee = (
+                    fee * closed / filled if filled else Decimal("0")
+                )
+                if quantity > 0:
+                    realized += (
+                        (price - average_entry) * closed
+                        - allocated_open_fee
+                        - allocated_close_fee
+                    )
+                    quantity -= closed
+                else:
+                    realized += (
+                        (average_entry - price) * closed
+                        - allocated_open_fee
+                        - allocated_close_fee
+                    )
+                    quantity += closed
+                basis -= average_entry * closed
+                open_fees -= allocated_open_fee
+                if quantity == 0:
+                    basis = Decimal("0")
+                    open_fees = Decimal("0")
+            positions[symbol] = (quantity, basis, open_fees)
 
         missing: list[str] = []
         unrealized = Decimal("0")
-        for symbol, (quantity, cost) in positions.items():
-            if quantity <= 0:
+        for symbol, (quantity, basis, open_fees) in positions.items():
+            if quantity == 0:
                 continue
             price = market_prices.get(symbol)
             if price is None or not price.is_finite() or price <= 0:
                 missing.append(symbol)
                 continue
-            unrealized += quantity * price - cost
+            average_entry = basis / abs(quantity)
+            if quantity > 0:
+                unrealized += (
+                    (price - average_entry) * quantity - open_fees
+                )
+            else:
+                unrealized += (
+                    (average_entry - price) * abs(quantity) - open_fees
+                )
         return PortfolioPerformance(
             realized_pnl=realized,
             unrealized_pnl=None if missing else unrealized,
@@ -562,21 +628,32 @@ class OrderLedger:
         rows: list[sqlite3.Row],
     ) -> PositionSummary:
         quantity = Decimal("0")
-        cost = Decimal("0")
+        basis = Decimal("0")
         for row in rows:
             filled = Decimal(row["filled_quantity"])
             price = Decimal(row["average_price"])
-            if row["side"] == Side.BUY.value:
-                quantity += filled
-                cost += filled * price
+            reduce_only = bool(row["reduce_only"])
+            delta = filled if row["side"] == Side.BUY.value else -filled
+            if not reduce_only and quantity == 0:
+                quantity = delta
+                basis = filled * price
                 continue
-            if quantity <= 0:
+            if not reduce_only and quantity * delta > 0:
+                quantity += delta
+                basis += filled * price
                 continue
-            sold = min(filled, quantity)
-            average = cost / quantity if quantity else Decimal("0")
-            quantity -= sold
-            cost -= sold * average
-        average_price = cost / quantity if quantity > 0 else Decimal("0")
+            if not reduce_only or quantity * delta >= 0:
+                continue
+            before = abs(quantity)
+            reduced = min(filled, before)
+            average = basis / before if before else Decimal("0")
+            quantity += reduced if quantity < 0 else -reduced
+            basis -= reduced * average
+            if quantity == 0:
+                basis = Decimal("0")
+        average_price = (
+            basis / abs(quantity) if quantity != 0 else Decimal("0")
+        )
         return PositionSummary(quantity=quantity, average_price=average_price)
 
     @staticmethod
@@ -597,4 +674,5 @@ class OrderLedger:
             filled_quantity=Decimal(row["filled_quantity"]),
             average_price=Decimal(row["average_price"]),
             fee=Decimal(row["fee"]),
+            reduce_only=bool(row["reduce_only"]),
         )

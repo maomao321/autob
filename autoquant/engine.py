@@ -26,6 +26,7 @@ from autoquant.models import (
     Signal,
 )
 from autoquant.providers.base import TradingProvider
+from autoquant.providers.binance_futures import BinanceFuturesProvider
 from autoquant.providers.binance_stocks import (
     BinanceStocksProvider,
     OrderRejectedError,
@@ -68,6 +69,15 @@ def create_provider(config: RunnerConfig) -> TradingProvider:
             live_trading=config.app.trading_mode == "REAL",
             rest_base_url=config.app.rest_base_url,
             websocket_base_url=config.app.websocket_base_url,
+            recv_window=config.app.recv_window,
+            include_daily_stream=config.manual_direction is Direction.UNKNOWN,
+        )
+    if config.app.provider == "binance_futures":
+        return BinanceFuturesProvider(
+            api_key=config.api_key,
+            api_secret=config.api_secret,
+            live_trading=config.app.trading_mode == "REAL",
+            leverage=config.app.leverage,
             recv_window=config.app.recv_window,
             include_daily_stream=config.manual_direction is Direction.UNKNOWN,
         )
@@ -214,7 +224,7 @@ class SymbolRunner:
             return replace(self._snapshot)
 
     def _run(self) -> None:
-        self._update(RunState.STARTING, "正在校验股票并连接行情")
+        self._update(RunState.STARTING, "正在校验标的并连接行情")
         try:
             stale_count = self.ledger.mark_stale_submitting_unknown(self.symbol)
             if stale_count:
@@ -229,7 +239,7 @@ class SymbolRunner:
             else:
                 self._log(
                     "INFO",
-                    f"股票校验通过，tradability={info.get('tradability', 'UNKNOWN')}",
+                    f"标的校验通过，tradability={info.get('tradability', 'UNKNOWN')}",
                 )
             if self.config.app.trading_mode == "REAL":
                 self._reconcile_orders()
@@ -313,13 +323,22 @@ class SymbolRunner:
                     self._refresh_market_snapshot(message)
                     continue
                 is_long_exit = signal.side is Side.SELL and position.quantity > 0
-                if signal.side is Side.BUY and position.quantity > 0 and not is_paper:
-                    message = "未下单：当前已有程序管理的多头持仓，禁止重复加仓"
+                is_short_exit = signal.side is Side.BUY and position.quantity < 0
+                is_exit = is_long_exit or is_short_exit
+                supports_short = bool(
+                    getattr(self.provider, "supports_short", False)
+                )
+                if position.quantity != 0 and not is_exit:
+                    direction = "多头" if position.quantity > 0 else "空头"
+                    message = (
+                        f"未下单：当前已有程序管理的{direction}持仓，"
+                        "禁止双向或重复开仓"
+                    )
                     self._log("ERROR", message)
                     self._refresh_market_snapshot(message)
                     continue
                 if (
-                    not is_long_exit
+                    not is_exit
                     and self.strategy.trades_today
                     >= self.config.app.max_trades_per_day
                 ):
@@ -332,18 +351,19 @@ class SymbolRunner:
                     self._log("ERROR", message)
                     self._refresh_market_snapshot(message)
                     continue
+                if (
+                    not is_exit
+                    and signal.side is Side.SELL
+                    and not supports_short
+                ):
+                    message = "未下单：当前供应商不支持建立空头"
+                    self._log("ERROR", message)
+                    self._refresh_market_snapshot(message)
+                    continue
                 if self.config.app.trading_mode == "REAL":
-                    if signal.side is Side.SELL and not is_long_exit:
-                        message = (
-                            "未下单：没有程序跟踪的多头持仓，"
-                            "实盘 SELL 不会用于建立空头"
-                        )
-                        self._log("ERROR", message)
-                        self._refresh_market_snapshot(message)
-                        continue
                     current_info = self.provider.check_symbol(self.symbol)
                     if self.stop_event.is_set():
-                        self._log("INFO", "停止请求已生效，股票校验后不再下单")
+                        self._log("INFO", "停止请求已生效，标的校验后不再下单")
                         break
                     tradability = str(current_info.get("tradability", "NONE"))
                     allowed = tradability == "BUY_SELL" or (
@@ -365,20 +385,26 @@ class SymbolRunner:
                     symbol=self.symbol,
                     side=signal.side,
                     reference_price=signal.price,
-                    buy_notional=Decimal(self.config.app.buy_notional),
+                    buy_notional=(
+                        Decimal("0")
+                        if is_exit
+                        else Decimal(self.config.app.buy_notional)
+                    ),
                     sell_quantity=(
-                        position.quantity
-                        if is_long_exit
+                        abs(position.quantity)
+                        if is_exit
                         else Decimal(self.config.app.sell_quantity)
                     ),
                     client_order_id=f"aq{uuid.uuid4().hex}",
+                    reduce_only=is_exit,
+                    allow_short=supports_short,
                 )
                 if (
-                    order.side is Side.BUY
+                    not order.reduce_only
                     and order.buy_notional
                     > Decimal(self.config.app.max_order_notional)
                 ):
-                    message = "资金风控阻止下单：买入金额超过单笔金额上限"
+                    message = "资金风控阻止下单：开仓金额超过单笔金额上限"
                     self._log("ERROR", message)
                     self._refresh_market_snapshot(message)
                     continue
@@ -432,9 +458,9 @@ class SymbolRunner:
                     self._log("ORDER", message)
                     if result.paper:
                         filled_quantity = (
-                            order.buy_notional / order.reference_price
-                            if order.side is Side.BUY
-                            else order.sell_quantity
+                            order.sell_quantity
+                            if order.reduce_only
+                            else order.buy_notional / order.reference_price
                         )
                         self.ledger.mark_lifecycle(
                             order.client_order_id,
@@ -485,7 +511,7 @@ class SymbolRunner:
             self.symbol, paper=is_paper
         ).quantity
         return bool(
-            quantity > 0
+            quantity != 0
             or self.ledger.pending_count(self.symbol, paper=is_paper)
             or self.ledger.unknown_count(self.symbol, paper=is_paper)
         )
@@ -515,17 +541,21 @@ class SymbolRunner:
             position = self.ledger.position_summary(
                 self.symbol, paper=is_paper
             )
-            if position.quantity <= 0:
+            if position.quantity == 0:
                 self._update_risk_cache(paper=is_paper)
-                self._log("INFO", "停止量化时没有程序多头持仓，无需平仓")
+                self._log("INFO", "停止量化时没有程序持仓，无需平仓")
                 return True
+
+            close_side = Side.SELL if position.quantity > 0 else Side.BUY
+            direction = "多头" if position.quantity > 0 else "空头"
 
             if not is_paper:
                 info = self.provider.check_symbol(self.symbol)
                 tradability = str(info.get("tradability", "NONE"))
-                if tradability not in {"BUY_SELL", "SELL"}:
+                if tradability not in {"BUY_SELL", close_side.value}:
                     raise RuntimeError(
-                        f"当前 tradability={tradability}，交易所不允许 SELL 平仓"
+                        f"当前 tradability={tradability}，交易所不允许 "
+                        f"{close_side.value} 平仓"
                     )
 
             reference_price = getattr(self.strategy, "last_price", None)
@@ -539,11 +569,13 @@ class SymbolRunner:
                 day_key = int(time.time() * 1000)
             order = OrderRequest(
                 symbol=self.symbol,
-                side=Side.SELL,
+                side=close_side,
                 reference_price=reference_price,
                 buy_notional=Decimal("0"),
-                sell_quantity=position.quantity,
+                sell_quantity=abs(position.quantity),
                 client_order_id=f"aq{uuid.uuid4().hex}",
+                reduce_only=True,
+                allow_short=bool(getattr(self.provider, "supports_short", False)),
             )
             self.ledger.record_submitting(
                 order,
@@ -577,7 +609,7 @@ class SymbolRunner:
             self._log(
                 "ORDER",
                 f"停止量化强制平仓订单已接受: {result.order_id}；"
-                f"SELL {order.sell_quantity}",
+                f"{order.side.value} {order.sell_quantity}（平{direction}）",
             )
             if result.paper:
                 self.ledger.mark_lifecycle(
@@ -602,7 +634,7 @@ class SymbolRunner:
                 raise RuntimeError(
                     "强制平仓订单尚未到终态，必须登录 Binance 核对持仓"
                 )
-            if self._position_quantity > 0:
+            if self._position_quantity != 0:
                 raise RuntimeError(
                     f"强制平仓后仍有 {self._position_quantity} 股程序持仓"
                 )
@@ -826,7 +858,9 @@ class SymbolRunner:
 
     def _reconcile_record(self, record: OrderRecord) -> None:
         try:
-            payload = self.provider.get_order_detail(record.order_id)
+            payload = self.provider.get_order_detail(
+                record.order_id, record.symbol
+            )
             detail = payload.get("data", payload)
             if not isinstance(detail, dict):
                 raise ValueError("订单详情返回结构不符合预期")
@@ -870,12 +904,8 @@ class SymbolRunner:
                 average_price = quote_quantity / filled_quantity
             if status == "FILLED" and filled_quantity <= 0:
                 raise ValueError("已成交订单缺少成交数量，保持安全锁定")
-            if (
-                record.side == Side.BUY.value
-                and filled_quantity > 0
-                and average_price <= 0
-            ):
-                raise ValueError("买入订单缺少成交均价，保持安全锁定")
+            if filled_quantity > 0 and average_price <= 0:
+                raise ValueError("成交订单缺少成交均价，保持安全锁定")
             self.ledger.mark_lifecycle(
                 record.client_order_id,
                 status,
@@ -916,31 +946,42 @@ class SymbolRunner:
             return None
         quantity = self._position_quantity
         average_price = self._average_entry_price
-        if quantity <= 0 or average_price <= 0:
+        if quantity == 0 or average_price <= 0:
             return None
-        stop_price = average_price * (
-            Decimal("1")
-            - Decimal(self.config.app.stop_loss_percent) / Decimal("100")
-        )
-        take_price = average_price * (
-            Decimal("1")
-            + Decimal(self.config.app.take_profit_percent) / Decimal("100")
-        )
-        if bar.close <= stop_price:
-            reason = (
-                f"风险止损：当前价 {bar.close} <= 止损价 {stop_price}，"
-                f"平掉 {quantity} 股多头"
-            )
-        elif bar.close >= take_price:
-            reason = (
-                f"风险止盈：当前价 {bar.close} >= 止盈价 {take_price}，"
-                f"平掉 {quantity} 股多头"
-            )
+        stop_percent = Decimal(self.config.app.stop_loss_percent) / Decimal("100")
+        take_percent = Decimal(self.config.app.take_profit_percent) / Decimal("100")
+        if quantity > 0:
+            stop_price = average_price * (Decimal("1") - stop_percent)
+            take_price = average_price * (Decimal("1") + take_percent)
+            side = Side.SELL
+            direction = "多头"
+            if bar.close <= stop_price:
+                trigger = f"当前价 {bar.close} <= 止损价 {stop_price}"
+                label = "止损"
+            elif bar.close >= take_price:
+                trigger = f"当前价 {bar.close} >= 止盈价 {take_price}"
+                label = "止盈"
+            else:
+                return None
         else:
-            return None
+            stop_price = average_price * (Decimal("1") + stop_percent)
+            take_price = average_price * (Decimal("1") - take_percent)
+            side = Side.BUY
+            direction = "空头"
+            if bar.close >= stop_price:
+                trigger = f"当前价 {bar.close} >= 止损价 {stop_price}"
+                label = "止损"
+            elif bar.close <= take_price:
+                trigger = f"当前价 {bar.close} <= 止盈价 {take_price}"
+                label = "止盈"
+            else:
+                return None
+        reason = (
+            f"风险{label}：{trigger}，平掉 {abs(quantity)} 股{direction}"
+        )
         return Signal(
             symbol=self.symbol,
-            side=Side.SELL,
+            side=side,
             price=bar.close,
             ma_value=getattr(self.strategy, "ma_value", None) or bar.close,
             bar_open_time=bar.open_time,
@@ -1088,7 +1129,7 @@ class TradingController:
                 self.ledger.pending_count(runner.symbol, paper=is_paper)
                 or self.ledger.unknown_count(runner.symbol, paper=is_paper)
             )
-            if runner.is_alive or quantity > 0 or has_blocking_order:
+            if runner.is_alive or quantity != 0 or has_blocking_order:
                 targets.append((runner.symbol, mode, quantity))
         return targets
 

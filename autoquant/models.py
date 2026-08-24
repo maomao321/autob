@@ -61,6 +61,8 @@ class OrderRequest:
     buy_notional: Decimal
     sell_quantity: Decimal
     client_order_id: str = ""
+    reduce_only: bool = False
+    allow_short: bool = False
 
 
 @dataclass(frozen=True, slots=True)

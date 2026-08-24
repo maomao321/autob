@@ -1,6 +1,6 @@
-# AutoQuant：Binance Stocks 前后端量化系统
+# AutoQuant：Binance Stocks / USDⓈ-M Futures 前后端量化系统
 
-系统已经拆分为独立后端服务和 PySide6/Qt 前端。后端持有 Binance 连接、策略线程、风控、配置和 SQLite 订单账本，可以在服务器持续运行；前端只通过带鉴权的 REST API 读取状态和发送控制命令，关闭前端不会停止策略或触发平仓。
+系统已经拆分为独立后端服务和 PySide6/Qt 前端。后端持有 Binance Stocks Trading 与 Binance USDⓈ-M Futures 连接、策略线程、风控、配置和 SQLite 订单账本，可以在服务器持续运行；前端只通过带鉴权的 REST API 读取状态和发送控制命令，关闭前端不会停止策略或触发平仓。程序支持按标的独立启动、停止，供应商和策略均通过工厂隔离，并实现“手动开仓方向 + 五分钟 MA5/前一根 K 线突破”策略。
 
 程序默认使用 `PAPER` 模拟交易。除非在界面中主动切换为 `REAL` 并再次确认，否则不会向 Binance 提交真实订单。
 
@@ -80,10 +80,10 @@ chmod +x packaging/build_macos.sh run.command
 ## 使用步骤
 
 1. 首次运行保留 `PAPER` 模式。
-2. 打开“运行配置”页，配置交易 API、交易模式、MA 周期、金额与风控。
-3. 返回“交易监控”页，添加一个或多个大写美股代码，并为每只股票选择 `LONG`、`SHORT` 或 `FLAT`。
-4. 选择股票后点击“启动所选”，或点击“全部启动”。每只股票有独立运行器，可分别停止。
-5. 查看状态、程序持仓、持仓均价、未决订单、今日买入金额和日志。
+2. 打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API、交易模式、MA 周期、金额与风控。Futures 杠杆默认为 `1x`。
+3. 返回“交易监控”页，添加一个或多个大写标的代码（例如 Stocks 的 `AAPL` 或 Futures 的 `BTCUSDT`），并为每个标的选择 `LONG`、`SHORT` 或 `FLAT`。
+4. 选择标的后点击“启动所选”，或点击“全部启动”。每个标的有独立运行器，可分别停止。
+5. 查看状态、程序持仓、持仓均价、未决订单、今日开仓金额和日志。负数程序持仓表示空头。
 
 交易监控表格的“手动方向”是唯一的开仓方向来源，支持按股票选择 `LONG`、`SHORT` 或 `FLAT`。该选择在启动股票时读取并锁定，停止后才可修改，并随“保存配置”写入配置文件。`FLAT` 表示禁止该股票产生普通开仓信号，是默认值。
 
@@ -99,7 +99,7 @@ py -m autoquant.server
 ### 手动开仓方向
 
 - `LONG`：只允许五分钟做多信号。
-- `SHORT`：只允许五分钟做空/卖出信号；REAL 模式仍只会平掉程序确认的多头，不建立空头。
+- `SHORT`：只允许五分钟做空信号；`binance_futures` 可在 PAPER 和 REAL 模式建立空头，`binance_stocks` 会拒绝做空。
 - `FLAT`：不产生普通开仓信号。
 
 程序不再使用历史日线、当日日线或大模型生成开仓方向，也不会为策略预热请求 Nasdaq 历史日线或分钟数据。OpenAI Key 仍可用于手动上传交易经验库；OpenAI/DeepSeek Key 不写入配置文件。Binance API Key/Secret 会在点击“保存配置”后写入后端服务器配置。
@@ -108,7 +108,7 @@ py -m autoquant.server
 
 “交易监控”页顶部每 30 秒刷新一次账户概览，也可以手动刷新：
 
-- “Binance 账户总金额”调用官方钱包余额接口，将全部已激活钱包折算为 USDC 后汇总；需要 API Key 和 Secret，与当前选择 PAPER 或 REAL 无关。
+- `binance_stocks` 的“Binance 账户总金额”调用官方钱包余额接口，将全部已激活钱包折算为 USDC 后汇总；`binance_futures` 显示 Futures 账户的 USDT 余额。两者都需要 API Key 和 Secret，与当前选择 PAPER 或 REAL 无关。
 - “程序已实现盈亏”与“程序未实现盈亏”只统计本程序账本中能够确认的成交，不代表 Binance 全账户盈亏。已实现盈亏计入新版本记录到的交易手续费；未实现盈亏使用当前买卖报价中间价估算。
 - 旧版本订单没有保存手续费，因此升级前订单的历史盈亏可能略高于实际值。缺少持仓报价时，程序显示“行情不可用”，不会展示不完整的未实现盈亏。
 
@@ -118,28 +118,30 @@ py -m autoquant.server
 
 - 开仓方向完全使用表格中启动前选定的手动方向，不读取日线或调用大模型判断方向。
 - 做多：上一根 5 分钟收盘价不高于上一时点 MA，当前收盘价上穿当前 MA，并且当前收盘价突破前一根最高价。
-- 做空/卖出：上一根 5 分钟收盘价不低于上一时点 MA，当前收盘价下穿当前 MA，并且当前收盘价跌破前一根最低价。实盘中，该信号只用于平掉程序确认的多头，不建立空头。
+- 做空：上一根 5 分钟收盘价不低于上一时点 MA，当前收盘价下穿当前 MA，并且当前收盘价跌破前一根最低价。Futures 空仓时用 SELL 建立空头；Stocks 不支持该开仓方向。
 - 每根收盘 K 线只评估一次。每日次数限制用于入场，风险退出不受入场次数限制。
-- 程序持续用 5 分钟行情更新检查止损和止盈；触发后使用程序账本记录的全部多头数量发出 SELL。
-- 入场 BUY 直接使用配置的“买入金额”，没有多头持仓的 PAPER SELL 直接使用配置的“卖出数量”。退出已有多头时始终卖出程序记录的实际持仓数量。
+- 程序持续用 5 分钟行情更新检查止损和止盈；多头触发后发出 SELL，空头触发后发出 BUY，均只减掉程序账本记录的当前净持仓。
+- 多空入场都使用配置的“开仓金额”作为名义金额；退出时始终使用程序记录的实际持仓数量。任何方向尚未平仓时，新的同向或反向开仓都会被拒绝。
 - 程序以实时 5 分钟 K 线的 UTC 日期划分交易日；日期变化时清空上一日的指标数据，乱序 K 线不会参与计算。
 
 计算 MA 交叉仍需要 `MA 周期 + 1` 根实时已收盘 5 分钟 K 线，例如 MA5 需要从启动后收集 6 根。这是指标计算所需的最小实时样本，不会触发任何历史预热请求，也不会补下启动前可能出现过的信号。表格“实时K线”列显示当前收集进度。
 
 ## 实盘注意事项
 
-- `REAL` 会提交真实的 `MARKET` 订单。BUY 直接使用“买入金额(USDC)”作为 `notional`，并在每次启动股票前展示实际单笔金额、再次要求确认。
-- Binance Stocks API 的市价 BUY 接受 `notional`，市价 SELL 接受 `quantity`；程序不提供额外的合约倍数或杠杆配置。交易所返回的 `multiplierUp` / `multiplierDown` 是价格带限制，不是杠杆倍数。
+- `REAL` 会提交真实的 `MARKET` 订单，并在每次启动标的前展示单笔金额、杠杆和风控参数，再次要求确认。
+- Binance Stocks 的市价 BUY 直接发送配置的买入金额作为 `notional`，市价 SELL 发送 `quantity`。
+- Binance USDⓈ-M Futures 的多空开仓都会按“开仓金额 ÷ 实时参考价”换算合约数量，再按 `MARKET_LOT_SIZE` 向下取整；该金额表示仓位名义金额，不会再乘以杠杆。杠杆设置控制 Binance 对该标的使用的初始杠杆和保证金要求，默认 `1x`，允许 `1–125x`，实际可用上限仍由交易所和标的决定。
+- Futures 实盘首单前会查询持仓模式并调用杠杆接口。当前版本仅支持单向持仓模式：LONG 用 BUY 开多，SHORT 用 SELL 开空；多头用带 `reduceOnly=true` 的 SELL 平仓，空头用带 `reduceOnly=true` 的 BUY 平仓。若账户处于双向持仓模式，程序会在发单前拒绝交易。
 - Binance 要求账户先接受 US Equity Disclaimer，否则下单会返回错误 `486410`。程序不会代替用户自动接受法律声明。
-- API Key 需要开启交易权限。股票代码还必须在 Binance Stocks 当前可交易列表中。
-- 当前版本实盘为安全优先的长仓模式：没有程序持仓时阻止 SELL；存在程序确认的多头时，策略 SELL、止损或止盈会平掉该持仓。已有多头时也会阻止重复 BUY 加仓。
+- API Key 需要开启对应产品的交易权限；使用 Futures 前还必须先开通 Futures 账户。标的代码必须处于对应市场的可交易状态。
+- 当前版本使用安全优先的单向净持仓：同一标的只能持有程序多头或程序空头之一；持仓未清零时，账本会拒绝同向加仓和反向开仓。Stocks 保持仅多头，Futures 支持多空。
 - “程序持仓”只包含本程序能够确认成交的订单，不代表 Binance 账户的全部真实持仓。若在 Binance 网页或其他客户端手工交易，必须人工核对两边状态。
 - 账户总金额与程序盈亏的统计口径不同：前者来自 Binance 全钱包余额，后者只来自本地程序订单账本，不能相减后作为全账户收益。
-- 买入金额必须小于或等于“单笔上限”和“每日买入上限”；所有股票共享“每日买入上限”，资金通过 SQLite 即时事务原子预留。即使同时打开多个程序进程，同股票的未决订单、重复持仓和超量卖出也会在事务内再次拦截。股票数量最多 20 只。
+- 开仓金额必须小于或等于“单笔上限”和“每日开仓上限”；所有标的及多空方向共享“每日开仓上限”，资金通过 SQLite 即时事务原子预留。即使同时打开多个程序进程，同标的的未决订单、重复/反向持仓和超量减仓也会在事务内再次拦截。标的数量最多 20 个。
 - 下单前会按交易所返回的 `stepSize`、数量上下限和金额上下限规范化或校验订单。
 - 下单接受后会查询订单详情并保存成交数量/均价；未到终态的订单会阻止同股票继续下单，并在后续行情消息及重启时继续查询。
 - 网络超时后的订单状态可能未知。任何未知实盘订单都会硬锁该股票，跨日也不会自动解除。只有登录 Binance 核对订单并处理对应持仓后，才能点击“核对后解除未知订单锁”。
-- “停止所选并平仓”与“全部停止并平仓”会先阻止新的策略订单，再按本地账本记录的全部多头数量提交 `MARKET SELL`；PAPER 记录模拟成交，REAL 提交真实订单。存在未知/未决订单、交易所禁止 SELL 或平仓结果无法确认时，程序会进入错误状态且不会盲目重试，必须登录 Binance 核对并处理真实持仓。
+- “停止所选并平仓”与“全部停止并平仓”会先阻止新的策略订单，再按本地账本记录的净持仓提交减仓单：多头为 `MARKET SELL`，空头为 `MARKET BUY`；PAPER 记录模拟成交，REAL 提交真实订单。存在未知/未决订单、交易所禁止对应方向或平仓结果无法确认时，程序会进入错误状态且不会盲目重试，必须登录 Binance 核对并处理真实持仓。
 - 超过“信号有效期”的行情不会下单，`recvWindow` 被限制在 5000 毫秒以内。MARKET 订单仍可能受到价差、流动性、停牌和网络延迟影响，止损价不保证等于最终成交价。
 - 行情和界面队列均有容量上限，REST 公共信息使用短期缓存并限制并发，避免多股票运行时无限占用内存或集中请求接口。
 - 在投入真实资金前，应完成模拟验证、限额配置、账户权限检查和风险评估。
@@ -147,6 +149,9 @@ py -m autoquant.server
 
 ## Binance 官方接口依据
 
+- USDⓈ-M Futures 快速开始：<https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/quick-start>
+- USDⓈ-M Futures K 线流：<https://developers.binance.info/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market>
+- USDⓈ-M Futures REST 示例与端点：<https://github.com/binance/binance-cli/blob/master/examples/derivatives-trading-usds-futures.md>
 - Stocks Trading 介绍：<https://developers.binance.com/en/docs/products/stocks/introduction>
 - 模块通用规则：<https://developers.binance.com/en/docs/products/stocks/general-info>
 - 快速开始与签名下单：<https://developers.binance.com/en/docs/products/stocks/quick-start>
@@ -164,11 +169,11 @@ py -m autoquant.server
 
 ## 项目结构与扩展
 
-- `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider`。
+- `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider` 与 `BinanceFuturesProvider`。
 - `autoquant/ai_decision.py`：新闻/走势上下文、ChatGPT/DeepSeek 客户端、结构化结果校验与双模型共识。
 - `autoquant/experience.py`：外部 Excel/CSV 交易与K线导入、形态标准化、本地经验库及 OpenAI Vector Store 上传。
 - `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
-- `autoquant/engine.py`：每只股票的独立运行器及启动/停止控制。
+- `autoquant/engine.py`：每个标的的独立运行器及启动/停止控制。
 - `autoquant/backend.py`：常驻后端运行时、配置、状态快照与日志缓存。
 - `autoquant/server.py`：带 Bearer Token 鉴权的 REST 服务。
 - `autoquant/client.py`：前端 HTTP 客户端和远程控制器。

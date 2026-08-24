@@ -17,7 +17,11 @@ def order(
     side: Side = Side.BUY,
     buy_notional: str = "100",
     sell_quantity: str = "1",
+    reduce_only: bool | None = None,
+    allow_short: bool = False,
 ) -> OrderRequest:
+    if reduce_only is None:
+        reduce_only = side is Side.SELL
     return OrderRequest(
         symbol=symbol,
         side=side,
@@ -25,6 +29,8 @@ def order(
         buy_notional=Decimal(buy_notional),
         sell_quantity=Decimal(sell_quantity),
         client_order_id=client_order_id,
+        reduce_only=reduce_only,
+        allow_short=allow_short,
     )
 
 
@@ -146,7 +152,7 @@ class OrderLedgerTests(unittest.TestCase):
                 average_price=Decimal("180"),
             )
 
-            with self.assertRaisesRegex(RiskLimitError, "禁止重复买入"):
+            with self.assertRaisesRegex(RiskLimitError, "禁止双向或重复开仓"):
                 ledger.record_submitting(
                     order("aq-buy-again"),
                     123,
@@ -266,6 +272,132 @@ class OrderLedgerTests(unittest.TestCase):
             self.assertEqual(Decimal("18"), performance.realized_pnl)
             self.assertEqual(Decimal("9"), performance.unrealized_pnl)
             self.assertEqual(["AAPL"], ledger.open_position_symbols(paper=False))
+
+    def test_short_position_can_only_be_reduced_with_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                order(
+                    "aq-short",
+                    side=Side.SELL,
+                    buy_notional="200",
+                    sell_quantity="0",
+                    reduce_only=False,
+                    allow_short=True,
+                ),
+                123,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-short",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("100"),
+            )
+
+            position = ledger.position_summary("AAPL", paper=True)
+            self.assertEqual(Decimal("-2"), position.quantity)
+            self.assertEqual(Decimal("100"), position.average_price)
+
+            with self.assertRaisesRegex(RiskLimitError, "禁止双向或重复开仓"):
+                ledger.record_submitting(
+                    order("aq-opposite", side=Side.BUY, reduce_only=False),
+                    123,
+                    paper=True,
+                )
+            with self.assertRaisesRegex(RiskLimitError, "减仓方向必须是 BUY"):
+                ledger.record_submitting(
+                    order(
+                        "aq-wrong-close",
+                        side=Side.SELL,
+                        sell_quantity="1",
+                        reduce_only=True,
+                    ),
+                    123,
+                    paper=True,
+                )
+
+            ledger.record_submitting(
+                order(
+                    "aq-cover",
+                    side=Side.BUY,
+                    buy_notional="0",
+                    sell_quantity="2",
+                    reduce_only=True,
+                ),
+                123,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-cover",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("90"),
+            )
+            self.assertEqual(
+                Decimal("0"),
+                ledger.position_summary("AAPL", paper=True).quantity,
+            )
+
+    def test_short_open_requires_provider_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            with self.assertRaisesRegex(RiskLimitError, "不允许建立空头"):
+                ledger.record_submitting(
+                    order(
+                        "aq-short",
+                        side=Side.SELL,
+                        reduce_only=False,
+                        allow_short=False,
+                    ),
+                    123,
+                    paper=True,
+                )
+
+    def test_short_portfolio_performance_includes_fees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                order(
+                    "aq-short",
+                    side=Side.SELL,
+                    buy_notional="200",
+                    reduce_only=False,
+                    allow_short=True,
+                ),
+                123,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-short", "FILLED", filled_quantity=Decimal("2"),
+                average_price=Decimal("100"), fee=Decimal("2"),
+            )
+            ledger.record_submitting(
+                order(
+                    "aq-cover",
+                    side=Side.BUY,
+                    buy_notional="0",
+                    sell_quantity="1",
+                    reduce_only=True,
+                ),
+                123,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-cover", "FILLED", filled_quantity=Decimal("1"),
+                average_price=Decimal("80"), fee=Decimal("1"),
+            )
+
+            performance = ledger.portfolio_performance(
+                paper=False,
+                market_prices={"AAPL": Decimal("90")},
+            )
+            self.assertEqual(Decimal("18"), performance.realized_pnl)
+            self.assertEqual(Decimal("9"), performance.unrealized_pnl)
+            self.assertEqual(
+                Decimal("-1"),
+                ledger.position_summary("AAPL", paper=False).quantity,
+            )
 
     def test_unrealized_pnl_is_unavailable_when_quote_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

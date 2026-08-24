@@ -56,6 +56,7 @@ class OrderStatusUnknownError(ProviderError):
 class BinanceStocksProvider(TradingProvider):
     name = "binance_stocks"
     supports_short = False
+    quote_asset = "USDC"
     _public_cache_lock = threading.RLock()
     _tokenized_assets_cache: tuple[float, list[dict[str, Any]]] | None = None
     _request_semaphore = threading.BoundedSemaphore(4)
@@ -100,10 +101,7 @@ class BinanceStocksProvider(TradingProvider):
             ) from exc
 
         symbol = symbol.upper()
-        streams = f"{symbol}@kline_5m"
-        if self.include_daily_stream:
-            streams += f"/{symbol}@kline_1d"
-        url = f"{self.websocket_base_url}/stream?streams={streams}"
+        url = self._stream_url(symbol)
         reconnect_delay = 1.0
 
         while not stop_event.is_set():
@@ -303,7 +301,7 @@ class BinanceStocksProvider(TradingProvider):
             self.__class__._tokenized_assets_cache = (time.monotonic(), assets)
             return assets
 
-    def get_order_detail(self, order_id: str) -> dict:
+    def get_order_detail(self, order_id: str, symbol: str = "") -> dict:
         self._require_credentials()
         payload = self._signed_request(
             "GET",
@@ -311,6 +309,12 @@ class BinanceStocksProvider(TradingProvider):
             {"orderId": order_id},
         )
         return payload
+
+    def _stream_url(self, symbol: str) -> str:
+        streams = f"{symbol}@kline_5m"
+        if self.include_daily_stream:
+            streams += f"/{symbol}@kline_1d"
+        return f"{self.websocket_base_url}/stream?streams={streams}"
 
     def get_account_total(self, quote_asset: str = "USDC") -> Decimal:
         self._require_credentials()

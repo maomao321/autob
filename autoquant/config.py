@@ -21,7 +21,7 @@ ALLOWED_REST_HOSTS = {
     "api4.binance.com",
 }
 ALLOWED_WS_HOSTS = {"nbstream.binance.com"}
-SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,9}", re.ASCII)
+SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,19}", re.ASCII)
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", re.ASCII)
 MAX_SYMBOLS = 20
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
@@ -32,6 +32,7 @@ class AppConfig:
     symbols: list[str] = field(default_factory=lambda: ["AAPL"])
     manual_directions: dict[str, str] = field(default_factory=dict)
     provider: str = "binance_stocks"
+    leverage: int = 1
     api_key: str = ""
     api_secret: str = ""
     strategy: str = "five_minute_breakout"
@@ -61,21 +62,21 @@ class AppConfig:
         self.api_key = str(self.api_key).strip()
         self.api_secret = str(self.api_secret).strip()
         if not isinstance(self.symbols, list):
-            raise ValueError("symbols 必须是股票代码列表")
+            raise ValueError("symbols 必须是标的代码列表")
         self.symbols = normalize_symbols(self.symbols)
         if not self.symbols:
-            raise ValueError("至少配置一只股票")
+            raise ValueError("至少配置一个标的")
         if len(self.symbols) > MAX_SYMBOLS:
-            raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
+            raise ValueError(f"标的数量不能超过 {MAX_SYMBOLS} 个")
         if not isinstance(self.manual_directions, dict):
             raise ValueError("manual_directions 必须是股票与手动方向的映射")
         normalized_manual_directions: dict[str, str] = {}
         for raw_symbol, raw_direction in self.manual_directions.items():
             if not isinstance(raw_symbol, str):
-                raise ValueError("手动方向的股票代码必须是字符串")
+                raise ValueError("手动方向的标的代码必须是字符串")
             symbols = normalize_symbols([raw_symbol])
             if not symbols:
-                raise ValueError("手动方向的股票代码不能为空")
+                raise ValueError("手动方向的标的代码不能为空")
             direction = str(raw_direction).strip().upper()
             if direction not in MANUAL_DIRECTION_VALUES:
                 raise ValueError(
@@ -88,7 +89,8 @@ class AppConfig:
                     "FLAT" if direction == "AUTO" else direction
                 )
         self.manual_directions = normalized_manual_directions
-        if self.provider != "binance_stocks":
+        self.provider = str(self.provider).strip().lower()
+        if self.provider not in {"binance_stocks", "binance_futures"}:
             raise ValueError(f"暂不支持 API 供应商: {self.provider}")
         if self.strategy != "five_minute_breakout":
             raise ValueError(f"暂不支持策略: {self.strategy}")
@@ -113,6 +115,7 @@ class AppConfig:
             raise ValueError("DeepSeek 模型名称格式不正确")
         try:
             self.ma_period = int(self.ma_period)
+            self.leverage = int(self.leverage)
             self.max_trades_per_day = int(self.max_trades_per_day)
             self.recv_window = int(self.recv_window)
             self.max_signal_age_seconds = int(self.max_signal_age_seconds)
@@ -122,9 +125,11 @@ class AppConfig:
             self.ai_timeout_seconds = int(self.ai_timeout_seconds)
         except (TypeError, ValueError):
             raise ValueError(
-                "MA、每日交易次数、信号有效期、AI 数据周期、超时和 "
+                "MA、杠杆倍数、每日交易次数、信号有效期、AI 数据周期、超时和 "
                 "recvWindow 必须是整数"
             ) from None
+        if not 1 <= self.leverage <= 125:
+            raise ValueError("杠杆倍数必须在 1 到 125 之间")
         if not 2 <= self.ma_period <= 200:
             raise ValueError("MA 周期必须在 2 到 200 之间")
         if not 1 <= self.max_trades_per_day <= 100:
@@ -150,10 +155,10 @@ class AppConfig:
         self.ai_min_confidence = str(self.ai_min_confidence)
         parsed_decimals: dict[str, Decimal] = {}
         for label, value in (
-            ("买入金额", self.buy_notional),
+            ("开仓金额", self.buy_notional),
             ("卖出数量", self.sell_quantity),
             ("单笔金额上限", self.max_order_notional),
-            ("账户每日买入上限", self.max_daily_buy_notional),
+            ("账户每日开仓上限", self.max_daily_buy_notional),
             ("止损比例", self.stop_loss_percent),
             ("止盈比例", self.take_profit_percent),
         ):
@@ -164,10 +169,10 @@ class AppConfig:
                 parsed_decimals[label] = number
             except (InvalidOperation, ValueError):
                 raise ValueError(f"{label}必须是正数") from None
-        if parsed_decimals["买入金额"] > parsed_decimals["单笔金额上限"]:
-            raise ValueError("买入金额不能超过单笔金额上限")
-        if parsed_decimals["买入金额"] > parsed_decimals["账户每日买入上限"]:
-            raise ValueError("买入金额不能超过账户每日买入上限")
+        if parsed_decimals["开仓金额"] > parsed_decimals["单笔金额上限"]:
+            raise ValueError("开仓金额不能超过单笔金额上限")
+        if parsed_decimals["开仓金额"] > parsed_decimals["账户每日开仓上限"]:
+            raise ValueError("开仓金额不能超过账户每日开仓上限")
         for label in ("止损比例", "止盈比例"):
             if not Decimal("0.1") <= parsed_decimals[label] <= Decimal("50"):
                 raise ValueError(f"{label}必须在 0.1% 到 50% 之间")
@@ -195,12 +200,12 @@ def normalize_symbols(symbols: list[str]) -> list[str]:
     seen: set[str] = set()
     for raw_symbol in symbols:
         if not isinstance(raw_symbol, str):
-            raise ValueError("股票代码必须是字符串")
+            raise ValueError("标的代码必须是字符串")
         symbol = raw_symbol.strip().upper()
         if not symbol:
             continue
         if SYMBOL_PATTERN.fullmatch(symbol) is None:
-            raise ValueError(f"股票代码格式不正确: {symbol}")
+            raise ValueError(f"标的代码格式不正确: {symbol}")
         if symbol not in seen:
             seen.add(symbol)
             result.append(symbol)

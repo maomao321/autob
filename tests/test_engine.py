@@ -94,6 +94,10 @@ class ShortSignalProvider(FakeProvider):
         return []
 
 
+class FuturesShortSignalProvider(ShortSignalProvider):
+    supports_short = True
+
+
 class MissingDailyHistoryProvider(FakeProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -156,7 +160,7 @@ class FilledLiveProvider(FakeProvider):
         self.orders.append(order)
         return OrderResult(True, "live-filled", "accepted", False)
 
-    def get_order_detail(self, order_id: str) -> dict:
+    def get_order_detail(self, order_id: str, symbol: str = "") -> dict:
         return {
             "status": "FILLED",
             "filledQty": "0.5",
@@ -166,7 +170,7 @@ class FilledLiveProvider(FakeProvider):
 
 
 class MalformedFillProvider(FilledLiveProvider):
-    def get_order_detail(self, order_id: str) -> dict:
+    def get_order_detail(self, order_id: str, symbol: str = "") -> dict:
         return {"status": "FILLED"}
 
 
@@ -182,6 +186,10 @@ class WaitingPaperProvider(FakeProvider):
             yield make_bar("100", 0)
 
 
+class WaitingFuturesPaperProvider(WaitingPaperProvider):
+    supports_short = True
+
+
 class WaitingFilledLiveProvider(FilledLiveProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -194,11 +202,11 @@ class WaitingFilledLiveProvider(FilledLiveProvider):
         if False:
             yield make_bar("100", 0)
 
-    def get_order_detail(self, order_id: str) -> dict:
+    def get_order_detail(self, order_id: str, symbol: str = "") -> dict:
         self.detail_calls += 1
         if self.detail_calls == 1:
             return {"status": "NEW", "filledQty": "0"}
-        return super().get_order_detail(order_id)
+        return super().get_order_detail(order_id, symbol)
 
 
 class FlatOpeningDecider:
@@ -225,6 +233,22 @@ class SymbolRunnerTests(unittest.TestCase):
             )
         )
 
+        self.assertFalse(provider.include_daily_stream)
+
+    def test_futures_provider_receives_configured_leverage(self) -> None:
+        provider = create_provider(
+            RunnerConfig(
+                AppConfig(
+                    symbols=["BTCUSDT"],
+                    provider="binance_futures",
+                    leverage=8,
+                ),
+                manual_direction=Direction.FLAT,
+            )
+        )
+
+        self.assertEqual("binance_futures", provider.name)
+        self.assertEqual(8, provider.leverage)
         self.assertFalse(provider.include_daily_stream)
 
     def test_manual_direction_is_used_when_daily_history_is_missing(self) -> None:
@@ -508,6 +532,7 @@ class SymbolRunnerTests(unittest.TestCase):
                     buy_notional=Decimal("0"),
                     sell_quantity=Decimal("0.5"),
                     client_order_id="aq-unknown-sell",
+                    reduce_only=True,
                 ),
                 0,
                 paper=True,
@@ -681,6 +706,118 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.orders)
             self.assertEqual(0, ledger.count_consumed("AAPL", 0))
             self.assertTrue(any("建立空头" in message for _, _, message in logs))
+
+    def test_futures_short_signal_opens_single_short_position(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        provider="binance_futures",
+                        ma_period=3,
+                        buy_notional="100",
+                    ),
+                    manual_direction=Direction.SHORT,
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = FuturesShortSignalProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            submitted = provider.orders[0]
+            self.assertIs(Side.SELL, submitted.side)
+            self.assertFalse(submitted.reduce_only)
+            self.assertTrue(submitted.allow_short)
+            self.assertLess(
+                ledger.position_summary("AAPL", paper=True).quantity,
+                Decimal("0"),
+            )
+
+    def test_stop_force_closes_futures_short_with_reduce_only_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(
+                OrderRequest(
+                    symbol="AAPL",
+                    side=Side.SELL,
+                    reference_price=Decimal("100"),
+                    buy_notional=Decimal("50"),
+                    sell_quantity=Decimal("0"),
+                    client_order_id="aq-paper-short",
+                    allow_short=True,
+                ),
+                0,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-paper-short",
+                "FILLED",
+                filled_quantity=Decimal("0.5"),
+                average_price=Decimal("100"),
+            )
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(symbols=["AAPL"], provider="binance_futures")
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+            )
+            provider = WaitingFuturesPaperProvider()
+            runner.provider = provider
+
+            runner.start()
+            self.assertTrue(provider.started.wait(1))
+            runner.stop(close_position=True)
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            submitted = provider.orders[0]
+            self.assertIs(Side.BUY, submitted.side)
+            self.assertTrue(submitted.reduce_only)
+            self.assertEqual(Decimal("0.5"), submitted.sell_quantity)
+            self.assertEqual(
+                Decimal("0"),
+                ledger.position_summary("AAPL", paper=True).quantity,
+            )
+
+    def test_short_stop_loss_and_take_profit_emit_buy_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        provider="binance_futures",
+                        stop_loss_percent="2",
+                        take_profit_percent="4",
+                    )
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                OrderLedger(Path(directory) / "orders.sqlite3"),
+            )
+            runner._position_quantity = Decimal("-1")
+            runner._average_entry_price = Decimal("100")
+
+            stop_signal = runner._risk_exit_signal(make_bar("102", 1))
+            take_signal = runner._risk_exit_signal(make_bar("96", 2))
+
+            self.assertIsNotNone(stop_signal)
+            self.assertIs(Side.BUY, stop_signal.side)
+            self.assertIn("空头", stop_signal.reason)
+            self.assertIsNotNone(take_signal)
+            self.assertIs(Side.BUY, take_signal.side)
+            self.assertIn("空头", take_signal.reason)
 
     def test_stop_during_pre_order_validation_prevents_submission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

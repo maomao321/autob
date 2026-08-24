@@ -45,6 +45,7 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual("0.75", loaded.ai_min_confidence)
             self.assertEqual("binance-key", loaded.api_key)
             self.assertEqual("binance-secret", loaded.api_secret)
+            self.assertEqual(1, loaded.leverage)
             content = path.read_text(encoding="utf-8")
             self.assertIn('"api_key": "binance-key"', content)
             self.assertIn('"api_secret": "binance-secret"', content)
@@ -62,7 +63,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_invalid_live_parameters_are_rejected(self) -> None:
         config = AppConfig(symbols=["AAPL"], trading_mode="REAL", buy_notional="0")
-        with self.assertRaisesRegex(ValueError, "买入金额"):
+        with self.assertRaisesRegex(ValueError, "开仓金额"):
             config.validate()
 
     def test_invalid_manual_direction_is_rejected(self) -> None:
@@ -73,11 +74,11 @@ class ConfigTests(unittest.TestCase):
             ).validate()
 
     def test_non_finite_amount_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "买入金额"):
+        with self.assertRaisesRegex(ValueError, "开仓金额"):
             AppConfig(symbols=["AAPL"], buy_notional="Infinity").validate()
 
     def test_unicode_symbol_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "股票代码格式"):
+        with self.assertRaisesRegex(ValueError, "代码格式"):
             normalize_symbols(["ＡＡＰＬ"])
 
     def test_non_binance_api_host_is_rejected(self) -> None:
@@ -118,6 +119,28 @@ class ConfigTests(unittest.TestCase):
             AppConfig(symbols=["AAPL"], ai_min_confidence="0.4").validate()
         with self.assertRaisesRegex(ValueError, "大模型模式"):
             AppConfig(symbols=["AAPL"], ai_provider="unknown").validate()
+
+    def test_futures_provider_and_leverage_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["BTCUSDT"],
+                    provider="binance_futures",
+                    leverage=10,
+                )
+            )
+
+            loaded = store.load()
+
+            self.assertEqual("binance_futures", loaded.provider)
+            self.assertEqual(10, loaded.leverage)
+
+    def test_leverage_must_be_between_one_and_125(self) -> None:
+        with self.assertRaisesRegex(ValueError, "杠杆倍数"):
+            AppConfig(symbols=["BTCUSDT"], leverage=0).validate()
+        with self.assertRaisesRegex(ValueError, "杠杆倍数"):
+            AppConfig(symbols=["BTCUSDT"], leverage=126).validate()
 
 
 if __name__ == "__main__":

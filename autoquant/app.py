@@ -332,6 +332,7 @@ class AutoQuantApp(QMainWindow):
         self.config = self._load_config()
 
         self.provider_var = TextValue(self.config.provider)
+        self.leverage_var = TextValue(str(self.config.leverage))
         self.strategy_var = TextValue(self.config.strategy)
         self.mode_var = TextValue(self.config.trading_mode)
         self.api_key_var = TextValue(
@@ -458,7 +459,7 @@ class AutoQuantApp(QMainWindow):
             overview,
             "Binance 账户总金额",
             self.account_total_var,
-            "全部激活钱包折算为 USDC",
+            "Stocks 为 USDC；Futures 为 USDT",
         )
         self.realized_pnl_label = self._metric_card(
             overview,
@@ -489,9 +490,9 @@ class AutoQuantApp(QMainWindow):
 
         controls = QHBoxLayout()
         controls.setSpacing(7)
-        controls.addWidget(QLabel("股票代码"))
+        controls.addWidget(QLabel("标的代码"))
         symbol_entry = self._line(self.symbol_var)
-        symbol_entry.setPlaceholderText("例如 AAPL, NVDA")
+        symbol_entry.setPlaceholderText("例如 AAPL, BTCUSDT")
         symbol_entry.setMaximumWidth(260)
         symbol_entry.returnPressed.connect(self._add_symbols)
         controls.addWidget(symbol_entry)
@@ -506,8 +507,8 @@ class AutoQuantApp(QMainWindow):
         layout.addLayout(controls)
 
         headers = [
-            "股票", "状态", "实际方向", "手动方向", "最新价", "MA", "实时K线", "今日交易",
-            "程序持仓", "持仓均价", "未决订单", "今日买入额", "信息",
+            "标的", "状态", "实际方向", "手动方向", "最新价", "MA", "实时K线", "今日交易",
+            "程序持仓", "持仓均价", "未决订单", "今日开仓额", "信息",
         ]
         widths = [80, 80, 85, 90, 90, 90, 75, 80, 85, 85, 75, 90, 300]
         self.tree = KeyedTable(headers, widths, multi_select=True)
@@ -574,7 +575,13 @@ class AutoQuantApp(QMainWindow):
         for column in (1, 3, 5, 7):
             grid.setColumnStretch(column, 1)
 
-        self._grid_field(grid, 0, 0, "API 供应商", self._combo(self.provider_var, ["binance_stocks"]))
+        self._grid_field(
+            grid,
+            0,
+            0,
+            "API 供应商",
+            self._combo(self.provider_var, ["binance_stocks", "binance_futures"]),
+        )
         self._grid_field(grid, 0, 2, "量化策略", self._combo(self.strategy_var, ["five_minute_breakout"]))
         self._grid_field(grid, 0, 4, "交易模式", self._combo(self.mode_var, ["PAPER", "REAL"]))
         save_button = self._button("保存配置", self._save_config, primary=True)
@@ -582,14 +589,14 @@ class AutoQuantApp(QMainWindow):
 
         self._grid_field(grid, 1, 0, "API Key", self._line(self.api_key_var), span=2)
         self._grid_field(grid, 1, 3, "API Secret", self._line(self.api_secret_var, secret=True), span=2)
-        grid.addWidget(self._button("检查 API 与股票", self._check_connection), 1, 6, 1, 2)
+        grid.addWidget(self._button("检查 API 与标的", self._check_connection), 1, 6, 1, 2)
 
         self._grid_field(grid, 2, 0, "MA 周期", self._line(self.ma_var))
-        self._grid_field(grid, 2, 2, "买入金额(USDC)", self._line(self.buy_notional_var))
+        self._grid_field(grid, 2, 2, "开仓金额(USDC/USDT)", self._line(self.buy_notional_var))
         self._grid_field(grid, 2, 4, "卖出数量", self._line(self.sell_quantity_var))
         self._grid_field(grid, 2, 6, "每日最多交易", self._line(self.max_trades_var))
-        self._grid_field(grid, 3, 0, "单笔上限(USDC)", self._line(self.max_order_notional_var))
-        self._grid_field(grid, 3, 2, "每日买入上限", self._line(self.max_daily_buy_notional_var))
+        self._grid_field(grid, 3, 0, "单笔上限(USDC/USDT)", self._line(self.max_order_notional_var))
+        self._grid_field(grid, 3, 2, "每日开仓上限", self._line(self.max_daily_buy_notional_var))
         risk = QWidget()
         risk_layout = QHBoxLayout(risk)
         risk_layout.setContentsMargins(0, 0, 0, 0)
@@ -598,14 +605,17 @@ class AutoQuantApp(QMainWindow):
         risk_layout.addWidget(self._line(self.take_profit_var))
         self._grid_field(grid, 3, 4, "止损/止盈(%)", risk)
         self._grid_field(grid, 3, 6, "信号有效期(秒)", self._line(self.max_signal_age_var))
+        self._grid_field(grid, 4, 0, "Futures 杠杆倍数", self._line(self.leverage_var))
         warning = QLabel(
-            "默认 PAPER 只记录模拟订单。REAL 会真实下单；实盘 SELL 仅用于平掉程序确认的多头，"
-            "不会建立空头。“停止并平仓”会卖出全部程序多头；未知订单会锁定实盘。"
+            "默认 PAPER 只记录模拟订单。REAL 会真实下单；Stocks 只支持做多，"
+            "Futures 支持做多和做空，但仅支持单向持仓，持仓期间禁止反向或重复开仓。"
+            "Futures 实盘下单前设置所选杠杆。“停止并平仓”会减掉全部程序持仓；"
+            "未知订单会锁定实盘。"
             "API Key/Secret 会保存到后端服务器，请保护服务器配置和访问令牌。"
         )
         warning.setWordWrap(True)
         warning.setStyleSheet(f"color: {COLORS['warning']};")
-        grid.addWidget(warning, 4, 0, 1, 8)
+        grid.addWidget(warning, 5, 0, 1, 8)
         content_layout.addWidget(settings)
 
         ai_settings = QGroupBox("交易经验库上传")
@@ -957,6 +967,7 @@ class AutoQuantApp(QMainWindow):
             symbols=list(self.tree.get_children()),
             manual_directions=manual_directions,
             provider=self.provider_var.get(),
+            leverage=self.leverage_var.get(),
             api_key=self.api_key_var.get().strip(),
             api_secret=self.api_secret_var.get().strip(),
             strategy=self.strategy_var.get(), trading_mode=self.mode_var.get(),
@@ -1025,7 +1036,7 @@ class AutoQuantApp(QMainWindow):
             ]
             combined = visible_set | set(symbols_to_insert)
             if len(combined) > MAX_SYMBOLS:
-                raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
+                raise ValueError(f"标的数量不能超过 {MAX_SYMBOLS} 个")
 
             persisted_symbols = normalize_symbols(
                 [*self.config.symbols, *symbols_to_insert]
@@ -1042,7 +1053,7 @@ class AutoQuantApp(QMainWindow):
                 self._insert_symbol(symbol)
             self.symbol_var.set("")
         except (OSError, ValueError, TypeError) as exc:
-            show_error("添加股票失败", str(exc))
+            show_error("添加标的失败", str(exc))
 
     def _remove_selected(self) -> None:
         selected = list(self.tree.selection())
@@ -1054,7 +1065,7 @@ class AutoQuantApp(QMainWindow):
         if stop_targets:
             show_info(
                 "请先停止并平仓",
-                "运行中或仍有程序持仓的股票不能直接移除。请先使用“停止所选并平仓”。",
+                "运行中或仍有程序持仓的标的不能直接移除。请先使用“停止所选并平仓”。",
             )
             return
         for symbol in selected:
@@ -1135,26 +1146,26 @@ class AutoQuantApp(QMainWindow):
             show_error("后端不可用", str(exc))
             return
         if not targets:
-            show_info("无需停止", "所选股票均已停止且没有程序多头持仓。")
+            show_info("无需停止", "所选标的均已停止且没有程序持仓。")
             return
         details = "\n".join(
-            f"{symbol}：{mode}，程序多头 {quantity}"
+            f"{symbol}：{mode}，{self._position_label(quantity)}"
             for symbol, mode, quantity in targets
         )
         real_positions = [
-            symbol
+            f"{symbol}（MARKET {'SELL' if quantity > 0 else 'BUY'}）"
             for symbol, mode, quantity in targets
-            if mode == "REAL" and quantity > 0
+            if mode == "REAL" and quantity != 0
         ]
         warning = (
-            "\n\n警告：以下 REAL 持仓将向 Binance 提交真实 MARKET SELL："
+            "\n\n警告：以下 REAL 持仓将向 Binance 提交真实平仓单："
             + ", ".join(real_positions)
             if real_positions
             else ""
         )
         confirmed = ask_yes_no(
             "确认停止并强制平仓",
-            "程序会先阻止新的策略订单，再按本地账本记录的全部多头数量平仓。"
+            "程序会先阻止新的策略订单，再按本地账本记录的全部净持仓数量平仓。"
             "没有持仓时只停止策略；有未知或未决订单时会拒绝自动平仓。\n\n"
             f"{details}{warning}\n\n确认继续吗？",
         )
@@ -1170,13 +1181,25 @@ class AutoQuantApp(QMainWindow):
         if not self.api_key_var.get().strip() or not self.api_secret_var.get().strip():
             show_error("缺少凭据", "REAL 模式必须填写 API Key 和 API Secret。")
             return False
+        if config.provider == "binance_futures":
+            provider_detail = (
+                f"；杠杆：{config.leverage}x。\n"
+                "Futures 账户必须使用单向持仓模式；LONG 只开多、SHORT 只开空，"
+                "持仓未平时禁止反向或重复开仓。"
+            )
+            direction_detail = "退出单只会减掉程序确认的当前方向持仓。"
+        else:
+            provider_detail = (
+                "。\n账户还必须已经接受 Binance 美股交易免责声明。"
+            )
+            direction_detail = "Stocks 不建立空头，SELL 只会平掉程序确认的多头。"
         return ask_yes_no(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
-            f"股票数：{len(self.tree.get_children())}；单笔买入金额：{config.buy_notional} USDC。\n"
-            f"每日账户上限：{config.max_daily_buy_notional} USDC。\n"
+            f"标的数：{len(self.tree.get_children())}；单笔名义金额：{config.buy_notional}。\n"
+            f"每日账户上限：{config.max_daily_buy_notional}{provider_detail}\n"
             f"止损/止盈：{self.stop_loss_var.get()}% / {self.take_profit_var.get()}%。"
-            "SELL 只会平掉程序确认的多头。\n账户还必须已经接受 Binance 美股交易免责声明。\n\n确认继续吗？",
+            f"{direction_detail}\n\n确认继续吗？",
         )
 
     def _save_config(self) -> None:
@@ -1196,10 +1219,10 @@ class AutoQuantApp(QMainWindow):
             return
         symbols = list(self.tree.selection()) or list(self.tree.get_children())[:1]
         if not symbols:
-            show_info("请添加股票", "请先添加至少一只股票。")
+            show_info("请添加标的", "请先添加至少一个交易标的。")
             return
         symbol = symbols[0]
-        self._append_log("INFO", symbol, "正在检查 Binance API 与股票代码")
+        self._append_log("INFO", symbol, "正在检查 Binance API 与标的代码")
 
         def check() -> None:
             try:
@@ -1357,6 +1380,14 @@ class AutoQuantApp(QMainWindow):
     @staticmethod
     def _format_decimal(value: object | None) -> str:
         return "-" if value is None else format(value, "f")
+
+    @staticmethod
+    def _position_label(quantity: Decimal) -> str:
+        if quantity > 0:
+            return f"程序多头 {quantity}"
+        if quantity < 0:
+            return f"程序空头 {abs(quantity)}"
+        return "无程序持仓"
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closed = True
