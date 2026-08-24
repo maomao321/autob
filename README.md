@@ -87,7 +87,7 @@ chmod +x packaging/build_macos.sh run.command
 
 交易监控表格的“手动方向”是唯一的开仓方向来源，支持按股票选择 `LONG`、`SHORT` 或 `FLAT`。该选择在启动股票时读取并锁定，停止后才可修改，并随“保存配置”写入配置文件。`FLAT` 表示禁止该股票产生普通开仓信号，是默认值。
 
-配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。Binance API Key/Secret 不会通过读取配置接口回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
+配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增股票后，前端会立即通过鉴权接口将标的写入服务器配置，重启后仍会保留；界面中尚未保存的其他参数不会因此写入。Binance API Key/Secret 不会通过读取配置接口回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from autoquant.app import KeyedTable, TextValue
+from autoquant.app import AutoQuantApp, KeyedTable, TextValue
+from autoquant.config import AppConfig, ConfigStore
 
 
 class QtAppWidgetTests(unittest.TestCase):
@@ -50,6 +54,28 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("SHORT", table.combo_text("AAPL", 1))
         combo.setCurrentText("LONG")
         self.assertEqual("LONG", table.combo_text("AAPL", 1))
+
+    def test_adding_symbol_persists_it_without_saving_other_ui_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"], ma_period=5))
+
+            with patch("autoquant.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window.ma_var.set("12")
+            window.symbol_var.set(" nvda ")
+            with patch("autoquant.app.show_error") as show_error_mock:
+                window._add_symbols()
+
+            persisted = store.load()
+            self.assertEqual(["AAPL", "NVDA"], persisted.symbols)
+            self.assertEqual(5, persisted.ma_period)
+            self.assertEqual(("AAPL", "NVDA"), window.tree.get_children())
+            show_error_mock.assert_not_called()
 
 
 if __name__ == "__main__":

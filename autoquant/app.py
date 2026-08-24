@@ -1018,14 +1018,31 @@ class AutoQuantApp(QMainWindow):
         try:
             raw_symbols = re.split(r"[,，;；\s]+", self.symbol_var.get())
             new_symbols = normalize_symbols(raw_symbols)
-            combined = set(self.tree.get_children()) | set(new_symbols)
+            visible_symbols = list(self.tree.get_children())
+            visible_set = set(visible_symbols)
+            symbols_to_insert = [
+                symbol for symbol in new_symbols if symbol not in visible_set
+            ]
+            combined = visible_set | set(symbols_to_insert)
             if len(combined) > MAX_SYMBOLS:
                 raise ValueError(f"股票数量不能超过 {MAX_SYMBOLS} 只")
-            for symbol in new_symbols:
+
+            persisted_symbols = normalize_symbols(
+                [*self.config.symbols, *symbols_to_insert]
+            )
+            if persisted_symbols != self.config.symbols:
+                updated_config = replace(
+                    self.config,
+                    symbols=persisted_symbols,
+                )
+                self.store.save(updated_config)
+                self.config = updated_config
+
+            for symbol in symbols_to_insert:
                 self._insert_symbol(symbol)
             self.symbol_var.set("")
-        except ValueError as exc:
-            show_error("股票代码错误", str(exc))
+        except (OSError, ValueError, TypeError) as exc:
+            show_error("添加股票失败", str(exc))
 
     def _remove_selected(self) -> None:
         selected = list(self.tree.selection())
