@@ -1028,6 +1028,14 @@ class AutoQuantApp(QMainWindow):
     def _add_symbols(self) -> None:
         try:
             raw_symbols = re.split(r"[,，;；\s]+", self.symbol_var.get())
+            if self.provider_var.get().strip().lower() == "binance_futures":
+                raw_symbols = [
+                    symbol
+                    if symbol.strip().upper().endswith("USDT")
+                    else f"{symbol}USDT"
+                    for symbol in raw_symbols
+                    if symbol.strip()
+                ]
             new_symbols = normalize_symbols(raw_symbols)
             visible_symbols = list(self.tree.get_children())
             visible_set = set(visible_symbols)
@@ -1057,6 +1065,8 @@ class AutoQuantApp(QMainWindow):
 
     def _remove_selected(self) -> None:
         selected = list(self.tree.selection())
+        if not selected:
+            return
         try:
             stop_targets = self.controller.stop_targets(selected)
         except Exception as exc:
@@ -1068,6 +1078,28 @@ class AutoQuantApp(QMainWindow):
                 "运行中或仍有程序持仓的标的不能直接移除。请先使用“停止所选并平仓”。",
             )
             return
+
+        selected_set = set(selected)
+        updated_config = replace(
+            self.config,
+            symbols=[
+                symbol
+                for symbol in self.config.symbols
+                if symbol not in selected_set
+            ],
+            manual_directions={
+                symbol: direction
+                for symbol, direction in self.config.manual_directions.items()
+                if symbol not in selected_set
+            },
+        )
+        try:
+            self.store.save(updated_config)
+        except (OSError, ValueError, TypeError) as exc:
+            show_error("移除标的失败", str(exc))
+            return
+
+        self.config = updated_config
         for symbol in selected:
             self.tree.delete(symbol)
 

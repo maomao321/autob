@@ -64,8 +64,6 @@ class AppConfig:
         if not isinstance(self.symbols, list):
             raise ValueError("symbols 必须是标的代码列表")
         self.symbols = normalize_symbols(self.symbols)
-        if not self.symbols:
-            raise ValueError("至少配置一个标的")
         if len(self.symbols) > MAX_SYMBOLS:
             raise ValueError(f"标的数量不能超过 {MAX_SYMBOLS} 个")
         if not isinstance(self.manual_directions, dict):

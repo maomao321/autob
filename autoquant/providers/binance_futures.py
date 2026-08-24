@@ -18,7 +18,7 @@ from autoquant.providers.binance_stocks import (
 
 
 class BinanceFuturesProvider(BinanceStocksProvider):
-    """Binance USDⓈ-M Futures provider using one-way, long-only positions."""
+    """Binance USDⓈ-M Futures provider using one-way net positions."""
 
     name = "binance_futures"
     supports_short = True

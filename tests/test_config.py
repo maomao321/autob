@@ -14,6 +14,14 @@ from autoquant.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_empty_symbol_list_can_be_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+
+            store.save(AppConfig(symbols=[]))
+
+            self.assertEqual([], store.load().symbols)
+
     def test_normalize_symbols_deduplicates_and_uppercases(self) -> None:
         self.assertEqual(["AAPL", "BRK.B"], normalize_symbols([" aapl ", "BRK.B", "AAPL"]))
 

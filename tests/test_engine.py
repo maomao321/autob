@@ -25,6 +25,7 @@ def make_bar(
     index: int,
     interval: str = "5m",
     open_price: str | None = None,
+    symbol: str = "AAPL",
 ) -> Bar:
     price = Decimal(close)
     if interval == "1d":
@@ -34,7 +35,7 @@ def make_bar(
         open_time = index * 300_000
         close_time = (index + 1) * 300_000 - 1
     return Bar(
-        symbol="AAPL",
+        symbol=symbol,
         interval=interval,
         open_time=open_time,
         close_time=close_time,
@@ -377,6 +378,46 @@ class SymbolRunnerTests(unittest.TestCase):
 
             self.assertEqual([], provider.history_requests)
             self.assertEqual([], provider.orders)
+
+    def test_futures_preloads_six_closed_bars_before_realtime(self) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "BTCUSDT",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["BTCUSDT"],
+                        provider="binance_futures",
+                        ma_period=5,
+                    ),
+                    manual_direction=Direction.LONG,
+                ),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            history = [
+                make_bar("10", index, symbol="BTCUSDT")
+                for index in range(5)
+            ]
+            history.append(make_bar("12", 5, symbol="BTCUSDT"))
+            provider = HistoricalWarmupProvider(history)
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.history_requests))
+            _symbol, interval, start_time, end_time, limit = (
+                provider.history_requests[0]
+            )
+            self.assertEqual("5m", interval)
+            self.assertEqual(6, limit)
+            self.assertEqual(6 * 300_000 - 1, end_time - start_time)
+            self.assertEqual([], provider.orders)
+            self.assertEqual(6, snapshots[-1].warmup_bars)
+            self.assertEqual(6, snapshots[-1].warmup_required)
 
     def test_signal_found_only_in_history_is_not_submitted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

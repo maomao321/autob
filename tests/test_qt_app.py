@@ -77,6 +77,90 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(("AAPL", "NVDA"), window.tree.get_children())
             show_error_mock.assert_not_called()
 
+    def test_adding_futures_symbols_appends_usdt_once(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["BTCUSDT"],
+                    provider="binance_futures",
+                )
+            )
+
+            with patch("autoquant.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window.provider_var.set("binance_futures")
+            window.symbol_var.set(" eth, solusdt ")
+            with patch("autoquant.app.show_error") as show_error_mock:
+                window._add_symbols()
+
+            persisted = store.load()
+            self.assertEqual(
+                ["BTCUSDT", "ETHUSDT", "SOLUSDT"], persisted.symbols
+            )
+            self.assertEqual(
+                ("BTCUSDT", "ETHUSDT", "SOLUSDT"),
+                window.tree.get_children(),
+            )
+            show_error_mock.assert_not_called()
+
+    def test_removing_last_symbol_persists_without_saving_other_ui_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["AAPL"],
+                    manual_directions={"AAPL": "LONG"},
+                    ma_period=5,
+                )
+            )
+
+            with patch("autoquant.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+            window.controller.stop_targets.return_value = []
+
+            window.ma_var.set("12")
+            window.tree.selectRow(0)
+            with patch("autoquant.app.show_error") as show_error_mock:
+                window._remove_selected()
+
+            persisted = store.load()
+            self.assertEqual([], persisted.symbols)
+            self.assertEqual({}, persisted.manual_directions)
+            self.assertEqual(5, persisted.ma_period)
+            self.assertEqual((), window.tree.get_children())
+            show_error_mock.assert_not_called()
+
+    def test_remove_keeps_ui_row_when_persistence_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+
+            with patch("autoquant.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+            window.controller.stop_targets.return_value = []
+            window.tree.selectRow(0)
+
+            with (
+                patch.object(store, "save", side_effect=OSError("disk full")),
+                patch("autoquant.app.show_error") as show_error_mock,
+            ):
+                window._remove_selected()
+
+            self.assertEqual(("AAPL",), window.tree.get_children())
+            self.assertEqual(["AAPL"], window.config.symbols)
+            show_error_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

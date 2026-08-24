@@ -44,6 +44,8 @@ from autoquant.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
 
 SnapshotCallback = Callable[[RuntimeSnapshot], None]
 LogCallback = Callable[[str, str, str], None]
+FUTURES_WARMUP_BARS = 6
+FIVE_MINUTE_MS = 5 * 60 * 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +258,9 @@ class SymbolRunner:
                 if not is_paper:
                     raise RuntimeError(f"实盘安全锁定：{message}")
             self._update_risk_cache(paper=is_paper)
+            self._preload_futures_warmup()
+            if self.stop_event.is_set():
+                return
             self._refresh_market_snapshot("等待实时 5 分钟收盘 K 线")
             for bar in self.provider.stream_bars(
                 self.symbol, self.stop_event, self._on_provider_status
@@ -741,6 +746,58 @@ class SymbolRunner:
         self._log(
             "INFO",
             f"历史 K 线回补完成，预热 {loaded}/{required}",
+        )
+
+    def _preload_futures_warmup(self) -> None:
+        if self.config.app.provider != "binance_futures":
+            return
+        # The legacy automatic-direction path needs its current daily candle
+        # before the strategy accepts intraday bars. It keeps using the daily
+        # callback backfill below; the normal UI uses a locked manual direction.
+        if self.config.manual_direction is Direction.UNKNOWN:
+            return
+        fetcher = getattr(self.provider, "get_historical_bars", None)
+        if not callable(fetcher):
+            return
+
+        now_ms = int(time.time() * 1000)
+        current_bar_open = now_ms - (now_ms % FIVE_MINUTE_MS)
+        end_time = current_bar_open - 1
+        start_time = current_bar_open - (
+            FUTURES_WARMUP_BARS * FIVE_MINUTE_MS
+        )
+        self._update(
+            RunState.WARMING_UP,
+            f"正在加载实时前 {FUTURES_WARMUP_BARS} 根 Futures 5 分钟 K 线",
+        )
+        try:
+            bars = fetcher(
+                self.symbol,
+                "5m",
+                start_time,
+                end_time,
+                FUTURES_WARMUP_BARS,
+            )
+        except Exception as exc:
+            message = " ".join(str(exc).split())[:300]
+            self._log(
+                "ERROR",
+                f"Futures 历史 K 线预热失败，将继续等待实时行情：{message}",
+            )
+            return
+
+        for historical_bar in bars:
+            if self.stop_event.is_set():
+                return
+            # Seed indicators only. A signal found before the real-time stream
+            # must never submit a retroactive order.
+            self.strategy.on_bar(historical_bar)
+        loaded = int(getattr(self.strategy, "warmup_bars", 0))
+        required = int(getattr(self.strategy, "warmup_required", 0))
+        self._log(
+            "INFO",
+            f"Futures 历史 K 线预热完成，获取 {len(bars)} 根，"
+            f"指标进度 {loaded}/{required}",
         )
 
     def _backfill_daily_direction(self, current_daily_bar: Bar) -> None:
