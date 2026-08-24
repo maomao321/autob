@@ -72,6 +72,7 @@ class BackendRuntime:
             "running.json"
         )
         self._lock = threading.RLock()
+        self._config_lock = threading.RLock()
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._logs: deque[ServiceLog] = deque(maxlen=max(100, log_capacity))
         self._log_sequence = 0
@@ -115,28 +116,32 @@ class BackendRuntime:
         }
 
     def public_config(self) -> dict[str, Any]:
-        config = self.config_store.load()
-        payload = asdict(config)
-        payload["api_key"] = SECRET_SENTINEL if self._api_key(config) else ""
-        payload["api_secret"] = SECRET_SENTINEL if self._api_secret(config) else ""
-        return payload
+        with self._config_lock:
+            config = self.config_store.load()
+            payload = asdict(config)
+            payload["api_key"] = SECRET_SENTINEL if self._api_key(config) else ""
+            payload["api_secret"] = (
+                SECRET_SENTINEL if self._api_secret(config) else ""
+            )
+            return payload
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        current = self.config_store.load()
-        allowed = set(asdict(current))
-        unknown = sorted(set(payload) - allowed)
-        if unknown:
-            raise ValueError("未知配置字段: " + ", ".join(unknown))
-        merged = asdict(current)
-        merged.update(payload)
-        if payload.get("api_key") == SECRET_SENTINEL:
-            merged["api_key"] = current.api_key
-        if payload.get("api_secret") == SECRET_SENTINEL:
-            merged["api_secret"] = current.api_secret
-        config = AppConfig(**merged)
-        config.validate()
-        self.config_store.save(config)
-        return self.public_config()
+        with self._config_lock:
+            current = self.config_store.load()
+            allowed = set(asdict(current))
+            unknown = sorted(set(payload) - allowed)
+            if unknown:
+                raise ValueError("未知配置字段: " + ", ".join(unknown))
+            merged = asdict(current)
+            merged.update(payload)
+            if payload.get("api_key") == SECRET_SENTINEL:
+                merged["api_key"] = current.api_key
+            if payload.get("api_secret") == SECRET_SENTINEL:
+                merged["api_secret"] = current.api_secret
+            config = AppConfig(**merged)
+            config.validate()
+            self.config_store.save(config)
+            return self.public_config()
 
     @staticmethod
     def _api_key(config: AppConfig) -> str:

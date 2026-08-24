@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -54,6 +55,47 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("server-key", saved.api_key)
         self.assertEqual("server-secret", saved.api_secret)
         self.assertEqual("50.00", saved.buy_notional)
+
+    def test_concurrent_config_updates_are_serialized(self) -> None:
+        original_load = self.store.load
+        start = threading.Barrier(4)
+        state_lock = threading.Lock()
+        active_loads = 0
+        max_active_loads = 0
+        errors: list[Exception] = []
+
+        def tracked_load() -> AppConfig:
+            nonlocal active_loads, max_active_loads
+            with state_lock:
+                active_loads += 1
+                max_active_loads = max(max_active_loads, active_loads)
+            try:
+                time.sleep(0.02)
+                return original_load()
+            finally:
+                with state_lock:
+                    active_loads -= 1
+
+        def update(value: int) -> None:
+            try:
+                start.wait(timeout=1)
+                self.runtime.save_config({"ma_period": value})
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(self.store, "load", side_effect=tracked_load):
+            workers = [
+                threading.Thread(target=update, args=(value,))
+                for value in range(5, 9)
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=2)
+
+        self.assertFalse(errors)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(1, max_active_loads)
 
     def test_futures_account_overview_uses_provider_quote_asset(self) -> None:
         config = self.store.load()
@@ -124,6 +166,54 @@ class BackendHTTPTests(unittest.TestCase):
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):
             create_server("0.0.0.0", 0, runtime=self.runtime, api_token="")
+
+    def test_server_applies_timeout_and_rejects_excess_connections(self) -> None:
+        import socket
+        from unittest.mock import Mock
+
+        limited = create_server(
+            "127.0.0.1",
+            0,
+            runtime=self.runtime,
+            api_token="test-token",
+            max_connections=1,
+            connection_timeout=0.25,
+        )
+        try:
+            client = socket.create_connection(limited.server_address, timeout=1)
+            accepted, _address = limited.get_request()
+            try:
+                self.assertEqual(0.25, accepted.gettimeout())
+            finally:
+                accepted.close()
+                client.close()
+
+            self.assertTrue(limited._connection_slots.acquire(blocking=False))
+            excess = Mock()
+            limited.process_request(excess, ("127.0.0.1", 1))
+            excess.shutdown.assert_called_once()
+            excess.close.assert_called_once()
+            limited._connection_slots.release()
+        finally:
+            limited.server_close()
+
+    def test_server_rejects_invalid_connection_limits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "并发连接"):
+            create_server(
+                "127.0.0.1",
+                0,
+                runtime=self.runtime,
+                api_token="test-token",
+                max_connections=0,
+            )
+        with self.assertRaisesRegex(ValueError, "连接超时"):
+            create_server(
+                "127.0.0.1",
+                0,
+                runtime=self.runtime,
+                api_token="test-token",
+                connection_timeout=0,
+            )
 
     def test_remote_client_requires_https_by_default(self) -> None:
         with self.assertRaisesRegex(ValueError, "HTTPS"):

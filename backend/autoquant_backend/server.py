@@ -14,18 +14,54 @@ from urllib.parse import parse_qs, unquote, urlparse
 from autoquant_backend.runtime import BackendRuntime
 
 
+DEFAULT_MAX_CONNECTIONS = 32
+DEFAULT_CONNECTION_TIMEOUT = 15.0
+
+
 class AutoQuantHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 64
 
     def __init__(
         self,
         server_address: tuple[str, int],
         runtime: BackendRuntime,
         api_token: str,
+        *,
+        max_connections: int = DEFAULT_MAX_CONNECTIONS,
+        connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
     ) -> None:
+        if max_connections <= 0:
+            raise ValueError("HTTP 最大并发连接数必须大于 0")
+        if connection_timeout <= 0:
+            raise ValueError("HTTP 连接超时必须大于 0")
+        self.max_connections = max_connections
+        self.connection_timeout = connection_timeout
+        self._connection_slots = threading.BoundedSemaphore(max_connections)
         super().__init__(server_address, AutoQuantRequestHandler)
         self.runtime = runtime
         self.api_token = api_token
+
+    def get_request(self) -> tuple[Any, Any]:
+        request, client_address = super().get_request()
+        request.settimeout(self.connection_timeout)
+        return request, client_address
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if not self._connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_slots.release()
 
 
 class AutoQuantRequestHandler(BaseHTTPRequestHandler):
@@ -151,11 +187,19 @@ def create_server(
     *,
     runtime: BackendRuntime | None = None,
     api_token: str | None = None,
+    max_connections: int = DEFAULT_MAX_CONNECTIONS,
+    connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
 ) -> AutoQuantHTTPServer:
     token = os.environ.get("AUTOQUANT_API_TOKEN", "") if api_token is None else api_token
     if host not in {"127.0.0.1", "::1", "localhost"} and not token:
         raise ValueError("监听非本机地址时必须设置 AUTOQUANT_API_TOKEN")
-    return AutoQuantHTTPServer((host, port), runtime or BackendRuntime(), token)
+    return AutoQuantHTTPServer(
+        (host, port),
+        runtime or BackendRuntime(),
+        token,
+        max_connections=max_connections,
+        connection_timeout=connection_timeout,
+    )
 
 
 def main() -> None:

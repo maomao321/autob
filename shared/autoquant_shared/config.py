@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import uuid
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -228,8 +230,13 @@ def credential_or_environment(configured_value: str, environment_name: str) -> s
 class ConfigStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_config_path()
+        self._lock = threading.RLock()
 
     def load(self) -> AppConfig:
+        with self._lock:
+            return self._load()
+
+    def _load(self) -> AppConfig:
         if not self.path.exists():
             return AppConfig()
         try:
@@ -260,11 +267,23 @@ class ConfigStore:
             raise ValueError(f"配置文件读取失败: {exc}") from exc
 
     def save(self, config: AppConfig) -> None:
-        config.validate()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(asdict(config), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(self.path)
+        with self._lock:
+            config.validate()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_name(
+                f".{self.path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                temporary.write_text(
+                    json.dumps(asdict(config), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(self.path)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # Preserve the original save error if cleanup also fails.
+                    pass
