@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from autoquant.app import AutoQuantApp, KeyedTable, TextValue
+from autoquant.client import BackendClientError
 from autoquant.config import AppConfig, ConfigStore
 
 
@@ -152,7 +153,11 @@ class QtAppWidgetTests(unittest.TestCase):
             window.tree.selectRow(0)
 
             with (
-                patch.object(store, "save", side_effect=OSError("disk full")),
+                patch.object(
+                    store,
+                    "save",
+                    side_effect=BackendClientError("backend unavailable"),
+                ),
                 patch("autoquant.app.show_error") as show_error_mock,
             ):
                 window._remove_selected()

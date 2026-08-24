@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from autoquant.backend import BackendRuntime, SECRET_SENTINEL
 from autoquant.client import BackendClient, BackendClientError
@@ -52,6 +54,23 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("server-key", saved.api_key)
         self.assertEqual("server-secret", saved.api_secret)
         self.assertEqual("50.00", saved.buy_notional)
+
+    def test_futures_account_overview_uses_provider_quote_asset(self) -> None:
+        config = self.store.load()
+        config.provider = "binance_futures"
+        config.symbols = ["BTCUSDT"]
+        self.store.save(config)
+
+        with patch("autoquant.backend.create_provider") as create_provider_mock:
+            provider = create_provider_mock.return_value
+            provider.quote_asset = "USDT"
+            provider.get_account_total.return_value = Decimal("123.45")
+            payload = self.runtime.account_overview({})
+
+        provider.get_account_total.assert_called_once_with("USDT")
+        self.assertEqual("USDT", payload["currency"])
+        self.assertEqual("123.45", payload["total_balance"])
+        self.assertIn("Binance Futures USDT", payload["message"])
 
 
 class BackendHTTPTests(unittest.TestCase):

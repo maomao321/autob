@@ -200,6 +200,8 @@ class BackendRuntime:
     def account_overview(self, market_prices: dict[str, Any]) -> dict[str, Any]:
         runner_config = self._runner_config()
         paper = runner_config.app.trading_mode != "REAL"
+        provider = create_provider(runner_config)
+        account_currency = provider.quote_asset
         prices: dict[str, Decimal] = {}
         for symbol, value in market_prices.items():
             try:
@@ -212,9 +214,8 @@ class BackendRuntime:
         total_balance: Decimal | None = None
         errors: list[str] = []
         if runner_config.api_key and runner_config.api_secret:
-            provider = create_provider(runner_config)
             try:
-                total_balance = provider.get_account_total("USDC")
+                total_balance = provider.get_account_total(account_currency)
             except Exception as exc:
                 errors.append(f"账户总金额不可用：{exc}")
             for symbol in self.controller.open_position_symbols(paper=paper):
@@ -229,15 +230,24 @@ class BackendRuntime:
         performance = self.controller.portfolio_performance(
             paper=paper, market_prices=prices
         )
-        message = "；".join(errors) if errors else (
-            "账户总金额来自 Binance 全部激活钱包的 USDC 折算；"
-            f"盈亏仅统计本程序{'模拟' if paper else '实盘'}订单"
-        )
+        if errors:
+            message = "；".join(errors)
+        elif runner_config.app.provider == "binance_futures":
+            message = (
+                f"账户总金额来自 Binance Futures {account_currency} 余额；"
+                f"盈亏仅统计本程序{'模拟' if paper else '实盘'}订单"
+            )
+        else:
+            message = (
+                "账户总金额来自 Binance 全部激活钱包的 USDC 折算；"
+                f"盈亏仅统计本程序{'模拟' if paper else '实盘'}订单"
+            )
         return overview_payload(
             AccountOverview(
                 total_balance=total_balance,
                 realized_pnl=performance.realized_pnl,
                 unrealized_pnl=performance.unrealized_pnl,
+                currency=account_currency,
                 missing_price_symbols=performance.missing_price_symbols,
                 message=message,
                 updated_at=int(time.time() * 1000),
@@ -304,4 +314,3 @@ class BackendRuntime:
         # disk so a supervised restart can restore them safely.
         self.controller.stop_all(close_position=False)
         self.controller.wait_for_all(timeout=timeout)
-

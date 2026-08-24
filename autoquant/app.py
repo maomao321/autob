@@ -47,6 +47,7 @@ from autoquant.config import (
 )
 from autoquant.client import (
     BackendClient,
+    BackendClientError,
     RemoteConfigStore,
     RemoteRunnerConfig,
     RemoteTradingController,
@@ -1060,7 +1061,7 @@ class AutoQuantApp(QMainWindow):
             for symbol in symbols_to_insert:
                 self._insert_symbol(symbol)
             self.symbol_var.set("")
-        except (OSError, ValueError, TypeError) as exc:
+        except (BackendClientError, OSError, ValueError, TypeError) as exc:
             show_error("添加标的失败", str(exc))
 
     def _remove_selected(self) -> None:
@@ -1095,7 +1096,7 @@ class AutoQuantApp(QMainWindow):
         )
         try:
             self.store.save(updated_config)
-        except (OSError, ValueError, TypeError) as exc:
+        except (BackendClientError, OSError, ValueError, TypeError) as exc:
             show_error("移除标的失败", str(exc))
             return
 
@@ -1240,7 +1241,7 @@ class AutoQuantApp(QMainWindow):
             self.store.save(self.config)
             show_info("已保存", f"配置已保存到:\n{self.store.path}")
             self._refresh_account_overview(manual=True)
-        except (OSError, ValueError, TypeError) as exc:
+        except (BackendClientError, OSError, ValueError, TypeError) as exc:
             show_error("保存失败", str(exc))
 
     def _check_connection(self) -> None:
