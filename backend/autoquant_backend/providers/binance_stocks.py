@@ -351,9 +351,9 @@ class BinanceStocksProvider(TradingProvider):
     def get_latest_price(self, symbol: str) -> Decimal:
         self._require_credentials()
         symbol = symbol.strip().upper()
-        cached = self._latest_price_cache.get(symbol)
-        if cached is not None and time.monotonic() - cached[0] < 5:
-            return cached[1]
+        cached_price = self._cached_latest_price(symbol)
+        if cached_price is not None:
+            return cached_price
         payload = self._request_json(
             "GET",
             "/sapi/v1/equity/market/quote",
@@ -362,19 +362,34 @@ class BinanceStocksProvider(TradingProvider):
         )
         if not isinstance(payload, dict) or not payload:
             raise ProviderError(f"{symbol} 当前没有可用报价")
+        price = self._quote_midpoint(payload)
+        if price is None:
+            raise ProviderError(f"{symbol} 当前没有有效买卖报价")
+        return self._cache_latest_price(symbol, price)
+
+    def _cached_latest_price(self, symbol: str) -> Decimal | None:
+        cached = self._latest_price_cache.get(symbol)
+        if cached is None or time.monotonic() - cached[0] >= 5:
+            return None
+        return cached[1]
+
+    def _cache_latest_price(self, symbol: str, price: Decimal) -> Decimal:
+        self._latest_price_cache[symbol] = (time.monotonic(), price)
+        return price
+
+    @staticmethod
+    def _quote_midpoint(payload: dict[str, Any]) -> Decimal | None:
         prices: list[Decimal] = []
         for field in ("bidPrice", "askPrice"):
             try:
-                value = Decimal(str(payload.get(field, "0")))
+                price = Decimal(str(payload.get(field, "0")))
             except (ArithmeticError, ValueError):
                 continue
-            if value.is_finite() and value > 0:
-                prices.append(value)
+            if price.is_finite() and price > 0:
+                prices.append(price)
         if not prices:
-            raise ProviderError(f"{symbol} 当前没有有效买卖报价")
-        result = sum(prices, Decimal("0")) / Decimal(len(prices))
-        self._latest_price_cache[symbol] = (time.monotonic(), result)
-        return result
+            return None
+        return sum(prices, Decimal("0")) / Decimal(len(prices))
 
     def get_historical_bars(
         self,
@@ -442,9 +457,15 @@ class BinanceStocksProvider(TradingProvider):
             self.sync_server_time()
 
     def sync_server_time(self) -> int:
-        payload = self._request_json("GET", "/api/v3/time", {}, signed=False)
+        return self._sync_server_time(
+            "/api/v3/time",
+            "Binance 时间接口返回结构不符合预期",
+        )
+
+    def _sync_server_time(self, path: str, invalid_payload_message: str) -> int:
+        payload = self._request_json("GET", path, {}, signed=False)
         if not isinstance(payload, dict):
-            raise ProviderError("Binance 时间接口返回结构不符合预期")
+            raise ProviderError(invalid_payload_message)
         server_time = int(payload["serverTime"])
         self._server_time_offset_ms = server_time - int(time.time() * 1000)
         self._server_time_synced_at = time.monotonic()

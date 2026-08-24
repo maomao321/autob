@@ -306,192 +306,8 @@ class SymbolRunner:
                 self._refresh_market_snapshot()
                 if signal is None:
                     continue
-
-                self._update(RunState.SIGNAL, signal.reason)
-                self._log("SIGNAL", signal.reason)
-                if self.stop_event.is_set():
-                    self._log("INFO", "停止请求已生效，信号不会下单")
+                if self._handle_signal(signal, bar, is_paper=is_paper):
                     break
-
-                position = self.ledger.position_summary(
-                    self.symbol, paper=is_paper
-                )
-                pending_count = self.ledger.pending_count(
-                    self.symbol, paper=is_paper
-                )
-                if pending_count:
-                    message = (
-                        f"未下单：仍有 {pending_count} 笔订单未到终态，"
-                        "等待成交状态确认"
-                    )
-                    self._log("ERROR", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                is_long_exit = signal.side is Side.SELL and position.quantity > 0
-                is_short_exit = signal.side is Side.BUY and position.quantity < 0
-                is_exit = is_long_exit or is_short_exit
-                supports_short = bool(
-                    getattr(self.provider, "supports_short", False)
-                )
-                if position.quantity != 0 and not is_exit:
-                    direction = "多头" if position.quantity > 0 else "空头"
-                    message = (
-                        f"未下单：当前已有程序管理的{direction}持仓，"
-                        "禁止双向或重复开仓"
-                    )
-                    self._log("ERROR", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                if (
-                    not is_exit
-                    and self.strategy.trades_today
-                    >= self.config.app.max_trades_per_day
-                ):
-                    message = "未下单：已达到当日入场次数上限"
-                    self._log("INFO", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                if not self._signal_is_fresh(bar):
-                    message = "未下单：信号已超过配置的有效期"
-                    self._log("ERROR", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                if (
-                    not is_exit
-                    and signal.side is Side.SELL
-                    and not supports_short
-                ):
-                    message = "未下单：当前供应商不支持建立空头"
-                    self._log("ERROR", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                if self.config.app.trading_mode == "REAL":
-                    current_info = self.provider.check_symbol(self.symbol)
-                    if self.stop_event.is_set():
-                        self._log("INFO", "停止请求已生效，标的校验后不再下单")
-                        break
-                    tradability = str(current_info.get("tradability", "NONE"))
-                    allowed = tradability == "BUY_SELL" or (
-                        tradability == signal.side.value
-                    )
-                    if not allowed:
-                        message = (
-                            f"未下单：当前 tradability={tradability}，"
-                            f"不允许 {signal.side.value}"
-                        )
-                        self._log("ERROR", message)
-                        self._refresh_market_snapshot(message)
-                        continue
-                day_key = getattr(self.strategy, "current_day_key", None)
-                if day_key is None:
-                    self._log("ERROR", "未下单：尚未确定当前交易日")
-                    continue
-                order = OrderRequest(
-                    symbol=self.symbol,
-                    side=signal.side,
-                    reference_price=signal.price,
-                    buy_notional=(
-                        Decimal("0")
-                        if is_exit
-                        else Decimal(self.config.app.buy_notional)
-                    ),
-                    sell_quantity=(
-                        abs(position.quantity)
-                        if is_exit
-                        else Decimal(self.config.app.sell_quantity)
-                    ),
-                    client_order_id=f"aq{uuid.uuid4().hex}",
-                    reduce_only=is_exit,
-                    allow_short=supports_short,
-                )
-                if (
-                    not order.reduce_only
-                    and order.buy_notional
-                    > Decimal(self.config.app.max_order_notional)
-                ):
-                    message = "资金风控阻止下单：开仓金额超过单笔金额上限"
-                    self._log("ERROR", message)
-                    self._refresh_market_snapshot(message)
-                    continue
-                try:
-                    self.ledger.record_submitting(
-                        order,
-                        day_key,
-                        paper=is_paper,
-                        max_daily_buy_notional=Decimal(
-                            self.config.app.max_daily_buy_notional
-                        ),
-                    )
-                except RiskLimitError as exc:
-                    message = str(exc)
-                    self._log("ERROR", f"资金风控阻止下单：{message}")
-                    self._refresh_market_snapshot(message)
-                    continue
-                self._sync_trade_count()
-                if self.stop_event.is_set():
-                    message = "停止请求在订单发送前到达，订单未提交"
-                    self.ledger.mark_rejected(order.client_order_id, message)
-                    self._sync_trade_count()
-                    self._log("INFO", message)
-                    break
-                try:
-                    result = self.provider.place_order(order)
-                except (OrderValidationError, OrderRejectedError) as exc:
-                    message = str(exc) or exc.__class__.__name__
-                    self.ledger.mark_rejected(order.client_order_id, message)
-                    self._sync_trade_count()
-                    self._log("ERROR", f"订单未发送或已明确拒绝：{message}")
-                    self._refresh_market_snapshot(message)
-                    continue
-                except Exception as exc:
-                    message = str(exc) or exc.__class__.__name__
-                    self.ledger.mark_unknown(order.client_order_id, message)
-                    self._sync_trade_count()
-                    self._log(
-                        "ERROR",
-                        f"订单提交结果未知，已停止自动交易且不会重试：{message}",
-                    )
-                    raise
-                if result.accepted:
-                    self.ledger.mark_acknowledged(
-                        order.client_order_id,
-                        result.order_id,
-                        result.message,
-                    )
-                    mode = "模拟" if result.paper else "实盘"
-                    message = f"{mode}订单已接受: {result.order_id}；{result.message}"
-                    self._log("ORDER", message)
-                    if result.paper:
-                        filled_quantity = (
-                            order.sell_quantity
-                            if order.reduce_only
-                            else order.buy_notional / order.reference_price
-                        )
-                        self.ledger.mark_lifecycle(
-                            order.client_order_id,
-                            "FILLED",
-                            "模拟订单已成交",
-                            filled_quantity=filled_quantity,
-                            average_price=order.reference_price,
-                        )
-                    else:
-                        self._reconcile_single_order(
-                            order.client_order_id,
-                            result.order_id,
-                        )
-                        if self.ledger.unknown_count(
-                            self.symbol, paper=False
-                        ):
-                            raise RuntimeError(
-                                "实盘订单状态无法确认，已锁定并停止策略"
-                            )
-                else:
-                    message = f"订单被拒绝: {result.message}"
-                    self.ledger.mark_rejected(order.client_order_id, result.message)
-                    self._log("ERROR", message)
-                self._sync_trade_count()
-                self._update_risk_cache(paper=is_paper)
-                self._refresh_market_snapshot(message)
         except Exception as exc:
             if not self.stop_event.is_set():
                 message = str(exc) or exc.__class__.__name__
@@ -503,6 +319,198 @@ class SymbolRunner:
         message = "已停止并完成平仓" if self._close_position_on_stop else "已停止"
         self._update(RunState.STOPPED, message)
         self._log("INFO", f"量化运行{message}")
+
+    def _handle_signal(
+        self,
+        signal: Signal,
+        bar: Bar,
+        *,
+        is_paper: bool,
+    ) -> bool:
+        """Validate and submit a signal; return whether the run loop should stop."""
+        self._update(RunState.SIGNAL, signal.reason)
+        self._log("SIGNAL", signal.reason)
+        if self.stop_event.is_set():
+            self._log("INFO", "停止请求已生效，信号不会下单")
+            return True
+
+        position = self.ledger.position_summary(self.symbol, paper=is_paper)
+        pending_count = self.ledger.pending_count(self.symbol, paper=is_paper)
+        if pending_count:
+            self._skip_order(
+                f"未下单：仍有 {pending_count} 笔订单未到终态，"
+                "等待成交状态确认"
+            )
+            return False
+
+        is_exit = (
+            signal.side is Side.SELL and position.quantity > 0
+        ) or (
+            signal.side is Side.BUY and position.quantity < 0
+        )
+        supports_short = bool(getattr(self.provider, "supports_short", False))
+        if position.quantity != 0 and not is_exit:
+            direction = "多头" if position.quantity > 0 else "空头"
+            self._skip_order(
+                f"未下单：当前已有程序管理的{direction}持仓，"
+                "禁止双向或重复开仓"
+            )
+            return False
+        if (
+            not is_exit
+            and self.strategy.trades_today
+            >= self.config.app.max_trades_per_day
+        ):
+            self._skip_order("未下单：已达到当日入场次数上限", level="INFO")
+            return False
+        if not self._signal_is_fresh(bar):
+            self._skip_order("未下单：信号已超过配置的有效期")
+            return False
+        if not is_exit and signal.side is Side.SELL and not supports_short:
+            self._skip_order("未下单：当前供应商不支持建立空头")
+            return False
+        if not is_paper:
+            current_info = self.provider.check_symbol(self.symbol)
+            if self.stop_event.is_set():
+                self._log("INFO", "停止请求已生效，标的校验后不再下单")
+                return True
+            tradability = str(current_info.get("tradability", "NONE"))
+            if tradability not in {"BUY_SELL", signal.side.value}:
+                self._skip_order(
+                    f"未下单：当前 tradability={tradability}，"
+                    f"不允许 {signal.side.value}"
+                )
+                return False
+
+        day_key = getattr(self.strategy, "current_day_key", None)
+        if day_key is None:
+            self._log("ERROR", "未下单：尚未确定当前交易日")
+            return False
+        order = self._create_signal_order(
+            signal,
+            position_quantity=position.quantity,
+            is_exit=is_exit,
+            supports_short=supports_short,
+        )
+        if (
+            not order.reduce_only
+            and order.buy_notional
+            > Decimal(self.config.app.max_order_notional)
+        ):
+            self._skip_order("资金风控阻止下单：开仓金额超过单笔金额上限")
+            return False
+        try:
+            self.ledger.record_submitting(
+                order,
+                day_key,
+                paper=is_paper,
+                max_daily_buy_notional=Decimal(
+                    self.config.app.max_daily_buy_notional
+                ),
+            )
+        except RiskLimitError as exc:
+            message = str(exc)
+            self._log("ERROR", f"资金风控阻止下单：{message}")
+            self._refresh_market_snapshot(message)
+            return False
+
+        self._sync_trade_count()
+        if self.stop_event.is_set():
+            message = "停止请求在订单发送前到达，订单未提交"
+            self.ledger.mark_rejected(order.client_order_id, message)
+            self._sync_trade_count()
+            self._log("INFO", message)
+            return True
+        self._submit_order(order, is_paper=is_paper)
+        return False
+
+    def _create_signal_order(
+        self,
+        signal: Signal,
+        *,
+        position_quantity: Decimal,
+        is_exit: bool,
+        supports_short: bool,
+    ) -> OrderRequest:
+        return OrderRequest(
+            symbol=self.symbol,
+            side=signal.side,
+            reference_price=signal.price,
+            buy_notional=(
+                Decimal("0")
+                if is_exit
+                else Decimal(self.config.app.buy_notional)
+            ),
+            sell_quantity=(
+                abs(position_quantity)
+                if is_exit
+                else Decimal(self.config.app.sell_quantity)
+            ),
+            client_order_id=f"aq{uuid.uuid4().hex}",
+            reduce_only=is_exit,
+            allow_short=supports_short,
+        )
+
+    def _submit_order(self, order: OrderRequest, *, is_paper: bool) -> None:
+        try:
+            result = self.provider.place_order(order)
+        except (OrderValidationError, OrderRejectedError) as exc:
+            message = str(exc) or exc.__class__.__name__
+            self.ledger.mark_rejected(order.client_order_id, message)
+            self._sync_trade_count()
+            self._log("ERROR", f"订单未发送或已明确拒绝：{message}")
+            self._refresh_market_snapshot(message)
+            return
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            self.ledger.mark_unknown(order.client_order_id, message)
+            self._sync_trade_count()
+            self._log(
+                "ERROR",
+                f"订单提交结果未知，已停止自动交易且不会重试：{message}",
+            )
+            raise
+
+        if result.accepted:
+            self.ledger.mark_acknowledged(
+                order.client_order_id,
+                result.order_id,
+                result.message,
+            )
+            mode = "模拟" if result.paper else "实盘"
+            message = f"{mode}订单已接受: {result.order_id}；{result.message}"
+            self._log("ORDER", message)
+            if result.paper:
+                filled_quantity = (
+                    order.sell_quantity
+                    if order.reduce_only
+                    else order.buy_notional / order.reference_price
+                )
+                self.ledger.mark_lifecycle(
+                    order.client_order_id,
+                    "FILLED",
+                    "模拟订单已成交",
+                    filled_quantity=filled_quantity,
+                    average_price=order.reference_price,
+                )
+            else:
+                self._reconcile_single_order(
+                    order.client_order_id,
+                    result.order_id,
+                )
+                if self.ledger.unknown_count(self.symbol, paper=False):
+                    raise RuntimeError("实盘订单状态无法确认，已锁定并停止策略")
+        else:
+            message = f"订单被拒绝: {result.message}"
+            self.ledger.mark_rejected(order.client_order_id, result.message)
+            self._log("ERROR", message)
+        self._sync_trade_count()
+        self._update_risk_cache(paper=is_paper)
+        self._refresh_market_snapshot(message)
+
+    def _skip_order(self, message: str, *, level: str = "ERROR") -> None:
+        self._log(level, message)
+        self._refresh_market_snapshot(message)
 
     def _close_stopped_position(self) -> None:
         if not self._force_close_position():

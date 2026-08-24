@@ -283,9 +283,9 @@ class BinanceFuturesProvider(BinanceStocksProvider):
 
     def get_latest_price(self, symbol: str) -> Decimal:
         symbol = symbol.strip().upper()
-        cached = self._latest_price_cache.get(symbol)
-        if cached is not None and time.monotonic() - cached[0] < 5:
-            return cached[1]
+        cached_price = self._cached_latest_price(symbol)
+        if cached_price is not None:
+            return cached_price
         payload = self._request_json(
             "GET",
             "/fapi/v1/ticker/bookTicker",
@@ -294,19 +294,10 @@ class BinanceFuturesProvider(BinanceStocksProvider):
         )
         if not isinstance(payload, dict):
             raise ProviderError(f"{symbol} 当前没有可用 Futures 报价")
-        prices: list[Decimal] = []
-        for field in ("bidPrice", "askPrice"):
-            try:
-                price = Decimal(str(payload.get(field, "0")))
-            except (ArithmeticError, ValueError):
-                continue
-            if price.is_finite() and price > 0:
-                prices.append(price)
-        if not prices:
+        price = self._quote_midpoint(payload)
+        if price is None:
             raise ProviderError(f"{symbol} 当前没有有效 Futures 买卖报价")
-        result = sum(prices, Decimal("0")) / Decimal(len(prices))
-        self._latest_price_cache[symbol] = (time.monotonic(), result)
-        return result
+        return self._cache_latest_price(symbol, price)
 
     def get_historical_bars(
         self,
@@ -364,12 +355,7 @@ class BinanceFuturesProvider(BinanceStocksProvider):
         return bars[-limit:]
 
     def sync_server_time(self) -> int:
-        payload = self._request_json(
-            "GET", "/fapi/v1/time", {}, signed=False
+        return self._sync_server_time(
+            "/fapi/v1/time",
+            "Binance Futures 时间接口返回结构不符合预期",
         )
-        if not isinstance(payload, dict):
-            raise ProviderError("Binance Futures 时间接口返回结构不符合预期")
-        server_time = int(payload["serverTime"])
-        self._server_time_offset_ms = server_time - int(time.time() * 1000)
-        self._server_time_synced_at = time.monotonic()
-        return self._server_time_offset_ms
