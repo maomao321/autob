@@ -6,8 +6,8 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 
-from autoquant.models import OrderRequest, Side
-from autoquant.state import OrderLedger, RiskLimitError
+from autoquant_shared.models import OrderRequest, Side
+from autoquant_backend.state import OrderLedger, RiskLimitError
 
 
 def order(

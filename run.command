@@ -24,7 +24,7 @@ if [[ ! -x ".venv/bin/python" ]]; then
     fi
 fi
 
-if ! ".venv/bin/python" -c "import PySide6, openpyxl, websocket" >/dev/null 2>&1; then
+if ! ".venv/bin/python" -c "import autoquant_frontend, autoquant_shared, PySide6, openpyxl" >/dev/null 2>&1; then
     echo "[AutoQuant] 正在向 .venv 安装源码运行依赖..."
     if ! ".venv/bin/python" -m pip install -e .; then
         show_error "依赖安装失败，请检查网络连接和上方的 pip 错误。"
@@ -32,4 +32,4 @@ if ! ".venv/bin/python" -c "import PySide6, openpyxl, websocket" >/dev/null 2>&1
     fi
 fi
 
-exec ".venv/bin/python" -m autoquant
+exec ".venv/bin/python" -m autoquant_frontend

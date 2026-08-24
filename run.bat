@@ -26,7 +26,7 @@ pause
 exit /b 1
 
 :ensure_dependencies
-".venv\Scripts\python.exe" -c "import PySide6, openpyxl, websocket" >nul 2>nul
+".venv\Scripts\python.exe" -c "import autoquant_frontend, autoquant_shared, PySide6, openpyxl" >nul 2>nul
 if not errorlevel 1 goto launch
 
 echo [AutoQuant] Installing source dependencies into .venv...
@@ -34,7 +34,7 @@ echo [AutoQuant] Installing source dependencies into .venv...
 if errorlevel 1 goto dependency_error
 
 :launch
-".venv\Scripts\python.exe" -m autoquant
+".venv\Scripts\python.exe" -m autoquant_frontend
 set "AUTOQUANT_EXIT_CODE=%errorlevel%"
 if not "%AUTOQUANT_EXIT_CODE%"=="0" pause
 exit /b %AUTOQUANT_EXIT_CODE%

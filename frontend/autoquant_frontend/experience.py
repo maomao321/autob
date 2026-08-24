@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from autoquant.config import default_config_path
+from autoquant_shared.config import default_config_path
 
 
 OPENAI_FILES_URL = "https://api.openai.com/v1/files"

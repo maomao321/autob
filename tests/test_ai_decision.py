@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from email.utils import format_datetime
 
-from autoquant.ai_decision import (
+from autoquant_backend.ai_decision import (
     DecisionError,
     DeepSeekDecisionClient,
     OpenAIResponsesDecisionClient,
@@ -15,7 +15,7 @@ from autoquant.ai_decision import (
     PublicMarketContextCollector,
     parse_opening_decision,
 )
-from autoquant.models import Bar, Direction
+from autoquant_shared.models import Bar, Direction
 
 
 def daily_bar() -> Bar:

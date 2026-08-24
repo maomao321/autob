@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from autoquant.models import Bar, Signal
+from autoquant_shared.models import Bar, Signal
 
 
 class Strategy(ABC):
@@ -15,4 +15,3 @@ class Strategy(ABC):
     @abstractmethod
     def mark_executed(self, signal: Signal) -> None:
         """Record an accepted paper/live order for daily risk limits."""
-

@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from autoquant.config import default_config_path
-from autoquant.models import OrderRequest, Side
+from autoquant_shared.config import default_config_path
+from autoquant_shared.models import OrderRequest, Side
 
 
 CONSUMED_STATUSES = {

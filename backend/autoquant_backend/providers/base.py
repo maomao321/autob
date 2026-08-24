@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from decimal import Decimal
 from threading import Event
 
-from autoquant.models import Bar, OrderRequest, OrderResult
+from autoquant_shared.models import Bar, OrderRequest, OrderResult
 
 
 StatusCallback = Callable[[str], None]

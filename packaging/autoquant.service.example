@@ -10,7 +10,7 @@ WorkingDirectory=/opt/autoquant
 Environment=AUTOQUANT_HOST=127.0.0.1
 Environment=AUTOQUANT_PORT=8765
 EnvironmentFile=/etc/autoquant/autoquant.env
-ExecStart=/opt/autoquant/.venv/bin/python -m autoquant.server
+ExecStart=/opt/autoquant/.venv/bin/python -m autoquant_backend
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from autoquant.models import Bar, Direction, Side
-from autoquant.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
+from autoquant_shared.models import Bar, Direction, Side
+from autoquant_backend.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
 
 
 def bar(

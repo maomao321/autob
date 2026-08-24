@@ -11,9 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from autoquant.app import AutoQuantApp, KeyedTable, TextValue
-from autoquant.client import BackendClientError
-from autoquant.config import AppConfig, ConfigStore
+from autoquant_frontend.app import AutoQuantApp, KeyedTable, TextValue
+from autoquant_frontend.client import BackendClientError
+from autoquant_shared.config import AppConfig, ConfigStore
 
 
 class QtAppWidgetTests(unittest.TestCase):
@@ -61,7 +61,7 @@ class QtAppWidgetTests(unittest.TestCase):
             store = ConfigStore(Path(directory) / "config.json")
             store.save(AppConfig(symbols=["AAPL"], ma_period=5))
 
-            with patch("autoquant.app.RemoteTradingController"):
+            with patch("autoquant_frontend.app.RemoteTradingController"):
                 window = AutoQuantApp(store)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
@@ -69,7 +69,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.ma_var.set("12")
             window.symbol_var.set(" nvda ")
-            with patch("autoquant.app.show_error") as show_error_mock:
+            with patch("autoquant_frontend.app.show_error") as show_error_mock:
                 window._add_symbols()
 
             persisted = store.load()
@@ -88,7 +88,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 )
             )
 
-            with patch("autoquant.app.RemoteTradingController"):
+            with patch("autoquant_frontend.app.RemoteTradingController"):
                 window = AutoQuantApp(store)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
@@ -96,7 +96,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.provider_var.set("binance_futures")
             window.symbol_var.set(" eth, solusdt ")
-            with patch("autoquant.app.show_error") as show_error_mock:
+            with patch("autoquant_frontend.app.show_error") as show_error_mock:
                 window._add_symbols()
 
             persisted = store.load()
@@ -120,7 +120,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 )
             )
 
-            with patch("autoquant.app.RemoteTradingController"):
+            with patch("autoquant_frontend.app.RemoteTradingController"):
                 window = AutoQuantApp(store)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
@@ -129,7 +129,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.ma_var.set("12")
             window.tree.selectRow(0)
-            with patch("autoquant.app.show_error") as show_error_mock:
+            with patch("autoquant_frontend.app.show_error") as show_error_mock:
                 window._remove_selected()
 
             persisted = store.load()
@@ -144,7 +144,7 @@ class QtAppWidgetTests(unittest.TestCase):
             store = ConfigStore(Path(directory) / "config.json")
             store.save(AppConfig(symbols=["AAPL"]))
 
-            with patch("autoquant.app.RemoteTradingController"):
+            with patch("autoquant_frontend.app.RemoteTradingController"):
                 window = AutoQuantApp(store)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
@@ -158,7 +158,7 @@ class QtAppWidgetTests(unittest.TestCase):
                     "save",
                     side_effect=BackendClientError("backend unavailable"),
                 ),
-                patch("autoquant.app.show_error") as show_error_mock,
+                patch("autoquant_frontend.app.show_error") as show_error_mock,
             ):
                 window._remove_selected()
 

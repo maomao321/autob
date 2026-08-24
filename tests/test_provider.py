@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from autoquant.models import OrderRequest, Side
-from autoquant.providers.binance_stocks import (
+from autoquant_shared.models import OrderRequest, Side
+from autoquant_backend.providers.binance_stocks import (
     BinanceStocksProvider,
     OrderStatusUnknownError,
     OrderValidationError,

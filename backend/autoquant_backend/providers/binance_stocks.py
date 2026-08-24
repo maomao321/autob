@@ -17,8 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from autoquant.models import Bar, OrderRequest, OrderResult, Side
-from autoquant.providers.base import StatusCallback, TradingProvider
+from autoquant_shared.models import Bar, OrderRequest, OrderResult, Side
+from autoquant_backend.providers.base import StatusCallback, TradingProvider
 
 
 class ProviderError(RuntimeError):

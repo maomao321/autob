@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Callable, Protocol
 
-from autoquant.ai_decision import (
+from autoquant_backend.ai_decision import (
     DecisionClient,
     DeepSeekDecisionClient,
     OpenAIResponsesDecisionClient,
@@ -15,8 +15,8 @@ from autoquant.ai_decision import (
     OpeningDecisionService,
     PublicMarketContextCollector,
 )
-from autoquant.config import AppConfig
-from autoquant.models import (
+from autoquant_shared.config import AppConfig
+from autoquant_shared.models import (
     Bar,
     Direction,
     OrderRequest,
@@ -25,21 +25,21 @@ from autoquant.models import (
     Side,
     Signal,
 )
-from autoquant.providers.base import TradingProvider
-from autoquant.providers.binance_futures import BinanceFuturesProvider
-from autoquant.providers.binance_stocks import (
+from autoquant_backend.providers.base import TradingProvider
+from autoquant_backend.providers.binance_futures import BinanceFuturesProvider
+from autoquant_backend.providers.binance_stocks import (
     BinanceStocksProvider,
     OrderRejectedError,
     OrderValidationError,
 )
-from autoquant.state import (
+from autoquant_backend.state import (
     OrderLedger,
     OrderRecord,
     PortfolioPerformance,
     RiskLimitError,
 )
-from autoquant.strategies.base import Strategy
-from autoquant.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
+from autoquant_backend.strategies.base import Strategy
+from autoquant_backend.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
 
 
 SnapshotCallback = Callable[[RuntimeSnapshot], None]

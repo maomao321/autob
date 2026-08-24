@@ -10,15 +10,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from autoquant.config import (
+from autoquant_shared.config import (
     AppConfig,
     ConfigStore,
     credential_or_environment,
     default_config_path,
 )
-from autoquant.engine import RunnerConfig, TradingController, create_provider
-from autoquant.models import AccountOverview, Direction, RuntimeSnapshot
-from autoquant.state import OrderLedger
+from autoquant_backend.engine import RunnerConfig, TradingController, create_provider
+from autoquant_shared.models import AccountOverview, Direction, RuntimeSnapshot
+from autoquant_backend.state import OrderLedger
 
 
 SECRET_SENTINEL = "••••••••"

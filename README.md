@@ -93,7 +93,7 @@ chmod +x packaging/build_macos.sh run.command
 $env:BINANCE_API_KEY = "你的 API Key"
 $env:BINANCE_API_SECRET = "你的 API Secret"
 $env:AUTOQUANT_API_TOKEN = "前后端共享的随机令牌"
-py -m autoquant.server
+py -m autoquant_backend
 ```
 
 ### 手动开仓方向
@@ -169,17 +169,13 @@ py -m autoquant.server
 
 ## 项目结构与扩展
 
-- `autoquant/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider` 与 `BinanceFuturesProvider`。
-- `autoquant/ai_decision.py`：新闻/走势上下文、ChatGPT/DeepSeek 客户端、结构化结果校验与双模型共识。
-- `autoquant/experience.py`：外部 Excel/CSV 交易与K线导入、形态标准化、本地经验库及 OpenAI Vector Store 上传。
-- `autoquant/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
-- `autoquant/engine.py`：每个标的的独立运行器及启动/停止控制。
-- `autoquant/backend.py`：常驻后端运行时、配置、状态快照与日志缓存。
-- `autoquant/server.py`：带 Bearer Token 鉴权的 REST 服务。
-- `autoquant/client.py`：前端 HTTP 客户端和远程控制器。
-- `autoquant/app.py`：只通过后端接口工作的 PySide6/Qt 前端。
+- `frontend/autoquant_frontend/`：PySide6/Qt 界面、远程 HTTP 客户端和交易经验库功能，只通过后端 API 操作交易状态。
+- `backend/autoquant_backend/`：常驻服务、交易引擎、策略、Provider、风控和 SQLite 订单账本，不依赖前端代码。
+- `shared/autoquant_shared/`：前后端共同使用的配置结构、校验规则和 API 数据模型。
+- `backend/autoquant_backend/providers/`：行情和交易供应商接口；当前实现 `BinanceStocksProvider` 与 `BinanceFuturesProvider`。
+- `backend/autoquant_backend/strategies/`：策略接口；当前实现 `FiveMinuteBreakoutStrategy`。
 
-添加供应商或策略时，实现相应抽象接口，并在 `autoquant/engine.py` 的工厂函数中注册即可。
+添加供应商或策略时，实现相应抽象接口，并在 `backend/autoquant_backend/engine.py` 的工厂函数中注册即可。前端不得导入 `autoquant_backend`，后端不得导入 `autoquant_frontend`；跨端协议只放在 `autoquant_shared`。
 
 ## 交易经验库
 

@@ -7,11 +7,11 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from autoquant.backend import BackendRuntime, SECRET_SENTINEL
-from autoquant.client import BackendClient, BackendClientError
-from autoquant.config import AppConfig, ConfigStore
-from autoquant.server import create_server
-from autoquant.state import OrderLedger
+from autoquant_backend.runtime import BackendRuntime, SECRET_SENTINEL
+from autoquant_frontend.client import BackendClient, BackendClientError
+from autoquant_shared.config import AppConfig, ConfigStore
+from autoquant_backend.server import create_server
+from autoquant_backend.state import OrderLedger
 
 
 class BackendRuntimeTests(unittest.TestCase):
@@ -61,7 +61,9 @@ class BackendRuntimeTests(unittest.TestCase):
         config.symbols = ["BTCUSDT"]
         self.store.save(config)
 
-        with patch("autoquant.backend.create_provider") as create_provider_mock:
+        with patch(
+            "autoquant_backend.runtime.create_provider"
+        ) as create_provider_mock:
             provider = create_provider_mock.return_value
             provider.quote_asset = "USDT"
             provider.get_account_total.return_value = Decimal("123.45")

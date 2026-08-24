@@ -1,6 +1,5 @@
-from autoquant.app import main
+from autoquant_frontend.app import main
 
 
 if __name__ == "__main__":
     main()
-

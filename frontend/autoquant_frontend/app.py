@@ -38,21 +38,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant.config import (
+from autoquant_shared.config import (
     MAX_SYMBOLS,
     AppConfig,
     ConfigStore,
     credential_or_environment,
     normalize_symbols,
 )
-from autoquant.client import (
+from autoquant_frontend.client import (
     BackendClient,
     BackendClientError,
     RemoteConfigStore,
     RemoteRunnerConfig,
     RemoteTradingController,
 )
-from autoquant.experience import (
+from autoquant_frontend.experience import (
     ExperienceError,
     ExperienceImportResult,
     OpenAIVectorStoreUploader,
@@ -64,7 +64,7 @@ from autoquant.experience import (
     summarize_experiences,
     write_experience_document,
 )
-from autoquant.models import AccountOverview, Direction, RunState, RuntimeSnapshot
+from autoquant_shared.models import AccountOverview, Direction, RunState, RuntimeSnapshot
 
 
 ACCOUNT_REFRESH_MS = 30_000

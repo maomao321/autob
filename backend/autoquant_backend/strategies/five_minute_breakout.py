@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections import deque
 from decimal import Decimal
 
-from autoquant.models import Bar, Direction, Side, Signal
-from autoquant.strategies.base import Strategy
+from autoquant_shared.models import Bar, Direction, Side, Signal
+from autoquant_backend.strategies.base import Strategy
 
 DAY_MS = 86_400_000
 

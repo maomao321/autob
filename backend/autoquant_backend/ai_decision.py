@@ -16,7 +16,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-from autoquant.models import Bar, Direction
+from autoquant_shared.models import Bar, Direction
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"

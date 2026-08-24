@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from autoquant.config import (
+from autoquant_shared.config import (
     AppConfig,
     ConfigStore,
     credential_or_environment,

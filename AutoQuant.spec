@@ -9,8 +9,13 @@ is_windows = sys.platform == "win32"
 is_macos = sys.platform == "darwin"
 
 a = Analysis(
-    [str(project_root / "autoquant" / "__main__.py")],
-    pathex=[str(project_root), str(dependency_root)],
+    [str(project_root / "frontend" / "autoquant_frontend" / "__main__.py")],
+    pathex=[
+        str(project_root / "frontend"),
+        str(project_root / "backend"),
+        str(project_root / "shared"),
+        str(dependency_root),
+    ],
     binaries=[],
     datas=[],
     hiddenimports=["websocket"],

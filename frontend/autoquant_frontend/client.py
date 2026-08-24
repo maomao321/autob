@@ -11,8 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from autoquant.config import AppConfig
-from autoquant.models import AccountOverview, Direction, RunState, RuntimeSnapshot
+from autoquant_shared.config import AppConfig
+from autoquant_shared.models import AccountOverview, Direction, RunState, RuntimeSnapshot
 
 
 class BackendClientError(RuntimeError):

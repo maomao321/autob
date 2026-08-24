@@ -6,10 +6,10 @@ from decimal import Decimal
 from pathlib import Path
 from threading import Event
 
-from autoquant.config import AppConfig
-from autoquant.engine import RunnerConfig, SymbolRunner, create_provider
-from autoquant.ai_decision import OpeningDecision
-from autoquant.models import (
+from autoquant_shared.config import AppConfig
+from autoquant_backend.engine import RunnerConfig, SymbolRunner, create_provider
+from autoquant_backend.ai_decision import OpeningDecision
+from autoquant_shared.models import (
     Bar,
     Direction,
     OrderRequest,
@@ -17,7 +17,7 @@ from autoquant.models import (
     RunState,
     Side,
 )
-from autoquant.state import OrderLedger
+from autoquant_backend.state import OrderLedger
 
 
 def make_bar(
@@ -893,7 +893,7 @@ class SymbolRunnerTests(unittest.TestCase):
         snapshots = []
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
-            from autoquant.models import OrderRequest, Side
+            from autoquant_shared.models import OrderRequest, Side
 
             ledger.record_submitting(
                 OrderRequest(
@@ -930,7 +930,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.orders)
 
     def test_real_sell_signal_closes_tracked_long_position(self) -> None:
-        from autoquant.models import OrderRequest, Side
+        from autoquant_shared.models import OrderRequest, Side
 
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")

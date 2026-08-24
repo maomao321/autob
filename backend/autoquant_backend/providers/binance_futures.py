@@ -5,8 +5,8 @@ import uuid
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
-from autoquant.models import Bar, OrderRequest, OrderResult, Side
-from autoquant.providers.binance_stocks import (
+from autoquant_shared.models import Bar, OrderRequest, OrderResult, Side
+from autoquant_backend.providers.binance_stocks import (
     BinanceStocksProvider,
     OrderRejectedError,
     OrderStatusUnknownError,

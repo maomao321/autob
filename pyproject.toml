@@ -15,11 +15,12 @@ dependencies = [
 ]
 
 [project.scripts]
-autoquant = "autoquant.app:main"
-autoquant-server = "autoquant.server:main"
+autoquant = "autoquant_frontend.app:main"
+autoquant-server = "autoquant_backend.server:main"
 
 [tool.setuptools.packages.find]
-include = ["autoquant*"]
+where = ["frontend", "backend", "shared"]
+include = ["autoquant_frontend*", "autoquant_backend*", "autoquant_shared*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

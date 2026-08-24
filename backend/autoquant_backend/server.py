@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from autoquant.backend import BackendRuntime
+from autoquant_backend.runtime import BackendRuntime
 
 
 class AutoQuantHTTPServer(ThreadingHTTPServer):
@@ -191,4 +191,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
