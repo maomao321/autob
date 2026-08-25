@@ -131,6 +131,9 @@ class BackendRuntimeTests(unittest.TestCase):
                 position_quantity=Decimal("0.123456"),
                 average_entry_price=Decimal("119.995"),
                 daily_buy_notional=Decimal("100"),
+                realized_pnl=Decimal("4.321"),
+                unrealized_pnl=Decimal("5.555"),
+                profit=Decimal("9.876"),
             )
         )
         overview = overview_payload(
@@ -146,9 +149,22 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("0.123456", snapshot["position_quantity"])
         self.assertEqual("120.00", snapshot["average_entry_price"])
         self.assertEqual("100.00", snapshot["daily_buy_notional"])
+        self.assertEqual("4.32", snapshot["realized_pnl"])
+        self.assertEqual("5.56", snapshot["unrealized_pnl"])
+        self.assertEqual("9.88", snapshot["profit"])
         self.assertEqual("1000.00", overview["total_balance"])
         self.assertEqual("1.24", overview["realized_pnl"])
         self.assertEqual("-2.50", overview["unrealized_pnl"])
+
+    def test_status_includes_profit_for_stopped_configured_symbol(self) -> None:
+        payload = self.runtime.status()
+
+        self.assertEqual(1, len(payload["snapshots"]))
+        self.assertEqual("AAPL", payload["snapshots"][0]["symbol"])
+        self.assertEqual("STOPPED", payload["snapshots"][0]["state"])
+        self.assertEqual("0.00", payload["snapshots"][0]["realized_pnl"])
+        self.assertEqual("0.00", payload["snapshots"][0]["unrealized_pnl"])
+        self.assertEqual("0.00", payload["snapshots"][0]["profit"])
 
 
 class BackendHTTPTests(unittest.TestCase):

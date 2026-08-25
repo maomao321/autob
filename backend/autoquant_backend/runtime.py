@@ -46,6 +46,9 @@ def snapshot_payload(snapshot: RuntimeSnapshot) -> dict[str, Any]:
         "ma_value",
         "average_entry_price",
         "daily_buy_notional",
+        "realized_pnl",
+        "unrealized_pnl",
+        "profit",
     ):
         value = getattr(snapshot, field_name)
         payload[field_name] = None if value is None else financial_text(value)
@@ -95,6 +98,7 @@ class BackendRuntime:
             log_callback=self._on_log,
             ledger=self.ledger,
         )
+        self._sync_configured_snapshots(self.config_store.load())
 
     def _on_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         with self._lock:
@@ -155,7 +159,54 @@ class BackendRuntime:
             config = AppConfig(**merged)
             config.validate()
             self.config_store.save(config)
+            self._sync_configured_snapshots(config)
             return self.public_config()
+
+    def _sync_configured_snapshots(self, config: AppConfig) -> None:
+        paper = config.trading_mode != "REAL"
+        with self._lock:
+            synchronized: dict[str, dict[str, Any]] = {}
+            for symbol in config.symbols:
+                payload = dict(
+                    self._snapshots.get(
+                        symbol,
+                        snapshot_payload(
+                            RuntimeSnapshot(
+                                symbol=symbol,
+                                direction=Direction.FLAT,
+                            )
+                        ),
+                    )
+                )
+                market_prices: dict[str, Decimal] = {}
+                try:
+                    last_price = Decimal(str(payload.get("last_price")))
+                    if last_price.is_finite() and last_price > 0:
+                        market_prices[symbol] = last_price
+                except (ArithmeticError, ValueError):
+                    pass
+                performance = self.ledger.portfolio_performance(
+                    paper=paper,
+                    market_prices=market_prices,
+                    symbol=symbol,
+                )
+                payload["profit"] = (
+                    None
+                    if performance.unrealized_pnl is None
+                    else financial_text(
+                        performance.realized_pnl + performance.unrealized_pnl
+                    )
+                )
+                payload["realized_pnl"] = financial_text(
+                    performance.realized_pnl
+                )
+                payload["unrealized_pnl"] = (
+                    None
+                    if performance.unrealized_pnl is None
+                    else financial_text(performance.unrealized_pnl)
+                )
+                synchronized[symbol] = payload
+            self._snapshots = synchronized
 
     @staticmethod
     def _api_key(config: AppConfig) -> str:

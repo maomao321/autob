@@ -12,10 +12,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLineEdit
 
-from autoquant_frontend.app import AutoQuantApp, KeyedTable, TextValue
+from autoquant_frontend.app import AutoQuantApp, COLORS, KeyedTable, TextValue
 from autoquant_frontend.client import BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
-from autoquant_shared.models import TradeHistoryItem
+from autoquant_shared.models import Direction, RunState, RuntimeSnapshot, TradeHistoryItem
 
 
 class QtAppWidgetTests(unittest.TestCase):
@@ -96,6 +96,77 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("SHORT", table.combo_text("AAPL", 1))
         combo.setCurrentText("LONG")
         self.assertEqual("LONG", table.combo_text("AAPL", 1))
+
+    def test_monitor_table_shows_symbol_profit_and_row_action_icons(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            headers = [
+                window.tree.horizontalHeaderItem(column).text()
+                for column in range(window.tree.columnCount())
+            ]
+            self.assertIn("已实现收益", headers)
+            self.assertIn("未实现收益", headers)
+            self.assertIn("操作", headers)
+            self.assertNotIn("MA", headers)
+            self.assertNotIn("实时K线", headers)
+            self.assertNotIn("今日交易", headers)
+
+            action_button = window.tree.action_button("AAPL")
+            self.assertEqual("▶", action_button.text())
+            self.assertEqual(42, action_button.width())
+            self.assertGreaterEqual(action_button.height(), 32)
+            self.assertIn(COLORS["positive"], action_button.styleSheet())
+            self.assertIn("border: none", action_button.styleSheet())
+            self.assertTrue(action_button.isEnabled())
+            with patch.object(window, "_start_symbols") as start_symbols:
+                action_button.click()
+            start_symbols.assert_called_once_with(["AAPL"])
+
+            window._apply_snapshot(
+                RuntimeSnapshot(
+                    symbol="AAPL",
+                    state=RunState.RUNNING,
+                    direction=Direction.LONG,
+                    last_price=Decimal("110"),
+                    position_quantity=Decimal("1.236"),
+                    realized_pnl=Decimal("4.25"),
+                    unrealized_pnl=Decimal("5.25"),
+                    profit=Decimal("9.5"),
+                    message="运行中",
+                )
+            )
+
+            self.assertEqual("4.25", window.tree.item(0, 5).text())
+            self.assertEqual("5.25", window.tree.item(0, 6).text())
+            self.assertEqual("1.24", window.tree.item(0, 7).text())
+            self.assertEqual("●", action_button.text())
+            self.assertIn(COLORS["negative"], action_button.styleSheet())
+            self.assertTrue(action_button.isEnabled())
+            with patch.object(window, "_stop_symbols") as stop_symbols:
+                action_button.click()
+            stop_symbols.assert_called_once_with(["AAPL"])
+
+            menu = window._symbol_context_menu()
+            self.assertEqual(
+                ["启动", "停止", "", "移除"],
+                [action.text() for action in menu.actions()],
+            )
+            with patch.object(window, "_start_selected") as start_selected:
+                menu.actions()[0].trigger()
+            start_selected.assert_called_once_with()
+            with patch.object(window, "_stop_selected") as stop_selected:
+                menu.actions()[1].trigger()
+            stop_selected.assert_called_once_with()
+            with patch.object(window, "_remove_selected") as remove_selected:
+                menu.actions()[3].trigger()
+            remove_selected.assert_called_once_with()
 
     def test_adding_symbol_persists_it_without_saving_other_ui_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

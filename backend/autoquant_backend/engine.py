@@ -1187,6 +1187,21 @@ class SymbolRunner:
         last_price = getattr(self.strategy, "last_price", None)
         ma_value = getattr(self.strategy, "ma_value", None)
         trades_today = getattr(self.strategy, "trades_today", 0)
+        market_prices = (
+            {self.symbol: last_price}
+            if last_price is not None and last_price.is_finite() and last_price > 0
+            else {}
+        )
+        performance = self.ledger.portfolio_performance(
+            paper=self.config.app.trading_mode != "REAL",
+            market_prices=market_prices,
+            symbol=self.symbol,
+        )
+        profit = (
+            None
+            if performance.unrealized_pnl is None
+            else performance.realized_pnl + performance.unrealized_pnl
+        )
         current_day_key = getattr(self.strategy, "current_day_key", None)
         ready = (
             current_day_key is not None
@@ -1226,6 +1241,9 @@ class SymbolRunner:
             self._snapshot.average_entry_price = self._average_entry_price
             self._snapshot.pending_orders = self._pending_orders
             self._snapshot.daily_buy_notional = self._daily_buy_notional
+            self._snapshot.realized_pnl = performance.realized_pnl
+            self._snapshot.unrealized_pnl = performance.unrealized_pnl
+            self._snapshot.profit = profit
             self._snapshot.message = message
             self._snapshot.updated_at = int(time.time() * 1000)
             snapshot = replace(self._snapshot)

@@ -690,17 +690,26 @@ class OrderLedger:
         *,
         paper: bool,
         market_prices: dict[str, Decimal],
+        symbol: str | None = None,
     ) -> PortfolioPerformance:
+        normalized_symbol = symbol.strip().upper() if symbol else None
+        symbol_clause = " AND symbol = ?" if normalized_symbol else ""
+        parameters: tuple[object, ...] = (
+            (int(paper), normalized_symbol)
+            if normalized_symbol
+            else (int(paper),)
+        )
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT symbol, side, filled_quantity, average_price, fee,
                        reduce_only
                 FROM orders
                 WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
+                  {symbol_clause}
                 ORDER BY created_at, client_order_id
                 """,
-                (int(paper),),
+                parameters,
             ).fetchall()
         positions: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         realized = Decimal("0")

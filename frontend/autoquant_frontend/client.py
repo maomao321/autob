@@ -135,6 +135,9 @@ def _snapshot(payload: dict[str, Any]) -> RuntimeSnapshot:
         average_entry_price=Decimal(str(payload.get("average_entry_price", "0"))),
         pending_orders=int(payload.get("pending_orders", 0)),
         daily_buy_notional=Decimal(str(payload.get("daily_buy_notional", "0"))),
+        realized_pnl=Decimal(str(payload.get("realized_pnl", "0"))),
+        unrealized_pnl=_optional_decimal(payload.get("unrealized_pnl")),
+        profit=_optional_decimal(payload.get("profit")),
         message=str(payload.get("message", "")),
         updated_at=int(payload.get("updated_at", 0)),
     )

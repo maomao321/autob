@@ -88,6 +88,9 @@ class RuntimeSnapshot:
     average_entry_price: Decimal = Decimal("0")
     pending_orders: int = 0
     daily_buy_notional: Decimal = Decimal("0")
+    realized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal | None = Decimal("0")
+    profit: Decimal | None = Decimal("0")
     message: str = "未启动"
     updated_at: int = 0
 

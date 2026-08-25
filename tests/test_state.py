@@ -371,6 +371,31 @@ class OrderLedgerTests(unittest.TestCase):
             self.assertEqual(Decimal("9"), performance.unrealized_pnl)
             self.assertEqual(["AAPL"], ledger.open_position_symbols(paper=False))
 
+    def test_portfolio_performance_can_be_filtered_by_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            ledger.record_submitting(order("aapl-buy"), 123, paper=True)
+            ledger.mark_lifecycle(
+                "aapl-buy", "FILLED", filled_quantity=Decimal("1"),
+                average_price=Decimal("100"),
+            )
+            nvda_order = order("nvda-buy", symbol="NVDA")
+            ledger.record_submitting(nvda_order, 123, paper=True)
+            ledger.mark_lifecycle(
+                "nvda-buy", "FILLED", filled_quantity=Decimal("1"),
+                average_price=Decimal("200"),
+            )
+
+            performance = ledger.portfolio_performance(
+                paper=True,
+                market_prices={"AAPL": Decimal("110")},
+                symbol="aapl",
+            )
+
+            self.assertEqual(Decimal("0"), performance.realized_pnl)
+            self.assertEqual(Decimal("10"), performance.unrealized_pnl)
+            self.assertEqual((), performance.missing_price_symbols)
+
     def test_short_position_can_only_be_reduced_with_buy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")

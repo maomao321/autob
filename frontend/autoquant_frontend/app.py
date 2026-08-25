@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -75,6 +76,9 @@ from autoquant_shared.models import (
 
 ACCOUNT_REFRESH_MS = 30_000
 MANUAL_DIRECTION_COLUMN = 3
+REALIZED_PNL_COLUMN = 5
+UNREALIZED_PNL_COLUMN = 6
+ACTION_COLUMN = 11
 MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
 
 STATE_TEXT = {
@@ -166,6 +170,7 @@ class KeyedTable(QTableWidget):
     ) -> None:
         super().__init__(0, len(headers))
         self._keys: list[str] = []
+        self._action_buttons: dict[str, QPushButton] = {}
         self.setHorizontalHeaderLabels(headers)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -218,6 +223,7 @@ class KeyedTable(QTableWidget):
         row = self._keys.index(key)
         self.removeRow(row)
         self._keys.pop(row)
+        self._action_buttons.pop(key, None)
 
     def item_update(
         self,
@@ -266,9 +272,89 @@ class KeyedTable(QTableWidget):
         if isinstance(widget, QComboBox):
             widget.setEnabled(enabled)
 
+    def set_action_button(
+        self,
+        key: str,
+        column: int,
+        on_start: Callable[[], None],
+        on_stop: Callable[[], None],
+    ) -> QPushButton:
+        if key not in self._keys:
+            raise KeyError(key)
+        container = QWidget(self)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addStretch()
+
+        button = QPushButton(container)
+        button.setObjectName("rowActionButton")
+        button.setFixedSize(42, 34)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        def dispatch(_checked: bool = False) -> None:
+            if button.property("action") == "stop":
+                on_stop()
+            else:
+                on_start()
+
+        button.clicked.connect(dispatch)
+        layout.addWidget(button)
+        layout.addStretch()
+        self.setCellWidget(self._keys.index(key), column, container)
+        self._action_buttons[key] = button
+        self.set_action_state(key, action="start")
+        return button
+
+    def set_action_state(
+        self, key: str, *, action: str, enabled: bool = True
+    ) -> None:
+        button = self._action_buttons.get(key)
+        if button is None:
+            return
+        is_stop = action == "stop"
+        color = COLORS["negative"] if is_stop else COLORS["positive"]
+        verb = "停止并平仓" if is_stop else "启动"
+        button.setProperty("action", "stop" if is_stop else "start")
+        button.setText("●" if is_stop else "▶")
+        button.setAccessibleName(f"{verb} {key}")
+        button.setToolTip(f"{verb} {key}")
+        button.setStyleSheet(
+            f"""
+            QPushButton#rowActionButton {{
+                border: none;
+                background: transparent;
+                color: {color};
+                padding: 0;
+                font-size: 26px;
+                font-weight: 700;
+            }}
+            QPushButton#rowActionButton:hover,
+            QPushButton#rowActionButton:pressed,
+            QPushButton#rowActionButton:disabled {{
+                border: none;
+                background: transparent;
+                color: {color};
+            }}
+            """
+        )
+        button.setEnabled(enabled)
+
+    def action_button(self, key: str) -> QPushButton:
+        if key not in self._action_buttons:
+            raise KeyError(key)
+        return self._action_buttons[key]
+
+    def set_cell_foreground(self, key: str, column: int, color: str) -> None:
+        if key not in self._keys:
+            return
+        item = self.item(self._keys.index(key), column)
+        if item is not None:
+            item.setForeground(QColor(color))
+
     def clear_rows(self) -> None:
         self.setRowCount(0)
         self._keys.clear()
+        self._action_buttons.clear()
 
     def _write_row(
         self, row: int, values: tuple[object, ...], tags: tuple[str, ...]
@@ -523,12 +609,18 @@ class AutoQuantApp(QMainWindow):
         layout.addLayout(controls)
 
         headers = [
-            "标的", "状态", "实际方向", "手动方向", "最新价", "MA", "实时K线", "今日交易",
-            "程序持仓", "持仓均价", "未决订单", "今日开仓额", "信息",
+            "标的", "状态", "实际方向", "手动方向", "最新价", "已实现收益",
+            "未实现收益", "程序持仓", "持仓均价", "未决订单", "今日开仓额",
+            "操作", "信息",
         ]
-        widths = [80, 80, 85, 90, 90, 90, 75, 80, 85, 85, 75, 90, 300]
+        widths = [80, 80, 85, 90, 90, 95, 95, 85, 85, 75, 90, 64, 300]
         self.tree = KeyedTable(headers, widths, multi_select=True)
         self.tree.setMinimumHeight(250)
+        self.tree.verticalHeader().setDefaultSectionSize(40)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(
+            self._show_symbol_context_menu
+        )
 
         log_panel = QWidget()
         log_layout = QVBoxLayout(log_panel)
@@ -1179,7 +1271,7 @@ class AutoQuantApp(QMainWindow):
             return
         self.tree.insert(
             "", None, iid=symbol, text=symbol,
-            values=("已停止", "FLAT", "FLAT", "-", "-", "0/0", "0", "0", "-", "0", "0", "未启动"),
+            values=("已停止", "FLAT", "FLAT", "-", "0.00", "0.00", "0.00", "-", "0", "0", "", "未启动"),
         )
         self.tree.set_combo(
             symbol,
@@ -1190,6 +1282,12 @@ class AutoQuantApp(QMainWindow):
                 "选择 LONG、SHORT 或 FLAT 作为唯一开仓方向。"
                 "启动后不可修改。"
             ),
+        )
+        self.tree.set_action_button(
+            symbol,
+            ACTION_COLUMN,
+            lambda _checked=False, symbol=symbol: self._start_symbols([symbol]),
+            lambda _checked=False, symbol=symbol: self._stop_symbols([symbol]),
         )
 
     def _manual_direction(self, symbol: str) -> Direction:
@@ -1308,6 +1406,35 @@ class AutoQuantApp(QMainWindow):
         if not selected:
             show_info("请选择股票", "请先在列表中选择至少一只股票。")
         return selected
+
+    def _symbol_context_menu(self) -> QMenu:
+        menu = QMenu(self.tree)
+        start_action = menu.addAction("启动")
+        stop_action = menu.addAction("停止")
+        menu.addSeparator()
+        remove_action = menu.addAction("移除")
+        start_action.triggered.connect(
+            lambda _checked=False: self._start_selected()
+        )
+        stop_action.triggered.connect(
+            lambda _checked=False: self._stop_selected()
+        )
+        remove_action.triggered.connect(
+            lambda _checked=False: self._remove_selected()
+        )
+        return menu
+
+    def _show_symbol_context_menu(self, position: QPoint) -> None:
+        index = self.tree.indexAt(position)
+        if not index.isValid():
+            return
+        if index.row() not in {
+            selected.row() for selected in self.tree.selectedIndexes()
+        }:
+            self.tree.clearSelection()
+            self.tree.selectRow(index.row())
+        menu = self._symbol_context_menu()
+        menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _start_selected(self) -> None:
         self._start_symbols(self._selected_symbols())
@@ -1559,16 +1686,40 @@ class AutoQuantApp(QMainWindow):
         )
         values = (
             STATE_TEXT[snapshot.state], snapshot.direction.value, manual_direction,
-            self._format_decimal(snapshot.last_price, 2), self._format_decimal(snapshot.ma_value, 2),
-            f"{snapshot.warmup_bars}/{snapshot.warmup_required}", str(snapshot.trades_today),
-            self._format_decimal(snapshot.position_quantity), self._format_decimal(snapshot.average_entry_price, 2),
-            str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional, 2), snapshot.message,
+            self._format_decimal(snapshot.last_price, 2),
+            self._format_decimal(snapshot.realized_pnl, 2),
+            self._format_decimal(snapshot.unrealized_pnl, 2),
+            self._format_decimal(snapshot.position_quantity, 2), self._format_decimal(snapshot.average_entry_price, 2),
+            str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional, 2), "", snapshot.message,
         )
         self.tree.item_update(snapshot.symbol, values=values, tags=(tag,) if tag else ())
+        for column, pnl in (
+            (REALIZED_PNL_COLUMN, snapshot.realized_pnl),
+            (UNREALIZED_PNL_COLUMN, snapshot.unrealized_pnl),
+        ):
+            if pnl is None:
+                continue
+            pnl_color = (
+                COLORS["positive"]
+                if pnl > 0
+                else COLORS["negative"]
+                if pnl < 0
+                else COLORS["text"]
+            )
+            self.tree.set_cell_foreground(snapshot.symbol, column, pnl_color)
         self.tree.set_combo_enabled(
             snapshot.symbol,
             MANUAL_DIRECTION_COLUMN,
             snapshot.state in {RunState.STOPPED, RunState.ERROR},
+        )
+        self.tree.set_action_state(
+            snapshot.symbol,
+            action=(
+                "start"
+                if snapshot.state in {RunState.STOPPED, RunState.ERROR}
+                else "stop"
+            ),
+            enabled=snapshot.state is not RunState.STOPPING,
         )
 
     def _append_log(self, level: str, symbol: str, message: str) -> None:
