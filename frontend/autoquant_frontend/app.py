@@ -313,6 +313,8 @@ class KeyedTable(QTableWidget):
             return
         is_stop = action == "stop"
         color = COLORS["negative"] if is_stop else COLORS["positive"]
+        hover_background = "#fdecea" if is_stop else "#e8f5ec"
+        pressed_background = "#fbd5d1" if is_stop else "#d5eddd"
         verb = "停止并平仓" if is_stop else "启动"
         button.setProperty("action", "stop" if is_stop else "start")
         button.setText("●" if is_stop else "▶")
@@ -328,8 +330,18 @@ class KeyedTable(QTableWidget):
                 font-size: 26px;
                 font-weight: 700;
             }}
-            QPushButton#rowActionButton:hover,
-            QPushButton#rowActionButton:pressed,
+            QPushButton#rowActionButton:hover {{
+                border: none;
+                border-radius: 5px;
+                background: {hover_background};
+                color: {color};
+            }}
+            QPushButton#rowActionButton:pressed {{
+                border: none;
+                border-radius: 5px;
+                background: {pressed_background};
+                color: {color};
+            }}
             QPushButton#rowActionButton:disabled {{
                 border: none;
                 background: transparent;
@@ -520,7 +532,7 @@ class AutoQuantApp(QMainWindow):
         self.experience_page = QWidget()
         self.notebook.addTab(self.main_page, "交易监控")
         self.notebook.addTab(self.config_page, "运行配置")
-        self.notebook.addTab(self.trade_history_page, "开平记录")
+        self.notebook.addTab(self.trade_history_page, "交易记录")
         self.notebook.addTab(self.experience_page, "交易经验库")
         self._build_main_page()
         self._build_config_page()
@@ -602,10 +614,22 @@ class AutoQuantApp(QMainWindow):
         controls.addWidget(self._button("移除", self._remove_selected))
         controls.addWidget(self._button("核对解锁", self._resolve_unknown_selected))
         controls.addStretch()
-        controls.addWidget(self._button("启动", self._start_selected, primary=True))
-        controls.addWidget(self._button("停止", self._stop_selected))
-        controls.addWidget(self._button("全部启动", self._start_all, primary=True))
-        controls.addWidget(self._button("全部停止", self._stop_all))
+        self.start_selected_button = self._button(
+            "启动", self._start_selected, primary=True
+        )
+        self.stop_selected_button = self._button("停止", self._stop_selected)
+        self.start_all_button = self._button(
+            "全部启动", self._start_all, primary=True
+        )
+        self.stop_all_button = self._button("全部停止", self._stop_all)
+        for button in (
+            self.start_selected_button,
+            self.stop_selected_button,
+            self.start_all_button,
+            self.stop_all_button,
+        ):
+            button.hide()
+            controls.addWidget(button)
         layout.addLayout(controls)
 
         headers = [
@@ -617,10 +641,7 @@ class AutoQuantApp(QMainWindow):
         self.tree = KeyedTable(headers, widths, multi_select=True)
         self.tree.setMinimumHeight(250)
         self.tree.verticalHeader().setDefaultSectionSize(40)
-        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(
-            self._show_symbol_context_menu
-        )
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
         log_panel = QWidget()
         log_layout = QVBoxLayout(log_panel)

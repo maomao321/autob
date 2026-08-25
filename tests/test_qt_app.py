@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLineEdit
 
 from autoquant_frontend.app import AutoQuantApp, COLORS, KeyedTable, TextValue
@@ -124,6 +125,8 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertGreaterEqual(action_button.height(), 32)
             self.assertIn(COLORS["positive"], action_button.styleSheet())
             self.assertIn("border: none", action_button.styleSheet())
+            self.assertIn("border-radius: 5px", action_button.styleSheet())
+            self.assertIn("background: #e8f5ec", action_button.styleSheet())
             self.assertTrue(action_button.isEnabled())
             with patch.object(window, "_start_symbols") as start_symbols:
                 action_button.click()
@@ -148,25 +151,20 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual("1.24", window.tree.item(0, 7).text())
             self.assertEqual("●", action_button.text())
             self.assertIn(COLORS["negative"], action_button.styleSheet())
+            self.assertIn("background: #fdecea", action_button.styleSheet())
             self.assertTrue(action_button.isEnabled())
             with patch.object(window, "_stop_symbols") as stop_symbols:
                 action_button.click()
             stop_symbols.assert_called_once_with(["AAPL"])
 
-            menu = window._symbol_context_menu()
+            self.assertTrue(window.start_selected_button.isHidden())
+            self.assertTrue(window.stop_selected_button.isHidden())
+            self.assertTrue(window.start_all_button.isHidden())
+            self.assertTrue(window.stop_all_button.isHidden())
             self.assertEqual(
-                ["启动", "停止", "", "移除"],
-                [action.text() for action in menu.actions()],
+                Qt.ContextMenuPolicy.NoContextMenu,
+                window.tree.contextMenuPolicy(),
             )
-            with patch.object(window, "_start_selected") as start_selected:
-                menu.actions()[0].trigger()
-            start_selected.assert_called_once_with()
-            with patch.object(window, "_stop_selected") as stop_selected:
-                menu.actions()[1].trigger()
-            stop_selected.assert_called_once_with()
-            with patch.object(window, "_remove_selected") as remove_selected:
-                menu.actions()[3].trigger()
-            remove_selected.assert_called_once_with()
 
     def test_adding_symbol_persists_it_without_saving_other_ui_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
