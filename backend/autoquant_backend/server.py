@@ -141,6 +141,17 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             if not isinstance(prices, dict):
                 raise ValueError("market_prices 必须是对象")
             return HTTPStatus.OK, runtime.account_overview(prices)
+        if path == "/api/v1/trades" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            mode = query.get("mode", ["ALL"])[0].strip().upper()
+            if mode not in {"ALL", "PAPER", "REAL"}:
+                raise ValueError("交易模式必须是 ALL、PAPER 或 REAL")
+            return HTTPStatus.OK, runtime.trade_history(
+                symbol=query.get("symbol", [""])[0],
+                action=query.get("action", ["ALL"])[0],
+                paper=None if mode == "ALL" else mode == "PAPER",
+                limit=int(query.get("limit", ["500"])[0]),
+            )
 
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) >= 5 and parts[:3] == ["api", "v1", "runners"]:

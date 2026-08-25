@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from autoquant_shared.config import default_config_path
-from autoquant_shared.models import OrderRequest, Side
+from autoquant_shared.models import OrderRequest, Side, TradeHistoryItem
 
 
 CONSUMED_STATUSES = {
@@ -52,6 +52,7 @@ class OrderRecord:
     filled_quantity: Decimal
     average_price: Decimal
     fee: Decimal
+    realized_pnl: Decimal
     reduce_only: bool
 
 
@@ -107,6 +108,7 @@ class OrderLedger:
                     filled_quantity TEXT NOT NULL DEFAULT '0',
                     average_price TEXT NOT NULL DEFAULT '0',
                     fee TEXT NOT NULL DEFAULT '0',
+                    realized_pnl TEXT NOT NULL DEFAULT '0',
                     reduce_only INTEGER NOT NULL DEFAULT 0
                 )
                 """
@@ -155,6 +157,12 @@ class OrderLedger:
                 connection.execute(
                     "UPDATE orders SET reduce_only = 1 WHERE side = 'SELL'"
                 )
+            if "realized_pnl" not in existing_columns:
+                connection.execute(
+                    "ALTER TABLE orders ADD COLUMN realized_pnl "
+                    "TEXT NOT NULL DEFAULT '0'"
+                )
+                self._backfill_realized_pnl(connection)
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_orders_symbol_day "
                 "ON orders(symbol, trading_day)"
@@ -170,6 +178,75 @@ class OrderLedger:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_orders_position "
                 "ON orders(symbol, paper, created_at)"
+            )
+
+    @staticmethod
+    def _backfill_realized_pnl(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT client_order_id, symbol, paper, side, filled_quantity,
+                   average_price, fee, reduce_only
+            FROM orders
+            WHERE status = 'FILLED' AND CAST(filled_quantity AS REAL) > 0
+            ORDER BY created_at, client_order_id
+            """
+        ).fetchall()
+        positions: dict[
+            tuple[str, bool], tuple[Decimal, Decimal, Decimal]
+        ] = {}
+        for row in rows:
+            key = (str(row["symbol"]), bool(row["paper"]))
+            quantity, basis, open_fee = positions.get(
+                key,
+                (Decimal("0"), Decimal("0"), Decimal("0")),
+            )
+            filled = Decimal(row["filled_quantity"])
+            price = Decimal(row["average_price"])
+            fee = Decimal(row["fee"])
+            reduce_only = bool(row["reduce_only"])
+            delta = filled if row["side"] == Side.BUY.value else -filled
+            profit = Decimal("0")
+            if not reduce_only and quantity == 0:
+                quantity = delta
+                basis = filled * price
+                open_fee = fee
+            elif not reduce_only and quantity * delta > 0:
+                quantity += delta
+                basis += filled * price
+                open_fee += fee
+            elif reduce_only and quantity * delta < 0:
+                before = abs(quantity)
+                closed = min(filled, before)
+                average_entry = basis / before if before else Decimal("0")
+                allocated_open_fee = (
+                    open_fee * closed / before if before else Decimal("0")
+                )
+                allocated_close_fee = (
+                    fee * closed / filled if filled else Decimal("0")
+                )
+                if quantity > 0:
+                    profit = (
+                        (price - average_entry) * closed
+                        - allocated_open_fee
+                        - allocated_close_fee
+                    )
+                    quantity -= closed
+                else:
+                    profit = (
+                        (average_entry - price) * closed
+                        - allocated_open_fee
+                        - allocated_close_fee
+                    )
+                    quantity += closed
+                basis -= average_entry * closed
+                open_fee -= allocated_open_fee
+                if quantity == 0:
+                    basis = Decimal("0")
+                    open_fee = Decimal("0")
+            positions[key] = (quantity, basis, open_fee)
+            connection.execute(
+                "UPDATE orders SET realized_pnl = ? WHERE client_order_id = ?",
+                (str(profit), row["client_order_id"]),
             )
 
     def record_submitting(
@@ -310,6 +387,7 @@ class OrderLedger:
         filled_quantity: Decimal | None = None,
         average_price: Decimal | None = None,
         fee: Decimal | None = None,
+        realized_pnl: Decimal | None = None,
     ) -> None:
         normalized = status.strip().upper()
         if normalized:
@@ -321,6 +399,7 @@ class OrderLedger:
                 filled_quantity,
                 average_price,
                 fee,
+                realized_pnl,
             )
 
     def _update(
@@ -332,6 +411,7 @@ class OrderLedger:
         filled_quantity: Decimal | None = None,
         average_price: Decimal | None = None,
         fee: Decimal | None = None,
+        realized_pnl: Decimal | None = None,
     ) -> None:
         now = int(time.time() * 1000)
         with self._lock, closing(self._connect()) as connection, connection:
@@ -340,7 +420,8 @@ class OrderLedger:
                     """
                     UPDATE orders
                     SET status = ?, updated_at = ?, message = ?,
-                        filled_quantity = ?, average_price = ?, fee = ?
+                        filled_quantity = ?, average_price = ?, fee = ?,
+                        realized_pnl = ?
                     WHERE client_order_id = ?
                     """,
                     (
@@ -350,6 +431,7 @@ class OrderLedger:
                         str(filled_quantity),
                         str(average_price or 0),
                         str(fee or 0),
+                        str(realized_pnl or 0),
                         client_order_id,
                     ),
                 )
@@ -441,6 +523,69 @@ class OrderLedger:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(query, params).fetchall()
         return [self._to_record(row) for row in rows]
+
+    def trade_history(
+        self,
+        *,
+        symbol: str = "",
+        action: str = "ALL",
+        paper: bool | None = None,
+        limit: int = 500,
+    ) -> list[TradeHistoryItem]:
+        normalized_symbol = symbol.strip().upper()
+        normalized_action = action.strip().upper() or "ALL"
+        if normalized_action not in {"ALL", "OPEN", "CLOSE"}:
+            raise ValueError("交易记录类型必须是 ALL、OPEN 或 CLOSE")
+        clauses = [
+            "status = 'FILLED'",
+            "CAST(filled_quantity AS REAL) > 0",
+        ]
+        params: list[object] = []
+        if normalized_symbol:
+            clauses.append("symbol = ?")
+            params.append(normalized_symbol)
+        if normalized_action != "ALL":
+            clauses.append("reduce_only = ?")
+            params.append(int(normalized_action == "CLOSE"))
+        if paper is not None:
+            clauses.append("paper = ?")
+            params.append(int(paper))
+        bounded_limit = min(max(int(limit), 1), 1000)
+        params.append(bounded_limit)
+        query = (
+            "SELECT * FROM orders WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY updated_at DESC, client_order_id DESC LIMIT ?"
+        )
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        items: list[TradeHistoryItem] = []
+        for row in rows:
+            quantity = Decimal(row["filled_quantity"])
+            price = Decimal(row["average_price"])
+            reduce_only = bool(row["reduce_only"])
+            side = str(row["side"])
+            opening_direction = (
+                "LONG"
+                if (not reduce_only and side == Side.BUY.value)
+                or (reduce_only and side == Side.SELL.value)
+                else "SHORT"
+            )
+            items.append(
+                TradeHistoryItem(
+                    executed_at=int(row["updated_at"]),
+                    symbol=str(row["symbol"]),
+                    action="CLOSE" if reduce_only else "OPEN",
+                    opening_direction=opening_direction,
+                    price=price,
+                    quantity=quantity,
+                    amount=price * quantity,
+                    fee=Decimal(row["fee"]),
+                    profit=Decimal(row["realized_pnl"]),
+                    paper=bool(row["paper"]),
+                )
+            )
+        return items
 
     def unknown_count(self, symbol: str, paper: bool | None = None) -> int:
         query = (
@@ -696,5 +841,6 @@ class OrderLedger:
             filled_quantity=Decimal(row["filled_quantity"]),
             average_price=Decimal(row["average_price"]),
             fee=Decimal(row["fee"]),
+            realized_pnl=Decimal(row["realized_pnl"]),
             reduce_only=bool(row["reduce_only"]),
         )

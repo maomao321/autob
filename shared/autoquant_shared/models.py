@@ -101,3 +101,17 @@ class AccountOverview:
     missing_price_symbols: tuple[str, ...] = ()
     message: str = "尚未刷新"
     updated_at: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TradeHistoryItem:
+    executed_at: int
+    symbol: str
+    action: str
+    opening_direction: str
+    price: Decimal
+    quantity: Decimal
+    amount: Decimal
+    fee: Decimal
+    profit: Decimal
+    paper: bool

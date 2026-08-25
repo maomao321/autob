@@ -634,7 +634,7 @@ class SymbolRunnerTests(unittest.TestCase):
             ]
             self.assertTrue(order_messages)
             self.assertIn(
-                "开仓成交｜标的 AAPL｜开仓方向 多头｜价格 12.00",
+                "开仓成交｜标的 AAPL｜交易模式 模拟｜开仓方向 多头｜价格 12.00",
                 order_messages[-1],
             )
             self.assertIn("｜金额 100.00｜收益 0.00", order_messages[-1])
@@ -647,7 +647,8 @@ class SymbolRunnerTests(unittest.TestCase):
             ]
             self.assertTrue(signal_messages)
             self.assertIn(
-                "开仓信号｜标的 AAPL｜开仓方向 多头｜价格 12.00｜MA 10.67｜原因 ",
+                "开仓信号｜标的 AAPL｜交易模式 模拟｜开仓方向 多头｜"
+                "价格 12.00｜MA 10.67｜原因 ",
                 signal_messages[-1],
             )
 
@@ -693,17 +694,24 @@ class SymbolRunnerTests(unittest.TestCase):
             ledger.record_submitting(closing, 0, paper=True)
 
             runner._submit_order(closing, is_paper=True)
+            persisted_closes = ledger.trade_history(
+                symbol="AAPL",
+                action="CLOSE",
+                paper=True,
+            )
 
         order_messages = [
             message for level, _symbol, message in logs if level == "ORDER"
         ]
         self.assertEqual(
-            "平仓成交｜标的 AAPL｜开仓方向 多头｜价格 110.00｜数量 2｜"
+            "平仓成交｜标的 AAPL｜交易模式 模拟｜开仓方向 多头｜"
+            "价格 110.00｜数量 2｜"
             "金额 220.00｜收益 19.00",
             order_messages[-1],
         )
         self.assertNotIn("aq-closing-secret", str(logs))
         self.assertNotIn("paper-test", str(logs))
+        self.assertEqual(Decimal("19"), persisted_closes[0].profit)
 
     def test_ai_flat_direction_blocks_an_otherwise_valid_entry(self) -> None:
         logs = []
@@ -857,14 +865,16 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertTrue(submitted.allow_short)
             self.assertTrue(
                 any(
-                    "开仓成交｜标的 AAPL｜开仓方向 空头" in message
+                    "开仓成交｜标的 AAPL｜交易模式 模拟｜开仓方向 空头"
+                    in message
                     for level, _symbol, message in logs
                     if level == "ORDER"
                 )
             )
             self.assertTrue(
                 any(
-                    "开仓信号｜标的 AAPL｜开仓方向 空头｜价格 8.00｜"
+                    "开仓信号｜标的 AAPL｜交易模式 模拟｜开仓方向 空头｜"
+                    "价格 8.00｜"
                     in message
                     for level, _symbol, message in logs
                     if level == "SIGNAL"
@@ -950,13 +960,15 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertIs(Side.BUY, stop_signal.side)
             self.assertIn("空头", stop_signal.reason)
             self.assertEqual(
-                "平仓信号｜标的 AAPL｜开仓方向 空头｜价格 102.00｜"
+                "平仓信号｜标的 AAPL｜交易模式 模拟｜开仓方向 空头｜"
+                "价格 102.00｜"
                 "MA 102.00｜原因 风险止损：当前价 102.00 >= 止损价 102.00，"
                 "平掉 1 股空头",
                 runner._signal_message(
                     stop_signal,
                     is_exit=True,
                     position_quantity=Decimal("-1"),
+                    paper=True,
                 ),
             )
             self.assertIsNotNone(take_signal)

@@ -197,6 +197,43 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertEqual("75.00", saved.buy_notional)
         self.assertEqual("75.00", self.runtime.config_store.load().buy_notional)
 
+    def test_trade_history_api_returns_financial_fields_without_order_ids(self) -> None:
+        from autoquant_shared.models import OrderRequest, Side
+
+        request = OrderRequest(
+            symbol="AAPL",
+            side=Side.BUY,
+            reference_price=Decimal("123.456"),
+            buy_notional=Decimal("100"),
+            sell_quantity=Decimal("0"),
+            client_order_id="aq-private-id",
+        )
+        self.runtime.ledger.record_submitting(request, 123, paper=True)
+        self.runtime.ledger.mark_lifecycle(
+            request.client_order_id,
+            "FILLED",
+            filled_quantity=Decimal("0.5"),
+            average_price=Decimal("123.456"),
+            fee=Decimal("0.125"),
+        )
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        payload = client.request(
+            "GET",
+            "/api/v1/trades?symbol=AAPL&action=OPEN&mode=PAPER&limit=10",
+        )
+
+        self.assertEqual(1, payload["count"])
+        item = payload["items"][0]
+        self.assertEqual("AAPL", item["symbol"])
+        self.assertEqual("OPEN", item["action"])
+        self.assertEqual("LONG", item["opening_direction"])
+        self.assertEqual("123.46", item["price"])
+        self.assertEqual("61.73", item["amount"])
+        self.assertEqual("0.12", item["fee"])
+        self.assertNotIn("order_id", item)
+        self.assertNotIn("aq-private-id", str(payload))
+
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):
             create_server("0.0.0.0", 0, runtime=self.runtime, api_token="")

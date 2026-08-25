@@ -339,6 +339,7 @@ class SymbolRunner:
             signal,
             is_exit=is_exit,
             position_quantity=position.quantity,
+            paper=is_paper,
         )
         self._update(RunState.SIGNAL, signal_message)
         self._log("SIGNAL", signal_message)
@@ -519,6 +520,7 @@ class SymbolRunner:
         *,
         is_exit: bool,
         position_quantity: Decimal,
+        paper: bool,
     ) -> str:
         action = "平仓信号" if is_exit else "开仓信号"
         if is_exit:
@@ -527,6 +529,7 @@ class SymbolRunner:
             opening_direction = "多头" if signal.side is Side.BUY else "空头"
         return (
             f"{action}｜标的 {signal.symbol.upper()}｜"
+            f"交易模式 {'模拟' if paper else '实盘'}｜"
             f"开仓方向 {opening_direction}｜"
             f"价格 {financial_text(signal.price)}｜"
             f"MA {financial_text(signal.ma_value)}｜"
@@ -1076,12 +1079,14 @@ class SymbolRunner:
             filled_quantity=filled_quantity,
             average_price=average_price,
             fee=fee,
+            realized_pnl=profit,
         )
         action = "平仓" if record.reduce_only else "开仓"
         amount = filled_quantity * average_price
         self._log(
             "ORDER",
             f"{action}成交｜标的 {record.symbol}｜"
+            f"交易模式 {'模拟' if record.paper else '实盘'}｜"
             f"开仓方向 {opening_direction}｜"
             f"价格 {financial_text(average_price)}｜"
             f"数量 {self._quantity_text(filled_quantity)}｜"

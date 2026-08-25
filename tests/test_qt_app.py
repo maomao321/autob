@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from autoquant_frontend.app import AutoQuantApp, KeyedTable, TextValue
 from autoquant_frontend.client import BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
+from autoquant_shared.models import TradeHistoryItem
 
 
 class QtAppWidgetTests(unittest.TestCase):
@@ -36,6 +37,41 @@ class QtAppWidgetTests(unittest.TestCase):
     def test_financial_display_uses_two_places_without_rounding_quantity(self) -> None:
         self.assertEqual("123.46", AutoQuantApp._format_decimal(Decimal("123.456"), 2))
         self.assertEqual("0.123456", AutoQuantApp._format_decimal(Decimal("0.123456")))
+
+    def test_trade_history_page_displays_persisted_record_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window._apply_trade_history(
+                [
+                    TradeHistoryItem(
+                        executed_at=1_700_000_000_000,
+                        symbol="AAPL",
+                        action="CLOSE",
+                        opening_direction="LONG",
+                        price=Decimal("110"),
+                        quantity=Decimal("2"),
+                        amount=Decimal("220"),
+                        fee=Decimal("1"),
+                        profit=Decimal("19"),
+                        paper=True,
+                    )
+                ]
+            )
+
+        self.assertEqual(1, window.trade_history_tree.rowCount())
+        self.assertEqual("AAPL", window.trade_history_tree.item(0, 1).text())
+        self.assertEqual("平仓", window.trade_history_tree.item(0, 2).text())
+        self.assertEqual("多头", window.trade_history_tree.item(0, 3).text())
+        self.assertEqual("110.00", window.trade_history_tree.item(0, 4).text())
+        self.assertEqual("19.00", window.trade_history_tree.item(0, 8).text())
+        self.assertIn("平仓收益合计 19.00", window.trade_history_status_var.get())
 
     def test_keyed_table_keeps_symbol_identity_when_values_change(self) -> None:
         table = KeyedTable(["股票", "状态", "信息"], [80, 90, 180], multi_select=True)

@@ -273,6 +273,39 @@ class BackendRuntime:
             )
         )
 
+    def trade_history(
+        self,
+        *,
+        symbol: str = "",
+        action: str = "ALL",
+        paper: bool | None = None,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        items = self.ledger.trade_history(
+            symbol=symbol,
+            action=action,
+            paper=paper,
+            limit=limit,
+        )
+        return {
+            "items": [
+                {
+                    "executed_at": item.executed_at,
+                    "symbol": item.symbol,
+                    "action": item.action,
+                    "opening_direction": item.opening_direction,
+                    "price": financial_text(item.price),
+                    "quantity": format(item.quantity, "f"),
+                    "amount": financial_text(item.amount),
+                    "fee": financial_text(item.fee),
+                    "profit": financial_text(item.profit),
+                    "paper": item.paper,
+                }
+                for item in items
+            ],
+            "count": len(items),
+        }
+
     def restore_desired_runners(self) -> list[str]:
         if not self.desired_state_path.exists():
             return []

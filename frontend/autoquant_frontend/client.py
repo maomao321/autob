@@ -12,7 +12,13 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from autoquant_shared.config import AppConfig
-from autoquant_shared.models import AccountOverview, Direction, RunState, RuntimeSnapshot
+from autoquant_shared.models import (
+    AccountOverview,
+    Direction,
+    RunState,
+    RuntimeSnapshot,
+    TradeHistoryItem,
+)
 
 
 class BackendClientError(RuntimeError):
@@ -146,6 +152,21 @@ def _overview(payload: dict[str, Any]) -> AccountOverview:
     )
 
 
+def _trade_history_item(payload: dict[str, Any]) -> TradeHistoryItem:
+    return TradeHistoryItem(
+        executed_at=int(payload.get("executed_at", 0)),
+        symbol=str(payload.get("symbol", "")),
+        action=str(payload.get("action", "")),
+        opening_direction=str(payload.get("opening_direction", "")),
+        price=Decimal(str(payload.get("price", "0"))),
+        quantity=Decimal(str(payload.get("quantity", "0"))),
+        amount=Decimal(str(payload.get("amount", "0"))),
+        fee=Decimal(str(payload.get("fee", "0"))),
+        profit=Decimal(str(payload.get("profit", "0"))),
+        paper=bool(payload.get("paper", True)),
+    )
+
+
 class RemoteTradingController:
     def __init__(
         self,
@@ -255,6 +276,29 @@ class RemoteTradingController:
             },
         )
         return _overview(payload)
+
+    def trade_history(
+        self,
+        *,
+        symbol: str = "",
+        action: str = "ALL",
+        mode: str = "ALL",
+        limit: int = 500,
+    ) -> list[TradeHistoryItem]:
+        query = urlencode(
+            {
+                "symbol": symbol.strip().upper(),
+                "action": action.strip().upper(),
+                "mode": mode.strip().upper(),
+                "limit": min(max(int(limit), 1), 1000),
+            }
+        )
+        payload = self.client.request("GET", f"/api/v1/trades?{query}")
+        return [
+            _trade_history_item(item)
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+        ]
 
     def wait_for_all(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)

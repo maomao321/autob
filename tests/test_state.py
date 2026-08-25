@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 
@@ -35,6 +37,102 @@ def order(
 
 
 class OrderLedgerTests(unittest.TestCase):
+    def test_old_order_ledger_migrates_and_backfills_close_profit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute(
+                    """
+                    CREATE TABLE orders (
+                        client_order_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        trading_day INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        order_id TEXT NOT NULL DEFAULT '',
+                        paper INTEGER NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        message TEXT NOT NULL DEFAULT '',
+                        requested_notional TEXT NOT NULL DEFAULT '0',
+                        requested_quantity TEXT NOT NULL DEFAULT '0',
+                        filled_quantity TEXT NOT NULL DEFAULT '0',
+                        average_price TEXT NOT NULL DEFAULT '0'
+                    )
+                    """
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO orders (
+                        client_order_id, symbol, side, trading_day, status,
+                        paper, created_at, updated_at, filled_quantity,
+                        average_price
+                    ) VALUES (?, 'AAPL', ?, 123, 'FILLED', 1, ?, ?, '2', ?)
+                    """,
+                    (
+                        ("old-open", "BUY", 1, 1, "100"),
+                        ("old-close", "SELL", 2, 2, "110"),
+                    ),
+                )
+
+            migrated = OrderLedger(path)
+            closes = migrated.trade_history(action="CLOSE", paper=True)
+
+        self.assertEqual(1, len(closes))
+        self.assertEqual(Decimal("20"), closes[0].profit)
+
+    def test_trade_history_persists_and_supports_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            ledger = OrderLedger(path)
+            ledger.record_submitting(
+                order("aq-open", buy_notional="200", reduce_only=False),
+                123,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-open",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("100"),
+                fee=Decimal("1"),
+            )
+            ledger.record_submitting(
+                order(
+                    "aq-close",
+                    side=Side.SELL,
+                    buy_notional="0",
+                    sell_quantity="2",
+                    reduce_only=True,
+                ),
+                123,
+                paper=True,
+            )
+            ledger.mark_lifecycle(
+                "aq-close",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("110"),
+                fee=Decimal("1"),
+                realized_pnl=Decimal("18"),
+            )
+
+            restarted = OrderLedger(path)
+            records = restarted.trade_history(
+                symbol="aapl",
+                action="CLOSE",
+                paper=True,
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual("CLOSE", records[0].action)
+        self.assertEqual("LONG", records[0].opening_direction)
+        self.assertEqual(Decimal("110"), records[0].price)
+        self.assertEqual(Decimal("2"), records[0].quantity)
+        self.assertEqual(Decimal("220"), records[0].amount)
+        self.assertEqual(Decimal("1"), records[0].fee)
+        self.assertEqual(Decimal("18"), records[0].profit)
+
     def test_submitting_order_survives_restart_and_consumes_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "orders.sqlite3"
