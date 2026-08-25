@@ -93,12 +93,14 @@ class BackendRuntime:
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._logs: deque[ServiceLog] = deque(maxlen=max(100, log_capacity))
         self._log_sequence = 0
+        runtime_config = self.config_store.load()
+        self._paper_mode = runtime_config.trading_mode != "REAL"
         self.controller = TradingController(
             snapshot_callback=self._on_snapshot,
             log_callback=self._on_log,
             ledger=self.ledger,
         )
-        self._sync_configured_snapshots(self.config_store.load())
+        self._sync_configured_snapshots(runtime_config)
 
     def _on_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         with self._lock:
@@ -124,8 +126,41 @@ class BackendRuntime:
                 for item in self._logs
                 if item.sequence > max(0, after_log)
             ]
-            snapshots = list(self._snapshots.values())
+            snapshots = [dict(payload) for payload in self._snapshots.values()]
             sequence = self._log_sequence
+        symbols = [str(payload.get("symbol", "")).upper() for payload in snapshots]
+        market_prices: dict[str, Decimal] = {}
+        for payload in snapshots:
+            symbol = str(payload.get("symbol", "")).upper()
+            try:
+                last_price = Decimal(str(payload.get("last_price")))
+                if symbol and last_price.is_finite() and last_price > 0:
+                    market_prices[symbol] = last_price
+            except (ArithmeticError, ValueError):
+                pass
+        performances = self.ledger.symbol_performances(
+            paper=self._paper_mode,
+            market_prices=market_prices,
+            symbols=symbols,
+        )
+        for payload in snapshots:
+            symbol = str(payload.get("symbol", "")).upper()
+            performance = performances.get(symbol)
+            if performance is None:
+                continue
+            payload["realized_pnl"] = financial_text(performance.realized_pnl)
+            payload["unrealized_pnl"] = (
+                None
+                if performance.unrealized_pnl is None
+                else financial_text(performance.unrealized_pnl)
+            )
+            payload["profit"] = (
+                None
+                if performance.unrealized_pnl is None
+                else financial_text(
+                    performance.realized_pnl + performance.unrealized_pnl
+                )
+            )
         return {
             "snapshots": snapshots,
             "logs": logs,
@@ -159,6 +194,7 @@ class BackendRuntime:
             config = AppConfig(**merged)
             config.validate()
             self.config_store.save(config)
+            self._paper_mode = config.trading_mode != "REAL"
             self._sync_configured_snapshots(config)
             return self.public_config()
 

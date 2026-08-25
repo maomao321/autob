@@ -176,7 +176,7 @@ class RemoteTradingController:
         client: BackendClient,
         snapshot_callback: Callable[[RuntimeSnapshot], None],
         log_callback: Callable[[str, str, str], None],
-        poll_interval: float = 1.0,
+        poll_interval: float = 3.0,
     ) -> None:
         self.client = client
         self.snapshot_callback = snapshot_callback

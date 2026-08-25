@@ -18,7 +18,12 @@ from autoquant_frontend.client import BackendClient, BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_backend.server import create_server
 from autoquant_backend.state import OrderLedger
-from autoquant_shared.models import AccountOverview, RuntimeSnapshot
+from autoquant_shared.models import (
+    AccountOverview,
+    OrderRequest,
+    RuntimeSnapshot,
+    Side,
+)
 
 
 class BackendRuntimeTests(unittest.TestCase):
@@ -165,6 +170,68 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("0.00", payload["snapshots"][0]["realized_pnl"])
         self.assertEqual("0.00", payload["snapshots"][0]["unrealized_pnl"])
         self.assertEqual("0.00", payload["snapshots"][0]["profit"])
+
+    def test_status_recomputes_live_symbol_pnl_from_ledger_and_latest_price(self) -> None:
+        opening = OrderRequest(
+            symbol="AAPL",
+            side=Side.BUY,
+            reference_price=Decimal("100"),
+            buy_notional=Decimal("200"),
+            sell_quantity=Decimal("2"),
+            client_order_id="pnl-open",
+        )
+        self.runtime.ledger.record_submitting(opening, 123, paper=True)
+        self.runtime.ledger.mark_lifecycle(
+            opening.client_order_id,
+            "FILLED",
+            filled_quantity=Decimal("2"),
+            average_price=Decimal("100"),
+            fee=Decimal("1"),
+        )
+
+        self.runtime._on_snapshot(
+            RuntimeSnapshot(
+                symbol="AAPL",
+                last_price=Decimal("110"),
+                position_quantity=Decimal("2"),
+                realized_pnl=Decimal("0"),
+                unrealized_pnl=Decimal("0"),
+            )
+        )
+        first = self.runtime.status()["snapshots"][0]
+        self.assertEqual("0.00", first["realized_pnl"])
+        self.assertEqual("19.00", first["unrealized_pnl"])
+
+        self.runtime._on_snapshot(
+            RuntimeSnapshot(
+                symbol="AAPL",
+                last_price=Decimal("115"),
+                position_quantity=Decimal("2"),
+            )
+        )
+        second = self.runtime.status()["snapshots"][0]
+        self.assertEqual("29.00", second["unrealized_pnl"])
+
+        closing = OrderRequest(
+            symbol="AAPL",
+            side=Side.SELL,
+            reference_price=Decimal("120"),
+            buy_notional=Decimal("0"),
+            sell_quantity=Decimal("2"),
+            client_order_id="pnl-close",
+            reduce_only=True,
+        )
+        self.runtime.ledger.record_submitting(closing, 123, paper=True)
+        self.runtime.ledger.mark_lifecycle(
+            closing.client_order_id,
+            "FILLED",
+            filled_quantity=Decimal("2"),
+            average_price=Decimal("120"),
+            fee=Decimal("1"),
+        )
+        third = self.runtime.status()["snapshots"][0]
+        self.assertEqual("38.00", third["realized_pnl"])
+        self.assertEqual("0.00", third["unrealized_pnl"])
 
 
 class BackendHTTPTests(unittest.TestCase):

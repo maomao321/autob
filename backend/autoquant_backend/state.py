@@ -711,6 +711,52 @@ class OrderLedger:
                 """,
                 parameters,
             ).fetchall()
+        return self._portfolio_performance_from_rows(rows, market_prices)
+
+    def symbol_performances(
+        self,
+        *,
+        paper: bool,
+        market_prices: dict[str, Decimal],
+        symbols: list[str],
+    ) -> dict[str, PortfolioPerformance]:
+        normalized_symbols = list(
+            dict.fromkeys(
+                symbol.strip().upper() for symbol in symbols if symbol.strip()
+            )
+        )
+        if not normalized_symbols:
+            return {}
+        placeholders = ", ".join("?" for _symbol in normalized_symbols)
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                f"""
+                SELECT symbol, side, filled_quantity, average_price, fee,
+                       reduce_only
+                FROM orders
+                WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
+                  AND symbol IN ({placeholders})
+                ORDER BY symbol, created_at, client_order_id
+                """,
+                (int(paper), *normalized_symbols),
+            ).fetchall()
+        grouped: dict[str, list[sqlite3.Row]] = {
+            symbol: [] for symbol in normalized_symbols
+        }
+        for row in rows:
+            grouped[str(row["symbol"])].append(row)
+        return {
+            symbol: self._portfolio_performance_from_rows(
+                grouped[symbol], market_prices
+            )
+            for symbol in normalized_symbols
+        }
+
+    @staticmethod
+    def _portfolio_performance_from_rows(
+        rows: list[sqlite3.Row],
+        market_prices: dict[str, Decimal],
+    ) -> PortfolioPerformance:
         positions: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
         realized = Decimal("0")
         for row in rows:

@@ -157,6 +157,20 @@ class QtAppWidgetTests(unittest.TestCase):
                 action_button.click()
             stop_symbols.assert_called_once_with(["AAPL"])
 
+            window._apply_snapshot(
+                RuntimeSnapshot(
+                    symbol="AAPL",
+                    state=RunState.RUNNING,
+                    direction=Direction.LONG,
+                    last_price=Decimal("112"),
+                    position_quantity=Decimal("1.236"),
+                    realized_pnl=Decimal("4.25"),
+                    unrealized_pnl=Decimal("7.75"),
+                )
+            )
+            self.assertEqual("4.25", window.tree.item(0, 5).text())
+            self.assertEqual("7.75", window.tree.item(0, 6).text())
+
             self.assertTrue(window.start_selected_button.isHidden())
             self.assertTrue(window.stop_selected_button.isHidden())
             self.assertTrue(window.start_all_button.isHidden())
