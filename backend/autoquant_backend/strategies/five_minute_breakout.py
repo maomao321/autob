@@ -4,6 +4,7 @@ from collections import deque
 from decimal import Decimal
 
 from autoquant_shared.models import Bar, Direction, Side, Signal
+from autoquant_shared.formatting import financial_text
 from autoquant_backend.strategies.base import Strategy
 
 DAY_MS = 86_400_000
@@ -215,9 +216,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 ma_value=current_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"{direction_reason}；5分钟收盘价 {bar.close} "
+                    f"{direction_reason}；5分钟收盘价 {financial_text(bar.close)} "
                     f"上穿 MA{self.ma_period} "
-                    f"{current_ma}，并突破前一根最高价 {previous_bar.high}"
+                    f"{financial_text(current_ma)}，并突破前一根最高价 "
+                    f"{financial_text(previous_bar.high)}"
                 ),
             )
 
@@ -232,9 +234,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 ma_value=current_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"{direction_reason}；5分钟收盘价 {bar.close} "
+                    f"{direction_reason}；5分钟收盘价 {financial_text(bar.close)} "
                     f"下穿 MA{self.ma_period} "
-                    f"{current_ma}，并跌破前一根最低价 {previous_bar.low}"
+                    f"{financial_text(current_ma)}，并跌破前一根最低价 "
+                    f"{financial_text(previous_bar.low)}"
                 ),
             )
         return None

@@ -329,13 +329,23 @@ class SymbolRunner:
         is_paper: bool,
     ) -> bool:
         """Validate and submit a signal; return whether the run loop should stop."""
-        self._update(RunState.SIGNAL, signal.reason)
-        self._log("SIGNAL", signal.reason)
+        position = self.ledger.position_summary(self.symbol, paper=is_paper)
+        is_exit = (
+            signal.side is Side.SELL and position.quantity > 0
+        ) or (
+            signal.side is Side.BUY and position.quantity < 0
+        )
+        signal_message = self._signal_message(
+            signal,
+            is_exit=is_exit,
+            position_quantity=position.quantity,
+        )
+        self._update(RunState.SIGNAL, signal_message)
+        self._log("SIGNAL", signal_message)
         if self.stop_event.is_set():
             self._log("INFO", "停止请求已生效，信号不会下单")
             return True
 
-        position = self.ledger.position_summary(self.symbol, paper=is_paper)
         pending_count = self.ledger.pending_count(self.symbol, paper=is_paper)
         if pending_count:
             self._skip_order(
@@ -344,11 +354,6 @@ class SymbolRunner:
             )
             return False
 
-        is_exit = (
-            signal.side is Side.SELL and position.quantity > 0
-        ) or (
-            signal.side is Side.BUY and position.quantity < 0
-        )
         supports_short = bool(getattr(self.provider, "supports_short", False))
         if position.quantity != 0 and not is_exit:
             direction = "多头" if position.quantity > 0 else "空头"
@@ -507,6 +512,26 @@ class SymbolRunner:
         self._sync_trade_count()
         self._update_risk_cache(paper=is_paper)
         self._refresh_market_snapshot(message)
+
+    def _signal_message(
+        self,
+        signal: Signal,
+        *,
+        is_exit: bool,
+        position_quantity: Decimal,
+    ) -> str:
+        action = "平仓信号" if is_exit else "开仓信号"
+        if is_exit:
+            opening_direction = "多头" if position_quantity > 0 else "空头"
+        else:
+            opening_direction = "多头" if signal.side is Side.BUY else "空头"
+        return (
+            f"{action}｜标的 {signal.symbol.upper()}｜"
+            f"开仓方向 {opening_direction}｜"
+            f"价格 {financial_text(signal.price)}｜"
+            f"MA {financial_text(signal.ma_value)}｜"
+            f"原因 {signal.reason}"
+        )
 
     def _skip_order(self, message: str, *, level: str = "ERROR") -> None:
         self._log(level, message)
@@ -1100,10 +1125,16 @@ class SymbolRunner:
             side = Side.SELL
             direction = "多头"
             if bar.close <= stop_price:
-                trigger = f"当前价 {bar.close} <= 止损价 {stop_price}"
+                trigger = (
+                    f"当前价 {financial_text(bar.close)} <= "
+                    f"止损价 {financial_text(stop_price)}"
+                )
                 label = "止损"
             elif bar.close >= take_price:
-                trigger = f"当前价 {bar.close} >= 止盈价 {take_price}"
+                trigger = (
+                    f"当前价 {financial_text(bar.close)} >= "
+                    f"止盈价 {financial_text(take_price)}"
+                )
                 label = "止盈"
             else:
                 return None
@@ -1113,10 +1144,16 @@ class SymbolRunner:
             side = Side.BUY
             direction = "空头"
             if bar.close >= stop_price:
-                trigger = f"当前价 {bar.close} >= 止损价 {stop_price}"
+                trigger = (
+                    f"当前价 {financial_text(bar.close)} >= "
+                    f"止损价 {financial_text(stop_price)}"
+                )
                 label = "止损"
             elif bar.close <= take_price:
-                trigger = f"当前价 {bar.close} <= 止盈价 {take_price}"
+                trigger = (
+                    f"当前价 {financial_text(bar.close)} <= "
+                    f"止盈价 {financial_text(take_price)}"
+                )
                 label = "止盈"
             else:
                 return None

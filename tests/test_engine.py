@@ -640,6 +640,16 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertIn("｜金额 100.00｜收益 0.00", order_messages[-1])
             self.assertNotIn("paper-test", order_messages[-1])
             self.assertEqual(1, max(snapshot.trades_today for snapshot in snapshots))
+            signal_messages = [
+                message
+                for level, _symbol, message in logs
+                if level == "SIGNAL"
+            ]
+            self.assertTrue(signal_messages)
+            self.assertIn(
+                "开仓信号｜标的 AAPL｜开仓方向 多头｜价格 12.00｜MA 10.67｜原因 ",
+                signal_messages[-1],
+            )
 
     def test_close_log_contains_trade_values_and_net_profit_without_order_id(self) -> None:
         logs = []
@@ -852,6 +862,14 @@ class SymbolRunnerTests(unittest.TestCase):
                     if level == "ORDER"
                 )
             )
+            self.assertTrue(
+                any(
+                    "开仓信号｜标的 AAPL｜开仓方向 空头｜价格 8.00｜"
+                    in message
+                    for level, _symbol, message in logs
+                    if level == "SIGNAL"
+                )
+            )
             self.assertLess(
                 ledger.position_summary("AAPL", paper=True).quantity,
                 Decimal("0"),
@@ -931,6 +949,16 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertIsNotNone(stop_signal)
             self.assertIs(Side.BUY, stop_signal.side)
             self.assertIn("空头", stop_signal.reason)
+            self.assertEqual(
+                "平仓信号｜标的 AAPL｜开仓方向 空头｜价格 102.00｜"
+                "MA 102.00｜原因 风险止损：当前价 102.00 >= 止损价 102.00，"
+                "平掉 1 股空头",
+                runner._signal_message(
+                    stop_signal,
+                    is_exit=True,
+                    position_quantity=Decimal("-1"),
+                ),
+            )
             self.assertIsNotNone(take_signal)
             self.assertIs(Side.BUY, take_signal.side)
             self.assertIn("空头", take_signal.reason)
