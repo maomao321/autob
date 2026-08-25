@@ -627,8 +627,73 @@ class SymbolRunnerTests(unittest.TestCase):
 
             self.assertFalse(runner.is_alive)
             self.assertEqual(1, len(fake_provider.orders))
-            self.assertTrue(any(level == "ORDER" for level, _symbol, _message in logs))
+            order_messages = [
+                message
+                for level, _symbol, message in logs
+                if level == "ORDER"
+            ]
+            self.assertTrue(order_messages)
+            self.assertIn(
+                "开仓成交｜标的 AAPL｜开仓方向 多头｜价格 12.00",
+                order_messages[-1],
+            )
+            self.assertIn("｜金额 100.00｜收益 0.00", order_messages[-1])
+            self.assertNotIn("paper-test", order_messages[-1])
             self.assertEqual(1, max(snapshot.trades_today for snapshot in snapshots))
+
+    def test_close_log_contains_trade_values_and_net_profit_without_order_id(self) -> None:
+        logs = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            opening = OrderRequest(
+                symbol="AAPL",
+                side=Side.BUY,
+                reference_price=Decimal("100"),
+                buy_notional=Decimal("200"),
+                sell_quantity=Decimal("2"),
+                client_order_id="aq-opening-secret",
+            )
+            ledger.record_submitting(opening, 0, paper=True)
+            ledger.mark_lifecycle(
+                opening.client_order_id,
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("100"),
+                fee=Decimal("1"),
+            )
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(AppConfig(symbols=["AAPL"])),
+                lambda _snapshot: None,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
+                ledger,
+            )
+            runner.provider = FakeProvider()
+            closing = OrderRequest(
+                symbol="AAPL",
+                side=Side.SELL,
+                reference_price=Decimal("110"),
+                buy_notional=Decimal("0"),
+                sell_quantity=Decimal("2"),
+                client_order_id="aq-closing-secret",
+                reduce_only=True,
+            )
+            ledger.record_submitting(closing, 0, paper=True)
+
+            runner._submit_order(closing, is_paper=True)
+
+        order_messages = [
+            message for level, _symbol, message in logs if level == "ORDER"
+        ]
+        self.assertEqual(
+            "平仓成交｜标的 AAPL｜开仓方向 多头｜价格 110.00｜数量 2｜"
+            "金额 220.00｜收益 19.00",
+            order_messages[-1],
+        )
+        self.assertNotIn("aq-closing-secret", str(logs))
+        self.assertNotIn("paper-test", str(logs))
 
     def test_ai_flat_direction_blocks_an_otherwise_valid_entry(self) -> None:
         logs = []
@@ -749,6 +814,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertTrue(any("建立空头" in message for _, _, message in logs))
 
     def test_futures_short_signal_opens_single_short_position(self) -> None:
+        logs = []
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
             runner = SymbolRunner(
@@ -763,7 +829,9 @@ class SymbolRunnerTests(unittest.TestCase):
                     manual_direction=Direction.SHORT,
                 ),
                 lambda _snapshot: None,
-                lambda *_args: None,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
                 ledger,
             )
             provider = FuturesShortSignalProvider()
@@ -777,6 +845,13 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertIs(Side.SELL, submitted.side)
             self.assertFalse(submitted.reduce_only)
             self.assertTrue(submitted.allow_short)
+            self.assertTrue(
+                any(
+                    "开仓成交｜标的 AAPL｜开仓方向 空头" in message
+                    for level, _symbol, message in logs
+                    if level == "ORDER"
+                )
+            )
             self.assertLess(
                 ledger.position_summary("AAPL", paper=True).quantity,
                 Decimal("0"),

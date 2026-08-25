@@ -39,8 +39,8 @@ class ExperienceTests(unittest.TestCase):
         self.assertEqual(
             ["WIN", "LOSS"], [item.outcome for item in result.experiences]
         )
-        self.assertEqual("19", result.experiences[0].net_pnl)
-        self.assertEqual("-10.5", result.experiences[1].net_pnl)
+        self.assertEqual("19.00", result.experiences[0].net_pnl)
+        self.assertEqual("-10.50", result.experiences[1].net_pnl)
         self.assertTrue(
             all(item.source == "external_trade_file" for item in result.experiences)
         )
@@ -135,7 +135,7 @@ class ExperienceTests(unittest.TestCase):
 
         self.assertEqual(1, len(result.experiences))
         self.assertEqual("CN001", result.experiences[0].external_id)
-        self.assertEqual("9", result.experiences[0].net_pnl)
+        self.assertEqual("9.00", result.experiences[0].net_pnl)
 
     def test_open_time_is_shifted_to_bar_close_time(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

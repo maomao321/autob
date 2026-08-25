@@ -8,11 +8,17 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
-from autoquant_backend.runtime import BackendRuntime, SECRET_SENTINEL
+from autoquant_backend.runtime import (
+    BackendRuntime,
+    SECRET_SENTINEL,
+    overview_payload,
+    snapshot_payload,
+)
 from autoquant_frontend.client import BackendClient, BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_backend.server import create_server
 from autoquant_backend.state import OrderLedger
+from autoquant_shared.models import AccountOverview, RuntimeSnapshot
 
 
 class BackendRuntimeTests(unittest.TestCase):
@@ -115,6 +121,34 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("USDT", payload["currency"])
         self.assertEqual("123.45", payload["total_balance"])
         self.assertIn("Binance Futures USDT", payload["message"])
+
+    def test_financial_api_values_have_exactly_two_decimal_places(self) -> None:
+        snapshot = snapshot_payload(
+            RuntimeSnapshot(
+                symbol="AAPL",
+                last_price=Decimal("123.456"),
+                ma_value=Decimal("120"),
+                position_quantity=Decimal("0.123456"),
+                average_entry_price=Decimal("119.995"),
+                daily_buy_notional=Decimal("100"),
+            )
+        )
+        overview = overview_payload(
+            AccountOverview(
+                total_balance=Decimal("1000"),
+                realized_pnl=Decimal("1.236"),
+                unrealized_pnl=Decimal("-2.5"),
+            )
+        )
+
+        self.assertEqual("123.46", snapshot["last_price"])
+        self.assertEqual("120.00", snapshot["ma_value"])
+        self.assertEqual("0.123456", snapshot["position_quantity"])
+        self.assertEqual("120.00", snapshot["average_entry_price"])
+        self.assertEqual("100.00", snapshot["daily_buy_notional"])
+        self.assertEqual("1000.00", overview["total_balance"])
+        self.assertEqual("1.24", overview["realized_pnl"])
+        self.assertEqual("-2.50", overview["unrealized_pnl"])
 
 
 class BackendHTTPTests(unittest.TestCase):

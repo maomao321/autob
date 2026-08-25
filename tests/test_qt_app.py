@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +32,10 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("from-widget", value.get())
         value.set("from-model")
         self.assertEqual("from-model", field.text())
+
+    def test_financial_display_uses_two_places_without_rounding_quantity(self) -> None:
+        self.assertEqual("123.46", AutoQuantApp._format_decimal(Decimal("123.456"), 2))
+        self.assertEqual("0.123456", AutoQuantApp._format_decimal(Decimal("0.123456")))
 
     def test_keyed_table_keeps_symbol_identity_when_values_change(self) -> None:
         table = KeyedTable(["股票", "状态", "信息"], [80, 90, 180], multi_select=True)

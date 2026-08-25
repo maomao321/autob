@@ -115,6 +115,9 @@ class AiDecisionTests(unittest.TestCase):
 
         self.assertEqual("AAPL", context["symbol"])
         self.assertEqual(7, context["symbol_trend"]["observations"])
+        self.assertEqual("107.00", context["symbol_trend"]["latest_close"])
+        self.assertEqual("105.00", context["symbol_trend"]["sma_5"])
+        self.assertEqual("102.00", context["current_session"]["current_close"])
         self.assertEqual({"SPY", "QQQ"}, set(context["broad_market_trends"]))
         self.assertEqual("AAPL launches product", context["recent_news"][0]["title"])
 

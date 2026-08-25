@@ -498,13 +498,13 @@ class AutoQuantApp(QMainWindow):
         symbol_entry.returnPressed.connect(self._add_symbols)
         controls.addWidget(symbol_entry)
         controls.addWidget(self._button("添加", self._add_symbols, primary=True))
-        controls.addWidget(self._button("移除所选", self._remove_selected))
-        controls.addWidget(self._button("核对后解除未知订单锁", self._resolve_unknown_selected))
+        controls.addWidget(self._button("移除", self._remove_selected))
+        controls.addWidget(self._button("核对解锁", self._resolve_unknown_selected))
         controls.addStretch()
-        controls.addWidget(self._button("启动所选", self._start_selected, primary=True))
-        controls.addWidget(self._button("停止所选并平仓", self._stop_selected))
+        controls.addWidget(self._button("启动", self._start_selected, primary=True))
+        controls.addWidget(self._button("停止", self._stop_selected))
         controls.addWidget(self._button("全部启动", self._start_all, primary=True))
-        controls.addWidget(self._button("全部停止并平仓", self._stop_all))
+        controls.addWidget(self._button("全部停止", self._stop_all))
         layout.addLayout(controls)
 
         headers = [
@@ -846,7 +846,7 @@ class AutoQuantApp(QMainWindow):
         self.experience_summary_var.set(
             f"经验 {summary.total} 条｜交易 {summary.trades}｜形态 {summary.patterns}｜"
             f"盈利 {summary.wins}｜亏损 {summary.losses}｜持平 {summary.breakeven}｜"
-            f"含K线 {summary.with_kline}｜交易净盈亏 {summary.net_pnl}"
+            f"含K线 {summary.with_kline}｜交易净盈亏 {summary.net_pnl:.2f}"
         )
         if experiences:
             detail = f"已导入 {result.trade_rows} 条交易记录"
@@ -1385,10 +1385,10 @@ class AutoQuantApp(QMainWindow):
         )
         values = (
             STATE_TEXT[snapshot.state], snapshot.direction.value, manual_direction,
-            self._format_decimal(snapshot.last_price), self._format_decimal(snapshot.ma_value),
+            self._format_decimal(snapshot.last_price, 2), self._format_decimal(snapshot.ma_value, 2),
             f"{snapshot.warmup_bars}/{snapshot.warmup_required}", str(snapshot.trades_today),
-            self._format_decimal(snapshot.position_quantity), self._format_decimal(snapshot.average_entry_price),
-            str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional), snapshot.message,
+            self._format_decimal(snapshot.position_quantity), self._format_decimal(snapshot.average_entry_price, 2),
+            str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional, 2), snapshot.message,
         )
         self.tree.item_update(snapshot.symbol, values=values, tags=(tag,) if tag else ())
         self.tree.set_combo_enabled(
@@ -1411,8 +1411,10 @@ class AutoQuantApp(QMainWindow):
         self.log.moveCursor(self.log.textCursor().MoveOperation.End)
 
     @staticmethod
-    def _format_decimal(value: object | None) -> str:
-        return "-" if value is None else format(value, "f")
+    def _format_decimal(value: object | None, places: int | None = None) -> str:
+        if value is None:
+            return "-"
+        return format(value, "f" if places is None else f".{places}f")
 
     @staticmethod
     def _position_label(quantity: Decimal) -> str:

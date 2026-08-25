@@ -19,6 +19,7 @@ from autoquant_shared.config import (
 from autoquant_backend.engine import RunnerConfig, TradingController, create_provider
 from autoquant_shared.models import AccountOverview, Direction, RuntimeSnapshot
 from autoquant_backend.state import OrderLedger
+from autoquant_shared.formatting import financial_text
 
 
 SECRET_SENTINEL = "••••••••"
@@ -39,11 +40,24 @@ def _json_value(value: Any) -> Any:
 
 
 def snapshot_payload(snapshot: RuntimeSnapshot) -> dict[str, Any]:
-    return _json_value(asdict(snapshot))
+    payload = _json_value(asdict(snapshot))
+    for field_name in (
+        "last_price",
+        "ma_value",
+        "average_entry_price",
+        "daily_buy_notional",
+    ):
+        value = getattr(snapshot, field_name)
+        payload[field_name] = None if value is None else financial_text(value)
+    return payload
 
 
 def overview_payload(overview: AccountOverview) -> dict[str, Any]:
-    return _json_value(asdict(overview))
+    payload = _json_value(asdict(overview))
+    for field_name in ("total_balance", "realized_pnl", "unrealized_pnl"):
+        value = getattr(overview, field_name)
+        payload[field_name] = None if value is None else financial_text(value)
+    return payload
 
 
 @dataclass(frozen=True, slots=True)

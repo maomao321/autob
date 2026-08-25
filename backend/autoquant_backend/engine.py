@@ -16,6 +16,7 @@ from autoquant_backend.ai_decision import (
     PublicMarketContextCollector,
 )
 from autoquant_shared.config import AppConfig
+from autoquant_shared.formatting import financial_text
 from autoquant_shared.models import (
     Bar,
     Direction,
@@ -477,23 +478,22 @@ class SymbolRunner:
                 result.order_id,
                 result.message,
             )
+            action = "平仓" if order.reduce_only else "开仓"
             mode = "模拟" if result.paper else "实盘"
-            message = f"{mode}订单已接受: {result.order_id}；{result.message}"
-            self._log("ORDER", message)
+            message = f"{mode}{action}订单已提交"
             if result.paper:
                 filled_quantity = (
                     order.sell_quantity
                     if order.reduce_only
                     else order.buy_notional / order.reference_price
                 )
-                self.ledger.mark_lifecycle(
+                self._record_filled_order(
                     order.client_order_id,
-                    "FILLED",
-                    "模拟订单已成交",
                     filled_quantity=filled_quantity,
                     average_price=order.reference_price,
                 )
             else:
+                self._log("ORDER", f"{message}，等待成交确认")
                 self._reconcile_single_order(
                     order.client_order_id,
                     result.order_id,
@@ -619,20 +619,17 @@ class SymbolRunner:
                 result.order_id,
                 result.message,
             )
-            self._log(
-                "ORDER",
-                f"停止量化强制平仓订单已接受: {result.order_id}；"
-                f"{order.side.value} {order.sell_quantity}（平{direction}）",
-            )
             if result.paper:
-                self.ledger.mark_lifecycle(
+                self._record_filled_order(
                     order.client_order_id,
-                    "FILLED",
-                    "模拟强制平仓订单已成交",
                     filled_quantity=order.sell_quantity,
                     average_price=order.reference_price,
                 )
             else:
+                self._log(
+                    "ORDER",
+                    f"实盘平仓订单已提交（平{direction}），等待成交确认",
+                )
                 self._reconcile_order_until_terminal(
                     order.client_order_id,
                     result.order_id,
@@ -916,7 +913,7 @@ class SymbolRunner:
     ) -> None:
         record = self.ledger.get_record(client_order_id)
         if record is None:
-            self._log("ERROR", f"本地账本找不到订单 {order_id}")
+            self._log("ERROR", "本地账本找不到待同步订单")
             return
         self._reconcile_record(record)
         self._last_order_reconcile_at = time.monotonic()
@@ -971,26 +968,108 @@ class SymbolRunner:
                 raise ValueError("已成交订单缺少成交数量，保持安全锁定")
             if filled_quantity > 0 and average_price <= 0:
                 raise ValueError("成交订单缺少成交均价，保持安全锁定")
-            self.ledger.mark_lifecycle(
-                record.client_order_id,
-                status,
-                f"从 Binance 同步为 {status}",
-                filled_quantity=filled_quantity,
-                average_price=average_price,
-                fee=fee,
-            )
-            self._log("INFO", f"订单 {record.order_id} 状态已同步为 {status}")
+            if status == "FILLED":
+                self._record_filled_order(
+                    record.client_order_id,
+                    filled_quantity=filled_quantity,
+                    average_price=average_price,
+                    fee=fee,
+                )
+            else:
+                self.ledger.mark_lifecycle(
+                    record.client_order_id,
+                    status,
+                    f"从 Binance 同步为 {status}",
+                    filled_quantity=filled_quantity,
+                    average_price=average_price,
+                    fee=fee,
+                )
+                action = "平仓" if record.reduce_only else "开仓"
+                self._log("INFO", f"{action}订单状态已同步为 {status}")
         except ValueError as exc:
             self.ledger.mark_unknown(record.client_order_id, str(exc))
             self._log(
                 "ERROR",
-                f"订单 {record.order_id} 无法安全解析，已转为未知状态并锁定：{exc}",
+                f"订单无法安全解析，已转为未知状态并锁定：{exc}",
             )
         except Exception as exc:
             self._log(
                 "ERROR",
-                f"无法同步订单 {record.order_id} 状态，继续锁定后续下单：{exc}",
+                f"无法同步订单状态，继续锁定后续下单：{exc}",
             )
+
+    def _record_filled_order(
+        self,
+        client_order_id: str,
+        *,
+        filled_quantity: Decimal,
+        average_price: Decimal,
+        fee: Decimal = Decimal("0"),
+    ) -> None:
+        record = self.ledger.get_record(client_order_id)
+        if record is None:
+            raise ValueError("本地账本找不到已成交订单")
+        position = self.ledger.position_summary(
+            record.symbol,
+            paper=record.paper,
+            exclude_client_order_id=record.client_order_id,
+        )
+        profit = Decimal("0")
+        opening_direction = (
+            "多头" if record.side == Side.BUY.value else "空头"
+        )
+        if record.reduce_only and position.quantity != 0:
+            opening_direction = "多头" if position.quantity > 0 else "空头"
+            before = abs(position.quantity)
+            closed = min(filled_quantity, before)
+            allocated_open_fee = (
+                position.open_fee * closed / before
+                if before
+                else Decimal("0")
+            )
+            allocated_close_fee = (
+                fee * closed / filled_quantity
+                if filled_quantity
+                else Decimal("0")
+            )
+            if position.quantity > 0:
+                profit = (
+                    (average_price - position.average_price) * closed
+                    - allocated_open_fee
+                    - allocated_close_fee
+                )
+            else:
+                profit = (
+                    (position.average_price - average_price) * closed
+                    - allocated_open_fee
+                    - allocated_close_fee
+                )
+        self.ledger.mark_lifecycle(
+            client_order_id,
+            "FILLED",
+            "订单已成交",
+            filled_quantity=filled_quantity,
+            average_price=average_price,
+            fee=fee,
+        )
+        action = "平仓" if record.reduce_only else "开仓"
+        amount = filled_quantity * average_price
+        self._log(
+            "ORDER",
+            f"{action}成交｜标的 {record.symbol}｜"
+            f"开仓方向 {opening_direction}｜"
+            f"价格 {financial_text(average_price)}｜"
+            f"数量 {self._quantity_text(filled_quantity)}｜"
+            f"金额 {financial_text(amount)}｜"
+            f"收益 {financial_text(profit)}",
+        )
+
+    @staticmethod
+    def _quantity_text(value: Decimal) -> str:
+        text = format(value, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return text or "0"
 
     @staticmethod
     def _detail_decimal(detail: dict, *names: str) -> Decimal:

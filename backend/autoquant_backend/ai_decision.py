@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 from autoquant_shared.models import Bar, Direction
+from autoquant_shared.formatting import financial_text
 
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
@@ -686,21 +687,21 @@ def _trend_payload(symbol: str, points: list[tuple[str, Decimal]]) -> dict[str, 
         if len(closes) < period:
             return None
         value = sum(closes[-period:], Decimal("0")) / Decimal(period)
-        return format(value.quantize(Decimal("0.0001")), "f")
+        return format(value.quantize(Decimal("0.01")), "f")
 
     return {
         "symbol": symbol,
         "observations": len(points),
         "first_date": points[0][0],
         "latest_date": points[-1][0],
-        "latest_close": format(closes[-1], "f"),
+        "latest_close": financial_text(closes[-1]),
         "change_1d_percent": change(1),
         "change_5d_percent": change(5),
         "change_20d_percent": change(20),
         "sma_5": mean(5),
         "sma_20": mean(20),
         "recent_closes": [
-            {"date": day, "close": format(value, "f")}
+            {"date": day, "close": financial_text(value)}
             for day, value in points[-20:]
         ],
     }
@@ -710,10 +711,10 @@ def _bar_payload(bar: Bar) -> dict[str, Any]:
     return {
         "open_time_ms": bar.open_time,
         "close_time_ms": bar.close_time,
-        "open": format(bar.open, "f"),
-        "high": format(bar.high, "f"),
-        "low": format(bar.low, "f"),
-        "current_close": format(bar.close, "f"),
+        "open": financial_text(bar.open),
+        "high": financial_text(bar.high),
+        "low": financial_text(bar.low),
+        "current_close": financial_text(bar.close),
         "is_closed": bar.closed,
     }
 

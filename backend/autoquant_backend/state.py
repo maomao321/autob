@@ -59,6 +59,7 @@ class OrderRecord:
 class PositionSummary:
     quantity: Decimal = Decimal("0")
     average_price: Decimal = Decimal("0")
+    open_fee: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +210,7 @@ class OrderLedger:
                 )
             rows = connection.execute(
                 """
-                SELECT side, filled_quantity, average_price, reduce_only
+                SELECT side, filled_quantity, average_price, fee, reduce_only
                 FROM orders
                 WHERE symbol = ? AND paper = ?
                   AND CAST(filled_quantity AS REAL) > 0
@@ -497,17 +498,24 @@ class OrderLedger:
             (Decimal(row["requested_notional"]) for row in rows), Decimal("0")
         )
 
-    def position_summary(self, symbol: str, *, paper: bool) -> PositionSummary:
+    def position_summary(
+        self,
+        symbol: str,
+        *,
+        paper: bool,
+        exclude_client_order_id: str = "",
+    ) -> PositionSummary:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT side, filled_quantity, average_price, reduce_only
+                SELECT side, filled_quantity, average_price, fee, reduce_only
                 FROM orders
                 WHERE symbol = ? AND paper = ?
+                  AND client_order_id != ?
                   AND CAST(filled_quantity AS REAL) > 0
                 ORDER BY created_at, client_order_id
                 """,
-                (symbol, int(paper)),
+                (symbol, int(paper), exclude_client_order_id),
             ).fetchall()
         return self._position_summary_from_rows(rows)
 
@@ -515,7 +523,8 @@ class OrderLedger:
         with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 """
-                SELECT symbol, side, filled_quantity, average_price, reduce_only
+                SELECT symbol, side, filled_quantity, average_price, fee,
+                       reduce_only
                 FROM orders
                 WHERE paper = ? AND CAST(filled_quantity AS REAL) > 0
                 ORDER BY symbol, created_at, client_order_id
@@ -629,32 +638,45 @@ class OrderLedger:
     ) -> PositionSummary:
         quantity = Decimal("0")
         basis = Decimal("0")
+        open_fee = Decimal("0")
         for row in rows:
             filled = Decimal(row["filled_quantity"])
             price = Decimal(row["average_price"])
+            fee = Decimal(row["fee"])
             reduce_only = bool(row["reduce_only"])
             delta = filled if row["side"] == Side.BUY.value else -filled
             if not reduce_only and quantity == 0:
                 quantity = delta
                 basis = filled * price
+                open_fee = fee
                 continue
             if not reduce_only and quantity * delta > 0:
                 quantity += delta
                 basis += filled * price
+                open_fee += fee
                 continue
             if not reduce_only or quantity * delta >= 0:
                 continue
             before = abs(quantity)
             reduced = min(filled, before)
             average = basis / before if before else Decimal("0")
+            allocated_open_fee = (
+                open_fee * reduced / before if before else Decimal("0")
+            )
             quantity += reduced if quantity < 0 else -reduced
             basis -= reduced * average
+            open_fee -= allocated_open_fee
             if quantity == 0:
                 basis = Decimal("0")
+                open_fee = Decimal("0")
         average_price = (
             basis / abs(quantity) if quantity != 0 else Decimal("0")
         )
-        return PositionSummary(quantity=quantity, average_price=average_price)
+        return PositionSummary(
+            quantity=quantity,
+            average_price=average_price,
+            open_fee=open_fee,
+        )
 
     @staticmethod
     def _to_record(row: sqlite3.Row) -> OrderRecord:
