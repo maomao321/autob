@@ -781,6 +781,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.orders)
             self.assertEqual([("AAPL", 0)], decider.calls)
             self.assertTrue(any("今日方向=FLAT" in item[2] for item in logs))
+            self.assertTrue(any("决策耗时=" in item[2] for item in logs))
 
     def test_ai_entry_timing_wait_blocks_candidate_order(self) -> None:
         logs = []
@@ -814,6 +815,9 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual(1, len(decider.entry_calls))
             self.assertTrue(
                 any("开仓时机=WAIT" in message for _, _, message in logs)
+            )
+            self.assertTrue(
+                any("决策耗时=" in message for _, _, message in logs)
             )
 
     def test_ai_entry_timing_enter_allows_candidate_order(self) -> None:

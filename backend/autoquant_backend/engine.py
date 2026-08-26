@@ -586,6 +586,7 @@ class SymbolRunner:
             )
             return False
         self._update(RunState.SIGNAL, "大模型正在审核当前候选开仓时机")
+        decision_started_at = time.monotonic()
         try:
             recent_bars = tuple(getattr(self.strategy, "recent_bars", ()))
             decision = self.entry_timing_decider.decide_entry(
@@ -600,12 +601,16 @@ class SymbolRunner:
                 provider=self.config.app.ai_provider,
                 risks=("异常已触发安全兜底，放弃本次开仓",),
             )
+        elapsed_ms = max(
+            0, int(round((time.monotonic() - decision_started_at) * 1000))
+        )
         action = "ENTER" if decision.enter_now else "WAIT"
         level = "ERROR" if decision.fallback else "AI"
         self._log(
             level,
             f"{decision.provider}/{decision.model or '-'} 开仓时机="
-            f"{action}，置信度={decision.confidence:.0%}；"
+            f"{action}，置信度={decision.confidence:.0%}，"
+            f"决策耗时={elapsed_ms}ms；"
             f"{decision.summary}",
         )
         if decision.factors:
@@ -790,6 +795,7 @@ class SymbolRunner:
             RunState.STARTING,
             "正在结合近期新闻、大盘和个股走势生成今日方向",
         )
+        decision_started_at = time.monotonic()
         try:
             decision = self.opening_decider.decide(self.symbol, bar)
         except Exception as exc:
@@ -798,6 +804,9 @@ class SymbolRunner:
                 provider=self.config.app.ai_provider,
                 risks=("异常已触发安全兜底，今日不开新仓",),
             )
+        elapsed_ms = max(
+            0, int(round((time.monotonic() - decision_started_at) * 1000))
+        )
         self._ai_decision_day_key = bar.open_time
         setter = getattr(self.strategy, "set_opening_direction", None)
         if not callable(setter):
@@ -807,7 +816,8 @@ class SymbolRunner:
         self._log(
             level,
             f"{decision.provider}/{decision.model or '-'} 今日方向="
-            f"{decision.direction.value}，置信度={decision.confidence:.0%}；"
+            f"{decision.direction.value}，置信度={decision.confidence:.0%}，"
+            f"决策耗时={elapsed_ms}ms；"
             f"{decision.summary}",
         )
         if decision.factors:
