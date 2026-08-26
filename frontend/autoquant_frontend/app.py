@@ -1370,6 +1370,14 @@ class AutoQuantApp(QMainWindow):
             )
             return
 
+        confirmed = ask_yes_no(
+            "确认移除标的",
+            f"即将从交易监控和服务器配置中移除：{', '.join(selected)}。\n\n"
+            "历史交易记录不会被删除。确认继续吗？",
+        )
+        if not confirmed:
+            return
+
         selected_set = set(selected)
         updated_config = replace(
             self.config,

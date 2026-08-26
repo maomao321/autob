@@ -257,7 +257,10 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.ma_var.set("12")
             window.tree.selectRow(0)
-            with patch("autoquant_frontend.app.show_error") as show_error_mock:
+            with (
+                patch("autoquant_frontend.app.ask_yes_no", return_value=True),
+                patch("autoquant_frontend.app.show_error") as show_error_mock,
+            ):
                 window._remove_selected()
 
             persisted = store.load()
@@ -281,6 +284,7 @@ class QtAppWidgetTests(unittest.TestCase):
             window.tree.selectRow(0)
 
             with (
+                patch("autoquant_frontend.app.ask_yes_no", return_value=True),
                 patch.object(
                     store,
                     "save",
@@ -293,6 +297,35 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(("AAPL",), window.tree.get_children())
             self.assertEqual(["AAPL"], window.config.symbols)
             show_error_mock.assert_called_once()
+
+    def test_remove_cancellation_keeps_symbol_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+            window.controller.stop_targets.return_value = []
+            window.tree.selectRow(0)
+
+            with (
+                patch("autoquant_frontend.app.ask_yes_no", return_value=False)
+                as ask_yes_no_mock,
+                patch.object(store, "save") as save_mock,
+            ):
+                window._remove_selected()
+
+            ask_yes_no_mock.assert_called_once_with(
+                "确认移除标的",
+                "即将从交易监控和服务器配置中移除：AAPL。\n\n"
+                "历史交易记录不会被删除。确认继续吗？",
+            )
+            save_mock.assert_not_called()
+            self.assertEqual(("AAPL",), window.tree.get_children())
+            self.assertEqual(["AAPL"], window.config.symbols)
 
 
 if __name__ == "__main__":
