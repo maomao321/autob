@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QCloseEvent, QFont
+from PySide6.QtGui import QColor, QCloseEvent, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -80,6 +80,19 @@ REALIZED_PNL_COLUMN = 5
 UNREALIZED_PNL_COLUMN = 6
 ACTION_COLUMN = 11
 MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
+
+
+def application_icon_path() -> Path:
+    if getattr(sys, "frozen", False):
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return bundle_root / "assets" / "autoquant-icon.png"
+    return (
+        Path(__file__).resolve().parents[2]
+        / "packaging"
+        / "assets"
+        / "autoquant-icon.png"
+    )
+
 
 STATE_TEXT = {
     RunState.STOPPED: "已停止",
@@ -428,6 +441,7 @@ class AutoQuantApp(QMainWindow):
         controller: RemoteTradingController | None = None,
     ) -> None:
         super().__init__()
+        self.setWindowIcon(QIcon(str(application_icon_path())))
         self.setWindowTitle("AutoQuant - Binance Stocks 量化控制台")
         self.resize(1280, 820)
         self.setMinimumSize(1020, 680)
@@ -1793,6 +1807,7 @@ def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("AutoQuant")
     app.setOrganizationName("AutoQuant")
+    app.setWindowIcon(QIcon(str(application_icon_path())))
     window = AutoQuantApp()
     window.show()
     raise SystemExit(app.exec())

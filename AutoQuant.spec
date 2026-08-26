@@ -7,6 +7,9 @@ project_root = Path(SPECPATH)
 dependency_root = project_root / ".packaging"
 is_windows = sys.platform == "win32"
 is_macos = sys.platform == "darwin"
+icon_png = project_root / "packaging" / "assets" / "autoquant-icon.png"
+icon_windows = project_root / "packaging" / "assets" / "autoquant-icon.ico"
+icon_macos = project_root / "packaging" / "assets" / "autoquant-icon.icns"
 
 a = Analysis(
     [str(project_root / "frontend" / "autoquant_frontend" / "__main__.py")],
@@ -17,7 +20,7 @@ a = Analysis(
         str(dependency_root),
     ],
     binaries=[],
-    datas=[],
+    datas=[(str(icon_png), "assets")],
     hiddenimports=["websocket"],
     hookspath=[],
     hooksconfig={},
@@ -48,13 +51,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version=str(project_root / "packaging" / "version_info.txt") if is_windows else None,
+    icon=str(icon_windows) if is_windows else None,
 )
 
 if is_macos:
     app = BUNDLE(
         exe,
         name="AutoQuant.app",
-        icon=None,
+        icon=str(icon_macos),
         bundle_identifier="com.autoquant.desktop",
         info_plist={
             "CFBundleDisplayName": "AutoQuant",
