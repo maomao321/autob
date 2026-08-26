@@ -1,14 +1,12 @@
-#!/bin/zsh
-set -e
-SCRIPT_DIR=${0:A:h}
-cd "$SCRIPT_DIR"
+#!/usr/bin/env bash
+set -uo pipefail
 
-if [[ ! -x .venv/bin/python ]]; then
-  python3 -m venv .venv
-fi
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT_ROOT"
 
-if ! .venv/bin/python -c "import autoquant_backend, autoquant_shared, websocket" >/dev/null 2>&1; then
-  .venv/bin/python -m pip install -e .
-fi
+source "$PROJECT_ROOT/packaging/macos_runtime.sh"
+autoquant_prepare_runtime \
+    "$PROJECT_ROOT" \
+    "import autoquant_backend, autoquant_shared, websocket" || exit 1
 
-exec .venv/bin/python -m autoquant_backend "$@"
+exec "$AUTOQUANT_VENV_PYTHON" -m autoquant_backend "$@"

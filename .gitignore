@@ -3,6 +3,7 @@ __pycache__/
 .idea/
 .pytest_cache/
 .venv/
+.venv.backup-*/
 .packaging/
 .tcl/
 dist/

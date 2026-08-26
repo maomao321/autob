@@ -29,6 +29,15 @@ autoquant
 
 同一台电脑运行时，可以分别双击 `run-server.command` 和 `run.command`；Windows 对应 `run-server.bat` 和 `run.bat`。默认仅监听本机回环地址，本机模式可以不设置令牌。
 
+macOS 的两个 `.command` 启动器会主动查找 pyenv（包括 Homebrew 和 `~/.pyenv` 的常见安装位置），因此从 Finder 双击时不依赖交互式 Shell 的初始化配置。先在项目目录选择一个 Python 3.10 或更高版本：
+
+```bash
+pyenv local 3.14.7  # 可替换为本机已经安装的其他 3.10+ 版本
+chmod +x run.command run-server.command
+```
+
+首次启动会用 pyenv 当前选择的解释器创建 `.venv` 并安装依赖。如果已有 `.venv` 来自系统 Python 或其他解释器，启动器会将它保留为带时间戳的 `.venv.backup-*` 后再重建。也可以通过 `PYTHON_EXE=/完整路径/python ./run.command` 显式覆盖解释器。
+
 ### 远程服务器部署
 
 生产环境建议让后端继续监听 `127.0.0.1`，再通过带 HTTPS 的反向代理或 SSH 隧道访问。不要把无 TLS 的交易接口直接暴露到公网。若确实使用 `--host 0.0.0.0`，服务会强制要求设置 `AUTOQUANT_API_TOKEN`。前端也会默认拒绝连接非本机的明文 HTTP 地址；仅受信任内网临时调试可显式设置 `AUTOQUANT_ALLOW_INSECURE_HTTP=1`。
