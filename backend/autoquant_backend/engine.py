@@ -10,7 +10,6 @@ from typing import Callable, Protocol
 from autoquant_backend.ai_decision import (
     DecisionClient,
     DeepSeekDecisionClient,
-    ENTRY_TIMING_BAR_COUNT,
     EntryTimingDecision,
     OpenAIResponsesDecisionClient,
     OpeningDecision,
@@ -106,6 +105,7 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
             symbol=symbol,
             ma_period=config.app.ma_period,
             max_trades_per_day=config.app.max_trades_per_day,
+            entry_context_bars=config.app.ai_entry_timing_bars,
             manual_direction=(
                 None
                 if config.manual_direction is Direction.UNKNOWN
@@ -151,6 +151,7 @@ def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
         clients=tuple(clients),
         min_confidence=float(Decimal(config.app.ai_min_confidence)),
         mode=mode,
+        entry_timing_bar_count=config.app.ai_entry_timing_bars,
     )
 
 
@@ -821,7 +822,9 @@ class SymbolRunner:
         required = int(getattr(self.strategy, "warmup_required", 0))
         current = int(getattr(self.strategy, "warmup_bars", 0))
         ai_enabled = self.config.app.ai_provider != "DISABLED"
-        context_required = ENTRY_TIMING_BAR_COUNT if ai_enabled else required
+        context_required = (
+            self.config.app.ai_entry_timing_bars if ai_enabled else required
+        )
         recent_count = len(tuple(getattr(self.strategy, "recent_bars", ())))
         if required <= 0 or (
             current >= required and recent_count >= context_required

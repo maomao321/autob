@@ -57,7 +57,24 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertNotIn("server-key", str(payload))
         self.assertNotIn("server-secret", str(payload))
 
+    def test_public_config_redacts_persisted_model_credentials(self) -> None:
+        config = self.store.load()
+        config.openai_api_key = "saved-openai-key"
+        config.deepseek_api_key = "saved-deepseek-key"
+        self.store.save(config)
+
+        payload = self.runtime.public_config()
+
+        self.assertEqual(SECRET_SENTINEL, payload["openai_api_key"])
+        self.assertEqual(SECRET_SENTINEL, payload["deepseek_api_key"])
+        self.assertNotIn("saved-openai-key", str(payload))
+        self.assertNotIn("saved-deepseek-key", str(payload))
+
     def test_saving_sentinel_preserves_server_credentials(self) -> None:
+        config = self.store.load()
+        config.openai_api_key = "saved-openai-key"
+        config.deepseek_api_key = "saved-deepseek-key"
+        self.store.save(config)
         payload = self.runtime.public_config()
         payload["buy_notional"] = "50.00"
 
@@ -66,6 +83,8 @@ class BackendRuntimeTests(unittest.TestCase):
         saved = self.store.load()
         self.assertEqual("server-key", saved.api_key)
         self.assertEqual("server-secret", saved.api_secret)
+        self.assertEqual("saved-openai-key", saved.openai_api_key)
+        self.assertEqual("saved-deepseek-key", saved.deepseek_api_key)
         self.assertEqual("50.00", saved.buy_notional)
 
     def test_ai_mode_uses_unknown_direction_and_ephemeral_key(self) -> None:
@@ -98,6 +117,18 @@ class BackendRuntimeTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             with self.assertRaisesRegex(ValueError, "DeepSeek API Key"):
                 self.runtime.start("AAPL", "FLAT")
+
+    def test_ai_mode_uses_persisted_model_key(self) -> None:
+        config = self.store.load()
+        config.ai_provider = "CHATGPT"
+        config.openai_api_key = "persisted-openai-key"
+        self.store.save(config)
+
+        with patch.object(self.runtime.controller, "start") as start_mock:
+            self.runtime.start("AAPL", "FLAT")
+
+        runner_config = start_mock.call_args.args[1]
+        self.assertEqual("persisted-openai-key", runner_config.openai_api_key)
 
     def test_concurrent_config_updates_are_serialized(self) -> None:
         original_load = self.store.load

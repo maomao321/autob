@@ -13,6 +13,7 @@ from typing import Any
 from autoquant_shared.config import (
     AppConfig,
     ConfigStore,
+    SECRET_SENTINEL,
     credential_or_environment,
     default_config_path,
 )
@@ -20,9 +21,6 @@ from autoquant_backend.engine import RunnerConfig, TradingController, create_pro
 from autoquant_shared.models import AccountOverview, Direction, RuntimeSnapshot
 from autoquant_backend.state import OrderLedger
 from autoquant_shared.formatting import financial_text
-
-
-SECRET_SENTINEL = "••••••••"
 
 
 def _json_value(value: Any) -> Any:
@@ -176,6 +174,12 @@ class BackendRuntime:
             payload["api_secret"] = (
                 SECRET_SENTINEL if self._api_secret(config) else ""
             )
+            payload["openai_api_key"] = (
+                SECRET_SENTINEL if self._openai_api_key(config) else ""
+            )
+            payload["deepseek_api_key"] = (
+                SECRET_SENTINEL if self._deepseek_api_key(config) else ""
+            )
             return payload
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -191,6 +195,10 @@ class BackendRuntime:
                 merged["api_key"] = current.api_key
             if payload.get("api_secret") == SECRET_SENTINEL:
                 merged["api_secret"] = current.api_secret
+            if payload.get("openai_api_key") == SECRET_SENTINEL:
+                merged["openai_api_key"] = current.openai_api_key
+            if payload.get("deepseek_api_key") == SECRET_SENTINEL:
+                merged["deepseek_api_key"] = current.deepseek_api_key
             config = AppConfig(**merged)
             config.validate()
             self.config_store.save(config)
@@ -252,6 +260,18 @@ class BackendRuntime:
     def _api_secret(config: AppConfig) -> str:
         return credential_or_environment(config.api_secret, "BINANCE_API_SECRET")
 
+    @staticmethod
+    def _openai_api_key(config: AppConfig) -> str:
+        return credential_or_environment(
+            config.openai_api_key, "OPENAI_API_KEY"
+        )
+
+    @staticmethod
+    def _deepseek_api_key(config: AppConfig) -> str:
+        return credential_or_environment(
+            config.deepseek_api_key, "DEEPSEEK_API_KEY"
+        )
+
     def _runner_config(
         self,
         manual_direction: Direction = Direction.FLAT,
@@ -260,18 +280,24 @@ class BackendRuntime:
         deepseek_api_key: str = "",
     ) -> RunnerConfig:
         config = self.config_store.load()
+        transient_openai_key = openai_api_key.strip()
+        transient_deepseek_key = deepseek_api_key.strip()
         return RunnerConfig(
             app=config,
             api_key=self._api_key(config),
             api_secret=self._api_secret(config),
             openai_api_key=(
-                openai_api_key.strip()
-                or os.environ.get("OPENAI_API_KEY", "").strip()
-            ),
+                transient_openai_key
+                if transient_openai_key != SECRET_SENTINEL
+                else ""
+            )
+            or self._openai_api_key(config),
             deepseek_api_key=(
-                deepseek_api_key.strip()
-                or os.environ.get("DEEPSEEK_API_KEY", "").strip()
-            ),
+                transient_deepseek_key
+                if transient_deepseek_key != SECRET_SENTINEL
+                else ""
+            )
+            or self._deepseek_api_key(config),
             manual_direction=manual_direction,
         )
 

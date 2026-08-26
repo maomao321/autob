@@ -206,6 +206,17 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual(history[5].open_time, strategy.recent_bars[0].open_time)
         self.assertEqual(history[-1].open_time, strategy.recent_bars[-1].open_time)
 
+    def test_recent_model_context_capacity_is_configurable(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy(
+            "AAPL", ma_period=3, entry_context_bars=20
+        )
+        history = [bar(str(100 + index), index) for index in range(25)]
+
+        strategy.seed_recent_bars(history)
+
+        self.assertEqual(20, len(strategy.recent_bars))
+        self.assertEqual(history[5].open_time, strategy.recent_bars[0].open_time)
+
     def test_out_of_order_five_minute_bar_is_ignored(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))

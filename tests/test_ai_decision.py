@@ -426,6 +426,29 @@ class AiDecisionTests(unittest.TestCase):
         self.assertIn("不足 60 根", decision.summary)
         self.assertEqual([], client.entry_contexts)
 
+    def test_entry_timing_bar_count_is_configurable(self) -> None:
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (client,),
+            min_confidence=0.7,
+            mode="CHATGPT",
+            entry_timing_bar_count=20,
+        )
+        service.decide("AAPL", daily_bar())
+
+        decision = service.decide_entry(
+            "AAPL",
+            candidate_signal(),
+            intraday_bar(),
+            intraday_history(20),
+        )
+
+        self.assertTrue(decision.enter_now)
+        context = client.entry_contexts[-1]
+        self.assertEqual(20, context["entry_timing_bar_count"])
+        self.assertEqual(20, len(context["recent_intraday_bars"]))
+
 
 if __name__ == "__main__":
     unittest.main()

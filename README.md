@@ -47,7 +47,7 @@ curl http://127.0.0.1:8765/health
 
 - `GET /api/v1/config`、`PUT /api/v1/config`：读取或更新服务器配置，读取结果只返回凭据掩码。
 - `GET /api/v1/status?after_log=<序号>`：增量读取运行快照与日志。
-- `POST /api/v1/runners/{symbol}/start`：按手动方向或已保存的大模型模式启动策略；OpenAI/DeepSeek Key 可随该请求临时传入，不持久化。
+- `POST /api/v1/runners/{symbol}/start`：按手动方向或已保存的大模型模式启动策略；默认使用本地配置中的 OpenAI/DeepSeek Key，也支持随启动请求临时覆盖。
 - `POST /api/v1/runners/{symbol}/stop`：停止策略，可明确要求按服务器账本持仓平仓。
 - `POST /api/v1/stop-targets`：查询运行中、持仓中或存在阻塞订单的目标。
 - `POST /api/v1/connection/check`：由服务器检查 Binance API 和股票代码。
@@ -89,7 +89,7 @@ chmod +x packaging/build_macos.sh run.command
 
 交易监控表格的“手动方向”在大模型开关关闭时生效，支持 `LONG`、`SHORT` 或 `FLAT`。该选择在启动标的时读取并锁定，并随“保存配置”写入配置文件。`FLAT` 表示禁止该标的产生普通开仓信号。大模型开关开启时，后端强制使用模型方向，不会回退到手动方向下单。
 
-配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance API Key/Secret 不会通过读取配置接口回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
+配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance、OpenAI 和 DeepSeek 凭据不会通过读取配置接口明文回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
@@ -112,11 +112,11 @@ py -m autoquant_backend
 - `DEEPSEEK`：通过 DeepSeek Chat Completions JSON Output 决策。
 - `DUAL`：两个模型并行请求。今日方向必须一致，候选入场也必须同时返回 `ENTER`，否则不开仓。
 - 每个交易日首先结合近期新闻、SPY/QQQ 大盘走势、个股走势与当前日线生成 `LONG / SHORT / FLAT`。
-- 今日方向判断固定提供最近 30 根日线 OHLC（开盘、最高、最低、收盘）数据；五分钟策略产生候选突破信号后，模型根据今日日线、最近 60 根五分钟 OHLC、MA 和突破原因返回 `ENTER / WAIT`。
+- 今日方向判断固定提供最近 30 根日线 OHLC（开盘、最高、最低、收盘）数据；五分钟策略产生候选突破信号后，模型根据今日日线、配置数量的最近五分钟 OHLC、MA 和突破原因返回 `ENTER / WAIT`。时机 K 线数量默认为 60，可在 10～300 根之间配置。
 - 任意网络失败、数据缺失、响应格式错误、置信度低于阈值或双模型分歧，都会安全降级为 `FLAT/WAIT`，不会绕过模型改用手动方向开仓。
-- OpenAI/DeepSeek Key 可从前端启动请求临时传入，也可设置在后端环境变量中；密钥不写入 `config.json` 或 `running.json`。服务重启自动恢复 AI 运行器时，必须在后端环境变量中提供对应 Key。
+- 大模型模式、模型名、置信度、新闻窗口、时机 K 线数量以及 OpenAI/DeepSeek Key 会写入后端本地 `config.json`，读取接口只返回掩码；密钥不会写入 `running.json`。配置留空时仍可使用后端环境变量，服务重启后可直接使用已保存或环境变量中的 Key 恢复 AI 运行器。
 
-Binance API Key/Secret 会在点击“保存配置”后写入后端服务器配置。OpenAI Key 仍可用于手动上传交易经验库。
+Binance API Key/Secret 与 OpenAI/DeepSeek Key 会在点击“保存配置”后写入后端服务器配置，请保护该文件的访问权限。OpenAI Key 仍可用于手动上传交易经验库。
 
 订单保护账本保存在后端服务器的 `orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交价格、成交数量、手续费、平仓收益和程序持仓，不保存 API 凭据。“交易记录”页直接查询该持久化账本，重启前后数据保持一致；页面不会展示订单号。该文件用于恢复交易次数、持仓和资金限额，不能在后端运行期间删除或修改。
 
@@ -216,7 +216,7 @@ T001,突破前缩量,AAPL,2026-08-13T09:34:00Z,100,102,99,101,1200,1m
 
 当K线的 `pattern_id`（也可命名为 `trade_id`）与交易记录的 `trade_id` 相同时，K线会关联到该笔交易；没有编号时则按 `symbol` 关联。关联交易时只使用开仓前已经收盘的K线，防止未来数据泄漏。若只导入K线文件，建议每种典型形态使用独立的 `pattern_id` 分组。
 
-导入结果可以保存到 `%LOCALAPPDATA%\AutoQuant\external_trade_experiences.json`，也可以使用“运行配置”页内存中的 OpenAI API Key 上传到新的或已有的 Vector Store。上传是显式操作，API Key 不会写入经验文件。为避免混入旧的本地订单数据，这个外部经验库使用独立文件名；DeepSeek 后续可由本地检索器选取相关经验后随决策请求一起发送。
+导入结果可以保存到 `%LOCALAPPDATA%\AutoQuant\external_trade_experiences.json`，也可以使用“运行配置”页中填写的 OpenAI API Key 上传到新的或已有的 Vector Store。上传是显式操作，API Key 不会写入经验文件。若远程后端已有保存的 Key，读取配置时界面只会收到掩码；执行前端直传时需重新填写真实 Key。为避免混入旧的本地订单数据，这个外部经验库使用独立文件名；DeepSeek 后续可由本地检索器选取相关经验后随决策请求一起发送。
 
 ## 测试
 

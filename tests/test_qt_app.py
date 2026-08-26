@@ -42,6 +42,8 @@ class QtAppWidgetTests(unittest.TestCase):
                 AppConfig(
                     symbols=["AAPL"],
                     ai_provider="CHATGPT",
+                    openai_api_key="saved-openai-key",
+                    ai_entry_timing_bars=90,
                     manual_directions={"AAPL": "LONG"},
                 )
             )
@@ -52,12 +54,18 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.deleteLater)
 
             self.assertTrue(window.ai_enabled_checkbox.isChecked())
+            self.assertEqual("saved-openai-key", window.openai_api_key_var.get())
+            self.assertEqual("90", window.ai_entry_timing_bars_var.get())
             window._start_symbols(["AAPL"])
             enabled_config = window.controller.start.call_args.args[1]
             self.assertEqual(
                 Direction.UNKNOWN, enabled_config.manual_direction
             )
             self.assertEqual("CHATGPT", enabled_config.app.ai_provider)
+            self.assertEqual(90, enabled_config.app.ai_entry_timing_bars)
+            self.assertEqual(
+                "saved-openai-key", enabled_config.app.openai_api_key
+            )
 
             window.controller.start.reset_mock()
             window.ai_enabled_checkbox.setChecked(False)
@@ -149,8 +157,8 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertNotIn("MA", headers)
             self.assertNotIn("实时K线", headers)
             self.assertNotIn("今日交易", headers)
-            self.assertNotIn("今日开仓额", headers)
-            self.assertIn("开仓额", headers)
+            self.assertNotIn("今日开仓金额", headers)
+            self.assertIn("开仓金额", headers)
 
             action_button = window.tree.action_button("AAPL")
             self.assertEqual("▶", action_button.text())

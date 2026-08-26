@@ -22,6 +22,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         ma_period: int = 5,
         max_trades_per_day: int = 1,
         manual_direction: Direction | None = None,
+        entry_context_bars: int = AI_ENTRY_CONTEXT_BARS,
     ) -> None:
         if ma_period < 2:
             raise ValueError("ma_period must be at least 2")
@@ -32,11 +33,14 @@ class FiveMinuteBreakoutStrategy(Strategy):
             Direction.FLAT,
         }:
             raise ValueError("manual direction must be LONG, SHORT or FLAT")
+        if not 10 <= int(entry_context_bars) <= 300:
+            raise ValueError("entry_context_bars must be between 10 and 300")
         self.symbol = symbol.upper()
         self.ma_period = ma_period
         self.max_trades_per_day = max_trades_per_day
         self._bars: deque[Bar] = deque(maxlen=ma_period + 1)
-        self._recent_bars: deque[Bar] = deque(maxlen=AI_ENTRY_CONTEXT_BARS)
+        self.entry_context_bars = int(entry_context_bars)
+        self._recent_bars: deque[Bar] = deque(maxlen=self.entry_context_bars)
         self._daily_bar: Bar | None = None
         self._manual_day_key: int | None = None
         self._manual_direction = manual_direction
@@ -149,7 +153,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
             key=lambda bar: bar.open_time,
         )
         self._recent_bars.clear()
-        self._recent_bars.extend(eligible[-AI_ENTRY_CONTEXT_BARS:])
+        self._recent_bars.extend(eligible[-self.entry_context_bars :])
 
     @property
     def trades_today(self) -> int:

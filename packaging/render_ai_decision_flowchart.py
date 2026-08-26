@@ -155,7 +155,7 @@ def arrow(
 draw.text((75, 55), "AutoQuant 大模型开仓决策流程图", font=TITLE_FONT, fill=INK)
 draw.text(
     (79, 135),
-    "ChatGPT / DeepSeek / DUAL · 30 根日线方向决策 + 60 根五分钟 K 线时机审核",
+    "ChatGPT / DeepSeek / DUAL · 30 根日线方向决策 + 可配置五分钟 K 线时机审核",
     font=SUBTITLE_FONT,
     fill=MUTED,
 )
@@ -221,7 +221,7 @@ arrow([(1015, 2015), (1015, 2050), (1920, 2050), (1920, 1975)], label="否", lab
 panel(2160, 2995, "4", "候选开仓时机审核", AMBER)
 diamond((290, 2390), (185, 125), "基础检查通过？\n未决订单、持仓、次数\n方向、状态、时效")
 diamond((700, 2390), (150, 105), "大模型启用？")
-box((980, 2240, 1405, 2390), "组装时机上下文\n今日日线 OHLC、候选原因\n最近 60 根五分钟 OHLC")
+box((980, 2240, 1405, 2390), "组装时机上下文\n今日日线 OHLC、候选原因\n配置数量的五分钟 OHLC")
 diamond((1675, 2315), (150, 105), "单模型 / DUAL")
 box((1900, 2180, 2100, 2310), "请求\nENTER / WAIT")
 box((1900, 2380, 2100, 2510), "并行请求\n两个模型", fill=PURPLE_BG, outline=PURPLE)

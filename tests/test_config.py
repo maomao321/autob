@@ -38,6 +38,9 @@ class ConfigTests(unittest.TestCase):
                 max_order_notional="250",
                 ai_provider="dual",
                 ai_min_confidence="0.75",
+                openai_api_key="openai-secret",
+                deepseek_api_key="deepseek-secret",
+                ai_entry_timing_bars=90,
             )
             store.save(config)
 
@@ -51,12 +54,17 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(8, loaded.ma_period)
             self.assertEqual("DUAL", loaded.ai_provider)
             self.assertEqual("0.75", loaded.ai_min_confidence)
+            self.assertEqual("openai-secret", loaded.openai_api_key)
+            self.assertEqual("deepseek-secret", loaded.deepseek_api_key)
+            self.assertEqual(90, loaded.ai_entry_timing_bars)
             self.assertEqual("binance-key", loaded.api_key)
             self.assertEqual("binance-secret", loaded.api_secret)
             self.assertEqual(1, loaded.leverage)
             content = path.read_text(encoding="utf-8")
             self.assertIn('"api_key": "binance-key"', content)
             self.assertIn('"api_secret": "binance-secret"', content)
+            self.assertIn('"openai_api_key": "openai-secret"', content)
+            self.assertIn('"deepseek_api_key": "deepseek-secret"', content)
 
     def test_configured_credential_takes_priority_over_environment(self) -> None:
         with patch.dict("os.environ", {"BINANCE_API_KEY": "environment-key"}):
@@ -127,6 +135,8 @@ class ConfigTests(unittest.TestCase):
             AppConfig(symbols=["AAPL"], ai_min_confidence="0.4").validate()
         with self.assertRaisesRegex(ValueError, "大模型模式"):
             AppConfig(symbols=["AAPL"], ai_provider="unknown").validate()
+        with self.assertRaisesRegex(ValueError, "K 线数量"):
+            AppConfig(symbols=["AAPL"], ai_entry_timing_bars=9).validate()
 
     def test_futures_provider_and_leverage_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

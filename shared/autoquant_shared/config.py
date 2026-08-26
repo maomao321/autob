@@ -28,6 +28,7 @@ MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", re.ASCII)
 MAX_SYMBOLS = 20
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
 AI_DIRECTION_DAILY_BARS = 30
+SECRET_SENTINEL = "••••••••"
 
 
 @dataclass(slots=True)
@@ -52,8 +53,11 @@ class AppConfig:
     ai_provider: str = "DISABLED"
     openai_model: str = "gpt-5.6"
     deepseek_model: str = "deepseek-v4-flash"
+    openai_api_key: str = ""
+    deepseek_api_key: str = ""
     ai_min_confidence: str = "0.70"
     ai_history_days: int = 30
+    ai_entry_timing_bars: int = 60
     ai_news_days: int = 7
     ai_news_limit: int = 8
     ai_timeout_seconds: int = 20
@@ -64,6 +68,8 @@ class AppConfig:
     def validate(self) -> None:
         self.api_key = str(self.api_key).strip()
         self.api_secret = str(self.api_secret).strip()
+        self.openai_api_key = str(self.openai_api_key).strip()
+        self.deepseek_api_key = str(self.deepseek_api_key).strip()
         if not isinstance(self.symbols, list):
             raise ValueError("symbols 必须是标的代码列表")
         self.symbols = normalize_symbols(self.symbols)
@@ -121,6 +127,7 @@ class AppConfig:
             self.recv_window = int(self.recv_window)
             self.max_signal_age_seconds = int(self.max_signal_age_seconds)
             self.ai_history_days = int(self.ai_history_days)
+            self.ai_entry_timing_bars = int(self.ai_entry_timing_bars)
             self.ai_news_days = int(self.ai_news_days)
             self.ai_news_limit = int(self.ai_news_limit)
             self.ai_timeout_seconds = int(self.ai_timeout_seconds)
@@ -142,6 +149,8 @@ class AppConfig:
         # This field is retained for configuration-file compatibility, but the
         # direction model contract now always receives exactly 30 daily bars.
         self.ai_history_days = AI_DIRECTION_DAILY_BARS
+        if not 10 <= self.ai_entry_timing_bars <= 300:
+            raise ValueError("开仓时机五分钟 K 线数量必须在 10 到 300 之间")
         if not 1 <= self.ai_news_days <= 30:
             raise ValueError("AI 新闻回看天数必须在 1 到 30 之间")
         if not 1 <= self.ai_news_limit <= 20:

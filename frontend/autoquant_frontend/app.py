@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from autoquant_shared.config import (
     MAX_SYMBOLS,
+    SECRET_SENTINEL,
     AppConfig,
     ConfigStore,
     credential_or_environment,
@@ -479,10 +480,21 @@ class AutoQuantApp(QMainWindow):
         )
         self.openai_model_var = TextValue(self.config.openai_model)
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
-        self.openai_api_key_var = TextValue(os.environ.get("OPENAI_API_KEY", ""))
-        self.deepseek_api_key_var = TextValue(os.environ.get("DEEPSEEK_API_KEY", ""))
+        self.openai_api_key_var = TextValue(
+            credential_or_environment(
+                self.config.openai_api_key, "OPENAI_API_KEY"
+            )
+        )
+        self.deepseek_api_key_var = TextValue(
+            credential_or_environment(
+                self.config.deepseek_api_key, "DEEPSEEK_API_KEY"
+            )
+        )
         self.ai_min_confidence_var = TextValue(self.config.ai_min_confidence)
         self.ai_history_days_var = TextValue(str(self.config.ai_history_days))
+        self.ai_entry_timing_bars_var = TextValue(
+            str(self.config.ai_entry_timing_bars)
+        )
         self.ai_news_days_var = TextValue(str(self.config.ai_news_days))
         self.ai_news_limit_var = TextValue(str(self.config.ai_news_limit))
         self.ai_timeout_var = TextValue(str(self.config.ai_timeout_seconds))
@@ -654,7 +666,7 @@ class AutoQuantApp(QMainWindow):
         headers = [
             "标的", "状态", "实际方向", "手动方向", "最新价", "已实现收益",
             "未实现收益", "程序持仓", "持仓均价", "未决订单",
-            "开仓额",
+            "开仓金额",
             "操作", "信息",
         ]
         widths = [80, 80, 85, 90, 90, 95, 95, 85, 85, 75, 120, 64, 300]
@@ -851,18 +863,25 @@ class AutoQuantApp(QMainWindow):
             "新闻天数/条数",
             news_window,
         )
+        self._grid_field(
+            ai_grid,
+            5,
+            0,
+            "时机K线数量",
+            self._line(self.ai_entry_timing_bars_var),
+        )
         ai_note = QLabel(
             "开关关闭时完全使用表格中的手动方向，不调用大模型。"
             "开关开启时，模型先生成今日 LONG/SHORT/FLAT，"
-            "方向判断使用最近30根日线OHLC；再使用今日日线和最近60根"
+            "方向判断使用最近30根日线OHLC；再使用今日日线和配置数量的"
             "五分钟K线OHLC判断每个候选信号的 ENTER/WAIT。"
             "失败、低置信度或双模型分歧时不开仓。"
-            "API Key 仅随启动请求发送给后端内存，不写入配置文件；"
+            "大模型配置和 API Key 会保存到后端本地配置文件；"
             "OpenAI Key 也可用于交易经验上传。"
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 5, 0, 1, 4)
+        ai_grid.addWidget(ai_note, 6, 0, 1, 4)
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -1272,8 +1291,11 @@ class AutoQuantApp(QMainWindow):
             show_info("没有经验", "请先从外部文件导入至少一条经验。")
             return
         api_key = self.openai_api_key_var.get().strip()
-        if not api_key:
-            show_error("缺少凭据", "请先在“运行配置”页填写 OpenAI API Key。")
+        if not api_key or api_key == SECRET_SENTINEL:
+            show_error(
+                "缺少凭据",
+                "请先在“运行配置”页重新填写真实 OpenAI API Key。",
+            )
             return
         vector_store_id = self.experience_vector_store_var.get().strip()
         confirmed = ask_yes_no(
@@ -1367,8 +1389,11 @@ class AutoQuantApp(QMainWindow):
                 else "DISABLED"
             ), openai_model=self.openai_model_var.get().strip(),
             deepseek_model=self.deepseek_model_var.get().strip(),
+            openai_api_key=self.openai_api_key_var.get().strip(),
+            deepseek_api_key=self.deepseek_api_key_var.get().strip(),
             ai_min_confidence=self.ai_min_confidence_var.get().strip(),
             ai_history_days=int(self.ai_history_days_var.get()),
+            ai_entry_timing_bars=int(self.ai_entry_timing_bars_var.get()),
             ai_news_days=int(self.ai_news_days_var.get()),
             ai_news_limit=int(self.ai_news_limit_var.get()),
             ai_timeout_seconds=int(self.ai_timeout_var.get()),
