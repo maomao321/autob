@@ -131,6 +131,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
         return self.ma_period + 1
 
     @property
+    def recent_bars(self) -> tuple[Bar, ...]:
+        return tuple(self._bars)
+
+    @property
     def trades_today(self) -> int:
         day_key = self.current_day_key
         if day_key is None:

@@ -222,7 +222,11 @@ class RemoteTradingController:
         self.client.request(
             "POST",
             f"/api/v1/runners/{quote(symbol.upper())}/start",
-            {"direction": config.manual_direction.value},
+            {
+                "direction": config.manual_direction.value,
+                "openai_api_key": config.openai_api_key,
+                "deepseek_api_key": config.deepseek_api_key,
+            },
         )
 
     def stop(self, symbol: str, *, close_position: bool = False) -> None:

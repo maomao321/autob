@@ -8,7 +8,7 @@ from threading import Event
 
 from autoquant_shared.config import AppConfig
 from autoquant_backend.engine import RunnerConfig, SymbolRunner, create_provider
-from autoquant_backend.ai_decision import OpeningDecision
+from autoquant_backend.ai_decision import EntryTimingDecision, OpeningDecision
 from autoquant_shared.models import (
     Bar,
     Direction,
@@ -220,6 +220,35 @@ class FlatOpeningDecider:
             direction=Direction.FLAT,
             confidence=0.88,
             summary="新闻与走势相互冲突",
+            provider="CHATGPT",
+            model="gpt-test",
+        )
+
+
+class EntryGateDecider:
+    def __init__(self, enter_now: bool) -> None:
+        self.enter_now = enter_now
+        self.direction_calls = []
+        self.entry_calls = []
+
+    def decide(self, symbol, current_daily_bar):
+        self.direction_calls.append((symbol, current_daily_bar.open_time))
+        return OpeningDecision(
+            direction=Direction.LONG,
+            confidence=0.88,
+            summary="今日偏多",
+            provider="CHATGPT",
+            model="gpt-test",
+        )
+
+    def decide_entry(self, symbol, signal, current_bar, recent_bars=()):
+        self.entry_calls.append(
+            (symbol, signal.bar_open_time, current_bar.open_time, len(recent_bars))
+        )
+        return EntryTimingDecision(
+            enter_now=self.enter_now,
+            confidence=0.86,
+            summary="允许入场" if self.enter_now else "等待下一个信号",
             provider="CHATGPT",
             model="gpt-test",
         )
@@ -752,6 +781,68 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.orders)
             self.assertEqual([("AAPL", 0)], decider.calls)
             self.assertTrue(any("今日方向=FLAT" in item[2] for item in logs))
+
+    def test_ai_entry_timing_wait_blocks_candidate_order(self) -> None:
+        logs = []
+        decider = EntryGateDecider(enter_now=False)
+        with tempfile.TemporaryDirectory() as directory:
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ma_period=3,
+                        ai_provider="CHATGPT",
+                    ),
+                    openai_api_key="test-key",
+                    manual_direction=Direction.UNKNOWN,
+                ),
+                lambda _snapshot: None,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
+                OrderLedger(Path(directory) / "orders.sqlite3"),
+                opening_decider=decider,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual([], provider.orders)
+            self.assertEqual(1, len(decider.entry_calls))
+            self.assertTrue(
+                any("开仓时机=WAIT" in message for _, _, message in logs)
+            )
+
+    def test_ai_entry_timing_enter_allows_candidate_order(self) -> None:
+        decider = EntryGateDecider(enter_now=True)
+        with tempfile.TemporaryDirectory() as directory:
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ma_period=3,
+                        ai_provider="CHATGPT",
+                    ),
+                    openai_api_key="test-key",
+                    manual_direction=Direction.UNKNOWN,
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                OrderLedger(Path(directory) / "orders.sqlite3"),
+                opening_decider=decider,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.orders))
+            self.assertEqual(1, len(decider.entry_calls))
 
     def test_entry_order_uses_configured_size(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

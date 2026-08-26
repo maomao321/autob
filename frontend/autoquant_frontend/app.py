@@ -16,6 +16,7 @@ from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QCloseEvent, QFont, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -471,7 +472,11 @@ class AutoQuantApp(QMainWindow):
         self.stop_loss_var = TextValue(self.config.stop_loss_percent)
         self.take_profit_var = TextValue(self.config.take_profit_percent)
         self.max_signal_age_var = TextValue(str(self.config.max_signal_age_seconds))
-        self.ai_provider_var = TextValue("DISABLED")
+        self.ai_provider_var = TextValue(
+            self.config.ai_provider
+            if self.config.ai_provider != "DISABLED"
+            else "CHATGPT"
+        )
         self.openai_model_var = TextValue(self.config.openai_model)
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
         self.openai_api_key_var = TextValue(os.environ.get("OPENAI_API_KEY", ""))
@@ -762,24 +767,99 @@ class AutoQuantApp(QMainWindow):
         grid.addWidget(warning, 5, 0, 1, 8)
         content_layout.addWidget(settings)
 
-        ai_settings = QGroupBox("交易经验库上传")
+        ai_settings = QGroupBox("大模型开仓决策")
         ai_grid = QGridLayout(ai_settings)
         ai_grid.setHorizontalSpacing(12)
         ai_grid.setVerticalSpacing(10)
         ai_grid.setColumnStretch(1, 1)
+        ai_grid.setColumnStretch(3, 1)
+        self.ai_enabled_checkbox = QCheckBox(
+            "启用大模型决策（今日方向 + 候选开仓时机）"
+        )
+        self.ai_enabled_checkbox.setChecked(
+            self.config.ai_provider != "DISABLED"
+        )
+        ai_grid.addWidget(self.ai_enabled_checkbox, 0, 0, 1, 2)
         self._grid_field(
             ai_grid,
             0,
+            2,
+            "模型模式",
+            self._combo(self.ai_provider_var, ["CHATGPT", "DEEPSEEK", "DUAL"]),
+        )
+        self._grid_field(
+            ai_grid,
+            1,
             0,
             "OpenAI API Key",
             self._line(self.openai_api_key_var, secret=True),
         )
+        self._grid_field(
+            ai_grid,
+            1,
+            2,
+            "DeepSeek API Key",
+            self._line(self.deepseek_api_key_var, secret=True),
+        )
+        self._grid_field(
+            ai_grid,
+            2,
+            0,
+            "OpenAI 模型",
+            self._line(self.openai_model_var),
+        )
+        self._grid_field(
+            ai_grid,
+            2,
+            2,
+            "DeepSeek 模型",
+            self._line(self.deepseek_model_var),
+        )
+        self._grid_field(
+            ai_grid,
+            3,
+            0,
+            "最低置信度",
+            self._line(self.ai_min_confidence_var),
+        )
+        self._grid_field(
+            ai_grid,
+            3,
+            2,
+            "决策超时(秒)",
+            self._line(self.ai_timeout_var),
+        )
+        self._grid_field(
+            ai_grid,
+            4,
+            0,
+            "走势历史(天)",
+            self._line(self.ai_history_days_var),
+        )
+        news_window = QWidget()
+        news_window_layout = QHBoxLayout(news_window)
+        news_window_layout.setContentsMargins(0, 0, 0, 0)
+        news_window_layout.addWidget(self._line(self.ai_news_days_var))
+        news_window_layout.addWidget(QLabel("/"))
+        news_window_layout.addWidget(self._line(self.ai_news_limit_var))
+        self._grid_field(
+            ai_grid,
+            4,
+            2,
+            "新闻天数/条数",
+            news_window,
+        )
         ai_note = QLabel(
-            "仅在“交易经验”页点击上传时使用；不会参与开仓方向判断，也不会写入配置文件。"
+            "开关关闭时完全使用表格中的手动方向，不调用大模型。"
+            "开关开启时，模型先生成今日 LONG/SHORT/FLAT，"
+            "再对每个五分钟候选信号判断 ENTER/WAIT。"
+            "失败、低置信度或双模型分歧时不开仓。"
+            "API Key 仅随启动请求发送给后端内存，不写入配置文件；"
+            "OpenAI Key 也可用于交易经验上传。"
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 1, 0, 1, 2)
+        ai_grid.addWidget(ai_note, 5, 0, 1, 4)
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -1278,7 +1358,11 @@ class AutoQuantApp(QMainWindow):
             stop_loss_percent=self.stop_loss_var.get().strip(),
             take_profit_percent=self.take_profit_var.get().strip(),
             max_signal_age_seconds=int(self.max_signal_age_var.get()),
-            ai_provider="DISABLED", openai_model=self.openai_model_var.get().strip(),
+            ai_provider=(
+                self.ai_provider_var.get()
+                if self.ai_enabled_checkbox.isChecked()
+                else "DISABLED"
+            ), openai_model=self.openai_model_var.get().strip(),
             deepseek_model=self.deepseek_model_var.get().strip(),
             ai_min_confidence=self.ai_min_confidence_var.get().strip(),
             ai_history_days=int(self.ai_history_days_var.get()),
@@ -1315,8 +1399,8 @@ class AutoQuantApp(QMainWindow):
             MANUAL_DIRECTION_OPTIONS,
             self.config.manual_directions.get(symbol, "FLAT"),
             tooltip=(
-                "选择 LONG、SHORT 或 FLAT 作为唯一开仓方向。"
-                "启动后不可修改。"
+                "大模型开关关闭时，选择 LONG、SHORT 或 FLAT 作为开仓方向。"
+                "大模型开关开启时忽略此值。启动后不可修改。"
             ),
         )
         self.tree.set_action_button(
@@ -1498,9 +1582,14 @@ class AutoQuantApp(QMainWindow):
             return
         try:
             for symbol in symbols:
+                direction = (
+                    Direction.UNKNOWN
+                    if config.app.ai_provider != "DISABLED"
+                    else self._manual_direction(symbol)
+                )
                 self.controller.start(
                     symbol,
-                    replace(config, manual_direction=self._manual_direction(symbol)),
+                    replace(config, manual_direction=direction),
                 )
         except Exception as exc:
             show_error("启动失败", str(exc))
@@ -1567,13 +1656,18 @@ class AutoQuantApp(QMainWindow):
                 "。\n账户还必须已经接受 Binance 美股交易免责声明。"
             )
             direction_detail = "Stocks 不建立空头，SELL 只会平掉程序确认的多头。"
+        ai_detail = (
+            f"大模型：{config.ai_provider}，将审核今日方向和候选入场时机。"
+            if config.ai_provider != "DISABLED"
+            else "大模型：已禁用，使用表格手动方向。"
+        )
         return ask_yes_no(
             "确认真实交易",
             "当前为 REAL 模式，策略信号会向 Binance 提交真实 MARKET 订单。\n\n"
             f"标的数：{len(self.tree.get_children())}；单笔名义金额：{config.buy_notional}。\n"
             f"每日账户上限：{config.max_daily_buy_notional}{provider_detail}\n"
             f"止损/止盈：{self.stop_loss_var.get()}% / {self.take_profit_var.get()}%。"
-            f"{direction_detail}\n\n确认继续吗？",
+            f"{direction_detail}\n{ai_detail}\n\n确认继续吗？",
         )
 
     def _save_config(self) -> None:

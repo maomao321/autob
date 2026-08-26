@@ -1,6 +1,6 @@
 # AutoQuant：Binance Stocks / USDⓈ-M Futures 前后端量化系统
 
-系统已经拆分为独立后端服务和 PySide6/Qt 前端。后端持有 Binance Stocks Trading 与 Binance USDⓈ-M Futures 连接、策略线程、风控、配置和 SQLite 订单账本，可以在服务器持续运行；前端只通过带鉴权的 REST API 读取状态和发送控制命令，关闭前端不会停止策略或触发平仓。程序支持按标的独立启动、停止，供应商和策略均通过工厂隔离，并实现“手动开仓方向 + 五分钟 MA5/前一根 K 线突破”策略。
+系统已经拆分为独立后端服务和 PySide6/Qt 前端。后端持有 Binance Stocks Trading 与 Binance USDⓈ-M Futures 连接、策略线程、风控、配置和 SQLite 订单账本，可以在服务器持续运行；前端只通过带鉴权的 REST API 读取状态和发送控制命令，关闭前端不会停止策略或触发平仓。程序支持按标的独立启动、停止，供应商和策略均通过工厂隔离，并实现“手动方向或 GPT/DeepSeek 今日方向 + 五分钟 MA/前一根 K 线突破 + 可选大模型时机审核”策略。
 
 程序默认使用 `PAPER` 模拟交易。除非在界面中主动切换为 `REAL` 并再次确认，否则不会向 Binance 提交真实订单。
 
@@ -47,7 +47,7 @@ curl http://127.0.0.1:8765/health
 
 - `GET /api/v1/config`、`PUT /api/v1/config`：读取或更新服务器配置，读取结果只返回凭据掩码。
 - `GET /api/v1/status?after_log=<序号>`：增量读取运行快照与日志。
-- `POST /api/v1/runners/{symbol}/start`：按指定手动方向启动服务器策略。
+- `POST /api/v1/runners/{symbol}/start`：按手动方向或已保存的大模型模式启动策略；OpenAI/DeepSeek Key 可随该请求临时传入，不持久化。
 - `POST /api/v1/runners/{symbol}/stop`：停止策略，可明确要求按服务器账本持仓平仓。
 - `POST /api/v1/stop-targets`：查询运行中、持仓中或存在阻塞订单的目标。
 - `POST /api/v1/connection/check`：由服务器检查 Binance API 和股票代码。
@@ -81,18 +81,21 @@ chmod +x packaging/build_macos.sh run.command
 
 1. 首次运行保留 `PAPER` 模式。
 2. 打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API、交易模式、MA 周期、金额与风控。Futures 杠杆默认为 `1x`。
-3. 返回“交易监控”页，添加一个或多个标的代码（例如 Stocks 的 `AAPL`；Futures 输入 `BTC` 会自动保存为 `BTCUSDT`，已带 `USDT` 时不会重复添加），并为每个标的选择 `LONG`、`SHORT` 或 `FLAT`。
-4. 选择标的后点击“启动所选”，或点击“全部启动”。每个标的有独立运行器，可分别停止。
-5. 查看状态、程序持仓、持仓均价、未决订单、本次量化开仓金额和日志。负数程序持仓表示空头；本次量化开仓金额在该标的量化结束时归零。
-6. 打开“交易记录”页，可按标的、开仓/平仓类型和模拟/实盘模式查询持久化成交记录。
+3. 需要大模型时，在“运行配置”勾选“启用大模型决策”，选择 `CHATGPT`、`DEEPSEEK` 或 `DUAL`，并填写对应 Key 和模型名。
+4. 返回“交易监控”页，添加一个或多个标的代码（例如 Stocks 的 `AAPL`；Futures 输入 `BTC` 会自动保存为 `BTCUSDT`）。大模型开关关闭时，为每个标的选择 `LONG`、`SHORT` 或 `FLAT`；开关开启时该手动值被忽略。
+5. 选择标的后点击“启动所选”。每个标的有独立运行器，可分别停止。
+6. 查看状态、程序持仓、持仓均价、未决订单、本次量化开仓金额和日志。大模型模式会记录今日方向、时机 `ENTER/WAIT`、置信度与风险。
+7. 打开“交易记录”页，可按标的、开仓/平仓类型和模拟/实盘模式查询持久化成交记录。
 
-交易监控表格的“手动方向”是唯一的开仓方向来源，支持按股票选择 `LONG`、`SHORT` 或 `FLAT`。该选择在启动股票时读取并锁定，停止后才可修改，并随“保存配置”写入配置文件。`FLAT` 表示禁止该股票产生普通开仓信号，是默认值。
+交易监控表格的“手动方向”在大模型开关关闭时生效，支持 `LONG`、`SHORT` 或 `FLAT`。该选择在启动标的时读取并锁定，并随“保存配置”写入配置文件。`FLAT` 表示禁止该标的产生普通开仓信号。大模型开关开启时，后端强制使用模型方向，不会回退到手动方向下单。
 
 配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance API Key/Secret 不会通过读取配置接口回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
 $env:BINANCE_API_SECRET = "你的 API Secret"
+$env:OPENAI_API_KEY = "你的 OpenAI API Key"
+$env:DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
 $env:AUTOQUANT_API_TOKEN = "前后端共享的随机令牌"
 py -m autoquant_backend
 ```
@@ -103,7 +106,17 @@ py -m autoquant_backend
 - `SHORT`：只允许五分钟做空信号；`binance_futures` 可在 PAPER 和 REAL 模式建立空头，`binance_stocks` 会拒绝做空。
 - `FLAT`：不产生普通开仓信号。
 
-程序不再使用历史日线、当日日线或大模型生成开仓方向，也不会为策略预热请求 Nasdaq 历史日线或分钟数据。OpenAI Key 仍可用于手动上传交易经验库；OpenAI/DeepSeek Key 不写入配置文件。Binance API Key/Secret 会在点击“保存配置”后写入后端服务器配置。
+### 大模型开仓决策
+
+- `CHATGPT`：通过 OpenAI Responses API 和 JSON Schema 结构化输出决策。
+- `DEEPSEEK`：通过 DeepSeek Chat Completions JSON Output 决策。
+- `DUAL`：两个模型并行请求。今日方向必须一致，候选入场也必须同时返回 `ENTER`，否则不开仓。
+- 每个交易日首先结合近期新闻、SPY/QQQ 大盘走势、个股走势与当前日线生成 `LONG / SHORT / FLAT`。
+- 五分钟策略产生候选突破信号后，模型再根据最近 K 线、MA、突破原因和今日上下文返回 `ENTER / WAIT`。
+- 任意网络失败、数据缺失、响应格式错误、置信度低于阈值或双模型分歧，都会安全降级为 `FLAT/WAIT`，不会绕过模型改用手动方向开仓。
+- OpenAI/DeepSeek Key 可从前端启动请求临时传入，也可设置在后端环境变量中；密钥不写入 `config.json` 或 `running.json`。服务重启自动恢复 AI 运行器时，必须在后端环境变量中提供对应 Key。
+
+Binance API Key/Secret 会在点击“保存配置”后写入后端服务器配置。OpenAI Key 仍可用于手动上传交易经验库。
 
 订单保护账本保存在后端服务器的 `orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交价格、成交数量、手续费、平仓收益和程序持仓，不保存 API 凭据。“交易记录”页直接查询该持久化账本，重启前后数据保持一致；页面不会展示订单号。该文件用于恢复交易次数、持仓和资金限额，不能在后端运行期间删除或修改。
 
@@ -117,7 +130,7 @@ py -m autoquant_backend
 
 程序只在一根 5 分钟 K 线已经收盘时评估信号：
 
-- 开仓方向完全使用表格中启动前选定的手动方向，不读取日线或调用大模型判断方向。
+- 大模型开关关闭时，开仓方向完全使用表格中启动前选定的手动方向；开关开启时，使用模型的当日方向，且普通入场必须再通过模型时机审核。风险退出不受模型时机审核阻塞。
 - 做多：上一根 5 分钟收盘价不高于上一时点 MA，当前收盘价上穿当前 MA，并且当前收盘价突破前一根最高价。
 - 做空：上一根 5 分钟收盘价不低于上一时点 MA，当前收盘价下穿当前 MA，并且当前收盘价跌破前一根最低价。Futures 空仓时用 SELL 建立空头；Stocks 不支持该开仓方向。
 - 每根收盘 K 线只评估一次。每日次数限制用于入场，风险退出不受入场次数限制。
@@ -125,7 +138,7 @@ py -m autoquant_backend
 - 多空入场都使用配置的“开仓金额”作为名义金额；退出时始终使用程序记录的实际持仓数量。任何方向尚未平仓时，新的同向或反向开仓都会被拒绝。
 - 程序以实时 5 分钟 K 线的 UTC 日期划分交易日；日期变化时清空上一日的指标数据，乱序 K 线不会参与计算。
 
-计算 MA 交叉需要 `MA 周期 + 1` 根已收盘 5 分钟 K 线。Futures 启动实时流前会通过 REST 获取最近 6 根已收盘历史 K 线用于预热指标；历史 K 线中出现的信号会被丢弃，不会补下启动前的订单。若配置的 MA 周期大于 5，剩余样本继续由实时 K 线补齐。Stocks 仍只从启动后的实时 K 线收集样本。交易监控表按标的分别显示已实现收益与未实现收益，并提供逐行启动、停止图标按钮。顶部的启动、停止、全部启动、全部停止按钮及表格右键菜单当前隐藏。
+计算 MA 交叉需要 `MA 周期 + 1` 根已收盘 5 分钟 K 线。Futures 启动实时流前会通过 REST 获取最近 6 根已收盘历史 K 线用于预热指标；AI 模式在收到当日日线后也会尝试回补当日五分钟 K 线。历史 K 线中出现的信号会被丢弃，不会补下启动前的订单。若样本仍不足，继续由实时 K 线补齐。交易监控表按标的分别显示已实现收益与未实现收益，并提供逐行启动、停止图标按钮。
 
 ## 实盘注意事项
 
@@ -146,7 +159,7 @@ py -m autoquant_backend
 - 超过“信号有效期”的行情不会下单，`recvWindow` 被限制在 5000 毫秒以内。MARKET 订单仍可能受到价差、流动性、停牌和网络延迟影响，止损价不保证等于最终成交价。
 - 行情和界面队列均有容量上限，REST 公共信息使用短期缓存并限制并发，避免多股票运行时无限占用内存或集中请求接口。
 - 在投入真实资金前，应完成模拟验证、限额配置、账户权限检查和风险评估。
-- 手动方向不是收益保证。建议先在 `PAPER` 模式观察多个交易日并审阅信号日志，再考虑实盘。
+- 手动方向和大模型决策都不是收益保证。建议先在 `PAPER` 模式观察多个交易日并审阅信号日志，再考虑实盘。
 
 ## Binance 官方接口依据
 
@@ -163,10 +176,11 @@ py -m autoquant_backend
 
 ## 大模型官方接口依据
 
-- OpenAI Responses API 与 Java SDK：<https://developers.openai.com/api/docs/libraries>
+- OpenAI Responses API：<https://developers.openai.com/api/reference/resources/responses/methods/create>
 - OpenAI Structured Outputs：<https://developers.openai.com/api/docs/guides/structured-outputs>
 - DeepSeek JSON Output：<https://api-docs.deepseek.com/guides/json_mode/>
-- DeepSeek 模型与 API Base URL：<https://api-docs.deepseek.com/quick_start/pricing/>
+- DeepSeek Chat Completions：<https://api-docs.deepseek.com/api/create-chat-completion/>
+- DeepSeek 模型与 API Base URL：<https://api-docs.deepseek.com/>
 
 ## 项目结构与扩展
 

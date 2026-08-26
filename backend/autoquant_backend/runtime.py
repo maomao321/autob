@@ -253,27 +253,60 @@ class BackendRuntime:
         return credential_or_environment(config.api_secret, "BINANCE_API_SECRET")
 
     def _runner_config(
-        self, manual_direction: Direction = Direction.FLAT
+        self,
+        manual_direction: Direction = Direction.FLAT,
+        *,
+        openai_api_key: str = "",
+        deepseek_api_key: str = "",
     ) -> RunnerConfig:
         config = self.config_store.load()
         return RunnerConfig(
             app=config,
             api_key=self._api_key(config),
             api_secret=self._api_secret(config),
-            openai_api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
-            deepseek_api_key=os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+            openai_api_key=(
+                openai_api_key.strip()
+                or os.environ.get("OPENAI_API_KEY", "").strip()
+            ),
+            deepseek_api_key=(
+                deepseek_api_key.strip()
+                or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+            ),
             manual_direction=manual_direction,
         )
 
-    def start(self, symbol: str, direction: str) -> None:
-        manual_direction = Direction(direction.strip().upper())
-        if manual_direction is Direction.UNKNOWN:
-            raise ValueError("手动方向不能是 UNKNOWN")
+    def start(
+        self,
+        symbol: str,
+        direction: str,
+        *,
+        openai_api_key: str = "",
+        deepseek_api_key: str = "",
+    ) -> None:
         config = self.config_store.load()
+        manual_direction = Direction(direction.strip().upper())
+        if config.ai_provider == "DISABLED":
+            if manual_direction is Direction.UNKNOWN:
+                raise ValueError("大模型禁用时必须选择手动开仓方向")
+        else:
+            manual_direction = Direction.UNKNOWN
         normalized = symbol.strip().upper()
         if normalized not in config.symbols:
             raise ValueError(f"股票 {normalized} 不在服务器配置中")
-        self.controller.start(normalized, self._runner_config(manual_direction))
+        runner_config = self._runner_config(
+            manual_direction,
+            openai_api_key=openai_api_key,
+            deepseek_api_key=deepseek_api_key,
+        )
+        if config.ai_provider in {"CHATGPT", "DUAL"} and not (
+            runner_config.openai_api_key
+        ):
+            raise ValueError("已启用 ChatGPT 决策，但未提供 OpenAI API Key")
+        if config.ai_provider in {"DEEPSEEK", "DUAL"} and not (
+            runner_config.deepseek_api_key
+        ):
+            raise ValueError("已启用 DeepSeek 决策，但未提供 DeepSeek API Key")
+        self.controller.start(normalized, runner_config)
         self._set_desired(normalized, manual_direction, running=True)
 
     def stop(self, symbol: str, *, close_position: bool) -> None:

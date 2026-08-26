@@ -20,6 +20,7 @@ from autoquant_backend.server import create_server
 from autoquant_backend.state import OrderLedger
 from autoquant_shared.models import (
     AccountOverview,
+    Direction,
     OrderRequest,
     RuntimeSnapshot,
     Side,
@@ -66,6 +67,37 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("server-key", saved.api_key)
         self.assertEqual("server-secret", saved.api_secret)
         self.assertEqual("50.00", saved.buy_notional)
+
+    def test_ai_mode_uses_unknown_direction_and_ephemeral_key(self) -> None:
+        config = self.store.load()
+        config.ai_provider = "CHATGPT"
+        self.store.save(config)
+
+        with patch.object(self.runtime.controller, "start") as start_mock:
+            self.runtime.start(
+                "AAPL",
+                "LONG",
+                openai_api_key="temporary-openai-key",
+            )
+
+        runner_config = start_mock.call_args.args[1]
+        self.assertEqual(Direction.UNKNOWN, runner_config.manual_direction)
+        self.assertEqual(
+            "temporary-openai-key", runner_config.openai_api_key
+        )
+        self.assertNotIn(
+            "temporary-openai-key",
+            self.runtime.desired_state_path.read_text(encoding="utf-8"),
+        )
+
+    def test_ai_mode_requires_the_selected_provider_key(self) -> None:
+        config = self.store.load()
+        config.ai_provider = "DEEPSEEK"
+        self.store.save(config)
+
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DeepSeek API Key"):
+                self.runtime.start("AAPL", "FLAT")
 
     def test_concurrent_config_updates_are_serialized(self) -> None:
         original_load = self.store.load

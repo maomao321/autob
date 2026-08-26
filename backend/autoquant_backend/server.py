@@ -159,7 +159,12 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             action = parts[4]
             if action == "start" and self.command == "POST":
                 payload = self._json_body()
-                runtime.start(symbol, str(payload.get("direction", "FLAT")))
+                runtime.start(
+                    symbol,
+                    str(payload.get("direction", "FLAT")),
+                    openai_api_key=str(payload.get("openai_api_key", "")),
+                    deepseek_api_key=str(payload.get("deepseek_api_key", "")),
+                )
                 return HTTPStatus.ACCEPTED, {"accepted": True}
             if action == "stop" and self.command == "POST":
                 payload = self._json_body()

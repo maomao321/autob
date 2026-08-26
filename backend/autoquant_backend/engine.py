@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 from autoquant_backend.ai_decision import (
     DecisionClient,
     DeepSeekDecisionClient,
+    EntryTimingDecision,
     OpenAIResponsesDecisionClient,
     OpeningDecision,
     OpeningDecisionService,
@@ -62,6 +63,17 @@ class RunnerConfig:
 class OpeningDecider(Protocol):
     def decide(self, symbol: str, current_daily_bar: Bar) -> OpeningDecision:
         """Return the direction filter for one exchange trading day."""
+
+
+class EntryTimingDecider(Protocol):
+    def decide_entry(
+        self,
+        symbol: str,
+        signal: Signal,
+        current_bar: Bar,
+        recent_bars: tuple[Bar, ...] = (),
+    ) -> EntryTimingDecision:
+        """Return whether the current candidate signal may enter now."""
 
 
 def create_provider(config: RunnerConfig) -> TradingProvider:
@@ -150,6 +162,7 @@ class SymbolRunner:
         log_callback: LogCallback,
         ledger: OrderLedger | None = None,
         opening_decider: OpeningDecider | None = None,
+        entry_timing_decider: EntryTimingDecider | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.config = config
@@ -162,6 +175,11 @@ class SymbolRunner:
             and config.app.ai_provider != "DISABLED"
         ):
             self.opening_decider = create_opening_decider(config)
+        self.entry_timing_decider = entry_timing_decider
+        if self.entry_timing_decider is None and callable(
+            getattr(self.opening_decider, "decide_entry", None)
+        ):
+            self.entry_timing_decider = self.opening_decider  # type: ignore[assignment]
         self.snapshot_callback = snapshot_callback
         self.log_callback = log_callback
         self.ledger = ledger or OrderLedger()
@@ -298,7 +316,8 @@ class SymbolRunner:
                     self.config.manual_direction is Direction.UNKNOWN
                     and bar.interval == "1d"
                 ):
-                    self._backfill_daily_direction(bar)
+                    if self.config.app.ai_provider == "DISABLED":
+                        self._backfill_daily_direction(bar)
                     self._backfill_warmup(bar)
                     if self.stop_event.is_set():
                         break
@@ -391,6 +410,19 @@ class SymbolRunner:
                     f"不允许 {signal.side.value}"
                 )
                 return False
+        if not is_exit and self.config.app.ai_provider != "DISABLED":
+            ai_allows_entry = self._ai_allows_entry(signal, bar)
+            if self.stop_event.is_set():
+                self._log(
+                    "INFO",
+                    "停止请求在大模型时机审核期间到达，不会下单",
+                )
+                return True
+            if not ai_allows_entry:
+                return False
+        if not is_exit and not self._signal_is_fresh(bar):
+            self._skip_order("未下单：大模型时机审核后信号已超时")
+            return False
 
         day_key = getattr(self.strategy, "current_day_key", None)
         if day_key is None:
@@ -544,6 +576,45 @@ class SymbolRunner:
     def _skip_order(self, message: str, *, level: str = "ERROR") -> None:
         self._log(level, message)
         self._refresh_market_snapshot(message)
+
+    def _ai_allows_entry(self, signal: Signal, bar: Bar) -> bool:
+        if self.entry_timing_decider is None:
+            self._skip_order(
+                "未下单：大模型已启用，但开仓时机审核器未配置"
+            )
+            return False
+        self._update(RunState.SIGNAL, "大模型正在审核当前候选开仓时机")
+        try:
+            recent_bars = tuple(getattr(self.strategy, "recent_bars", ()))
+            decision = self.entry_timing_decider.decide_entry(
+                self.symbol,
+                signal,
+                bar,
+                recent_bars,
+            )
+        except Exception as exc:
+            decision = EntryTimingDecision.wait(
+                f"大模型时机决策异常：{' '.join(str(exc).split())[:240]}",
+                provider=self.config.app.ai_provider,
+                risks=("异常已触发安全兜底，放弃本次开仓",),
+            )
+        action = "ENTER" if decision.enter_now else "WAIT"
+        level = "ERROR" if decision.fallback else "AI"
+        self._log(
+            level,
+            f"{decision.provider}/{decision.model or '-'} 开仓时机="
+            f"{action}，置信度={decision.confidence:.0%}；"
+            f"{decision.summary}",
+        )
+        if decision.factors:
+            self._log("AI", "时机依据：" + "；".join(decision.factors))
+        if decision.risks:
+            self._log("AI", "时机风险：" + "；".join(decision.risks))
+        if decision.enter_now:
+            return True
+        message = f"大模型决定等待后续时机：{decision.summary}"
+        self._refresh_market_snapshot(message)
+        return False
 
     def _close_stopped_position(self) -> None:
         if not self._force_close_position():
@@ -789,9 +860,8 @@ class SymbolRunner:
     def _preload_futures_warmup(self) -> None:
         if self.config.app.provider != "binance_futures":
             return
-        # The legacy automatic-direction path needs its current daily candle
-        # before the strategy accepts intraday bars. It keeps using the daily
-        # callback backfill below; the normal UI uses a locked manual direction.
+        # AI direction mode needs its current daily candle before the strategy
+        # accepts intraday bars, so it uses the daily callback backfill below.
         if self.config.manual_direction is Direction.UNKNOWN:
             return
         fetcher = getattr(self.provider, "get_historical_bars", None)

@@ -35,6 +35,37 @@ class QtAppWidgetTests(unittest.TestCase):
         value.set("from-model")
         self.assertEqual("from-model", field.text())
 
+    def test_ai_switch_controls_runner_direction_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["AAPL"],
+                    ai_provider="CHATGPT",
+                    manual_directions={"AAPL": "LONG"},
+                )
+            )
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            self.assertTrue(window.ai_enabled_checkbox.isChecked())
+            window._start_symbols(["AAPL"])
+            enabled_config = window.controller.start.call_args.args[1]
+            self.assertEqual(
+                Direction.UNKNOWN, enabled_config.manual_direction
+            )
+            self.assertEqual("CHATGPT", enabled_config.app.ai_provider)
+
+            window.controller.start.reset_mock()
+            window.ai_enabled_checkbox.setChecked(False)
+            window._start_symbols(["AAPL"])
+            disabled_config = window.controller.start.call_args.args[1]
+            self.assertEqual(Direction.LONG, disabled_config.manual_direction)
+            self.assertEqual("DISABLED", disabled_config.app.ai_provider)
+
     def test_financial_display_uses_two_places_without_rounding_quantity(self) -> None:
         self.assertEqual("123.46", AutoQuantApp._format_decimal(Decimal("123.456"), 2))
         self.assertEqual("0.123456", AutoQuantApp._format_decimal(Decimal("0.123456")))
