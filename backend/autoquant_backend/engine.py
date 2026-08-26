@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 from autoquant_backend.ai_decision import (
     DecisionClient,
     DeepSeekDecisionClient,
+    ENTRY_TIMING_BAR_COUNT,
     EntryTimingDecision,
     OpenAIResponsesDecisionClient,
     OpeningDecision,
@@ -819,7 +820,12 @@ class SymbolRunner:
         self._warmup_backfill_day_key = daily_bar.open_time
         required = int(getattr(self.strategy, "warmup_required", 0))
         current = int(getattr(self.strategy, "warmup_bars", 0))
-        if required <= 0 or current >= required:
+        ai_enabled = self.config.app.ai_provider != "DISABLED"
+        context_required = ENTRY_TIMING_BAR_COUNT if ai_enabled else required
+        recent_count = len(tuple(getattr(self.strategy, "recent_bars", ())))
+        if required <= 0 or (
+            current >= required and recent_count >= context_required
+        ):
             return
         fetcher = getattr(self.provider, "get_historical_bars", None)
         if not callable(fetcher):
@@ -828,14 +834,22 @@ class SymbolRunner:
         if end_time < daily_bar.open_time:
             return
 
-        self._update(RunState.WARMING_UP, "正在加载当日历史 5 分钟 K 线")
+        start_time = daily_bar.open_time
+        if ai_enabled:
+            # Include earlier sessions so an early-session candidate can still
+            # carry a complete 60-bar timing context.
+            start_time -= 14 * 86_400_000
+        self._update(
+            RunState.WARMING_UP,
+            f"正在加载最近 {context_required} 根历史 5 分钟 K 线",
+        )
         try:
             bars = fetcher(
                 self.symbol,
                 "5m",
-                daily_bar.open_time,
+                start_time,
                 end_time,
-                required,
+                context_required,
             )
         except Exception as exc:
             message = " ".join(str(exc).split())[:300]
@@ -845,6 +859,9 @@ class SymbolRunner:
             )
             return
 
+        seed_recent = getattr(self.strategy, "seed_recent_bars", None)
+        if ai_enabled and callable(seed_recent):
+            seed_recent(bars)
         for historical_bar in bars:
             if self.stop_event.is_set():
                 return
@@ -852,9 +869,11 @@ class SymbolRunner:
             # indicator state and must never cause a retroactive order.
             self.strategy.on_bar(historical_bar)
         loaded = int(getattr(self.strategy, "warmup_bars", 0))
+        recent_count = len(tuple(getattr(self.strategy, "recent_bars", ())))
         self._log(
             "INFO",
-            f"历史 K 线回补完成，预热 {loaded}/{required}",
+            f"历史 K 线回补完成，指标预热 {loaded}/{required}，"
+            f"大模型时机样本 {recent_count}/{context_required}",
         )
 
     def _preload_futures_warmup(self) -> None:

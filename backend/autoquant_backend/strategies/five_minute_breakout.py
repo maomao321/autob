@@ -8,6 +8,7 @@ from autoquant_shared.formatting import financial_text
 from autoquant_backend.strategies.base import Strategy
 
 DAY_MS = 86_400_000
+AI_ENTRY_CONTEXT_BARS = 60
 
 
 class FiveMinuteBreakoutStrategy(Strategy):
@@ -35,6 +36,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self.ma_period = ma_period
         self.max_trades_per_day = max_trades_per_day
         self._bars: deque[Bar] = deque(maxlen=ma_period + 1)
+        self._recent_bars: deque[Bar] = deque(maxlen=AI_ENTRY_CONTEXT_BARS)
         self._daily_bar: Bar | None = None
         self._manual_day_key: int | None = None
         self._manual_direction = manual_direction
@@ -132,7 +134,22 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     @property
     def recent_bars(self) -> tuple[Bar, ...]:
-        return tuple(self._bars)
+        return tuple(self._recent_bars)
+
+    def seed_recent_bars(self, bars: list[Bar]) -> None:
+        """Seed the model's rolling 5-minute OHLC context without trading."""
+        eligible = sorted(
+            {
+                bar.open_time: bar
+                for bar in bars
+                if bar.symbol.upper() == self.symbol
+                and bar.interval == "5m"
+                and bar.closed
+            }.values(),
+            key=lambda bar: bar.open_time,
+        )
+        self._recent_bars.clear()
+        self._recent_bars.extend(eligible[-AI_ENTRY_CONTEXT_BARS:])
 
     @property
     def trades_today(self) -> int:
@@ -279,6 +296,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
             self._bars[-1] = bar
         else:
             self._bars.append(bar)
+        if self._recent_bars and self._recent_bars[-1].open_time == bar.open_time:
+            self._recent_bars[-1] = bar
+        elif not self._recent_bars or self._recent_bars[-1].open_time < bar.open_time:
+            self._recent_bars.append(bar)
 
     def _remove_old_trade_counters(self, current_day: int) -> None:
         self._trades_by_day = {

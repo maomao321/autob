@@ -829,12 +829,14 @@ class AutoQuantApp(QMainWindow):
             "决策超时(秒)",
             self._line(self.ai_timeout_var),
         )
+        ai_history_line = self._line(self.ai_history_days_var)
+        ai_history_line.setEnabled(False)
         self._grid_field(
             ai_grid,
             4,
             0,
-            "走势历史(天)",
-            self._line(self.ai_history_days_var),
+            "方向日线(固定30根)",
+            ai_history_line,
         )
         news_window = QWidget()
         news_window_layout = QHBoxLayout(news_window)
@@ -852,7 +854,8 @@ class AutoQuantApp(QMainWindow):
         ai_note = QLabel(
             "开关关闭时完全使用表格中的手动方向，不调用大模型。"
             "开关开启时，模型先生成今日 LONG/SHORT/FLAT，"
-            "再对每个五分钟候选信号判断 ENTER/WAIT。"
+            "方向判断使用最近30根日线OHLC；再使用今日日线和最近60根"
+            "五分钟K线OHLC判断每个候选信号的 ENTER/WAIT。"
             "失败、低置信度或双模型分歧时不开仓。"
             "API Key 仅随启动请求发送给后端内存，不写入配置文件；"
             "OpenAI Key 也可用于交易经验上传。"

@@ -89,6 +89,27 @@ def intraday_bar() -> Bar:
     )
 
 
+def intraday_history(count: int = 60) -> tuple[Bar, ...]:
+    bars = []
+    for index in range(count):
+        open_time = 1_500 - (count - index - 1) * 300_000
+        price = Decimal("100") + Decimal(index) / Decimal("10")
+        bars.append(
+            Bar(
+                symbol="AAPL",
+                interval="5m",
+                open_time=open_time,
+                close_time=open_time + 299_999,
+                open=price,
+                high=price + Decimal("1"),
+                low=price - Decimal("1"),
+                close=price + Decimal("0.5"),
+                closed=True,
+            )
+        )
+    return tuple(bars)
+
+
 class StaticCollector:
     def collect(self, symbol: str, current_daily_bar: Bar):
         return {
@@ -111,8 +132,11 @@ class StaticClient:
         self.direction = direction
         self.confidence = confidence
         self.enter_now = enter_now
+        self.decision_contexts = []
+        self.entry_contexts = []
 
     def decide(self, context):
+        self.decision_contexts.append(context)
         return OpeningDecision(
             direction=self.direction,
             confidence=self.confidence,
@@ -124,6 +148,7 @@ class StaticClient:
         )
 
     def decide_entry(self, context):
+        self.entry_contexts.append(context)
         return EntryTimingDecision(
             enter_now=self.enter_now,
             confidence=self.confidence,
@@ -138,8 +163,14 @@ class StaticClient:
 class AiDecisionTests(unittest.TestCase):
     def test_public_context_combines_nasdaq_trends_and_news(self) -> None:
         rows = [
-            {"date": f"08/{day:02d}/2026", "close": f"${100 + day}.00"}
-            for day in range(1, 8)
+            {
+                "date": f"08/{day:02d}/2026",
+                "open": f"${99 + day}.00",
+                "high": f"${101 + day}.00",
+                "low": f"${98 + day}.00",
+                "close": f"${100 + day}.00",
+            }
+            for day in range(1, 31)
         ]
 
         def get_bytes(url, _timeout):
@@ -169,10 +200,16 @@ class AiDecisionTests(unittest.TestCase):
         context = collector.collect("AAPL", daily_bar())
 
         self.assertEqual("AAPL", context["symbol"])
-        self.assertEqual(7, context["symbol_trend"]["observations"])
-        self.assertEqual("107.00", context["symbol_trend"]["latest_close"])
-        self.assertEqual("105.00", context["symbol_trend"]["sma_5"])
-        self.assertEqual("102.00", context["current_session"]["current_close"])
+        self.assertEqual(30, context["symbol_trend"]["observations"])
+        self.assertEqual("130.00", context["symbol_trend"]["latest_close"])
+        self.assertEqual("128.00", context["symbol_trend"]["sma_5"])
+        daily_bars = context["symbol_trend"]["daily_bars"]
+        self.assertEqual(30, len(daily_bars))
+        self.assertEqual(
+            {"date", "open", "high", "low", "close"},
+            set(daily_bars[-1]),
+        )
+        self.assertEqual("102.00", context["current_session"]["close"])
         self.assertEqual({"SPY", "QQQ"}, set(context["broad_market_trends"]))
         self.assertEqual("AAPL launches product", context["recent_news"][0]["title"])
 
@@ -338,27 +375,56 @@ class AiDecisionTests(unittest.TestCase):
             "AAPL",
             candidate_signal(),
             intraday_bar(),
-            (intraday_bar(),),
+            intraday_history(),
         )
 
         self.assertFalse(decision.enter_now)
         self.assertIn("未形成入场共识", decision.summary)
 
     def test_entry_timing_accepts_high_confidence_single_model(self) -> None:
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
         service = OpeningDecisionService(
             StaticCollector(),
-            (StaticClient("CHATGPT", Direction.LONG, 0.82),),
+            (client,),
             min_confidence=0.7,
             mode="CHATGPT",
         )
         service.decide("AAPL", daily_bar())
 
         decision = service.decide_entry(
-            "AAPL", candidate_signal(), intraday_bar()
+            "AAPL", candidate_signal(), intraday_bar(), intraday_history()
         )
 
         self.assertTrue(decision.enter_now)
         self.assertEqual(0.82, decision.confidence)
+        context = client.entry_contexts[-1]
+        self.assertEqual(60, len(context["recent_intraday_bars"]))
+        self.assertEqual(
+            {"open_time_ms", "close_time_ms", "open", "high", "low", "close", "is_closed"},
+            set(context["recent_intraday_bars"][-1]),
+        )
+        self.assertEqual("102.00", context["today_daily_bar"]["close"])
+
+    def test_entry_timing_waits_before_calling_model_with_fewer_than_60_bars(self) -> None:
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (client,),
+            min_confidence=0.7,
+            mode="CHATGPT",
+        )
+        service.decide("AAPL", daily_bar())
+
+        decision = service.decide_entry(
+            "AAPL",
+            candidate_signal(),
+            intraday_bar(),
+            intraday_history(59),
+        )
+
+        self.assertFalse(decision.enter_now)
+        self.assertIn("不足 60 根", decision.summary)
+        self.assertEqual([], client.entry_contexts)
 
 
 if __name__ == "__main__":

@@ -112,7 +112,7 @@ py -m autoquant_backend
 - `DEEPSEEK`：通过 DeepSeek Chat Completions JSON Output 决策。
 - `DUAL`：两个模型并行请求。今日方向必须一致，候选入场也必须同时返回 `ENTER`，否则不开仓。
 - 每个交易日首先结合近期新闻、SPY/QQQ 大盘走势、个股走势与当前日线生成 `LONG / SHORT / FLAT`。
-- 五分钟策略产生候选突破信号后，模型再根据最近 K 线、MA、突破原因和今日上下文返回 `ENTER / WAIT`。
+- 今日方向判断固定提供最近 30 根日线 OHLC（开盘、最高、最低、收盘）数据；五分钟策略产生候选突破信号后，模型根据今日日线、最近 60 根五分钟 OHLC、MA 和突破原因返回 `ENTER / WAIT`。
 - 任意网络失败、数据缺失、响应格式错误、置信度低于阈值或双模型分歧，都会安全降级为 `FLAT/WAIT`，不会绕过模型改用手动方向开仓。
 - OpenAI/DeepSeek Key 可从前端启动请求临时传入，也可设置在后端环境变量中；密钥不写入 `config.json` 或 `running.json`。服务重启自动恢复 AI 运行器时，必须在后端环境变量中提供对应 Key。
 

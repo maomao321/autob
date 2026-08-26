@@ -27,6 +27,7 @@ SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,19}", re.ASCII)
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", re.ASCII)
 MAX_SYMBOLS = 20
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
+AI_DIRECTION_DAILY_BARS = 30
 
 
 @dataclass(slots=True)
@@ -138,8 +139,9 @@ class AppConfig:
             raise ValueError("为避免过期订单，recvWindow 必须在 1 到 5000 毫秒之间")
         if not 1 <= self.max_signal_age_seconds <= 300:
             raise ValueError("信号有效期必须在 1 到 300 秒之间")
-        if not 10 <= self.ai_history_days <= 90:
-            raise ValueError("AI 历史走势天数必须在 10 到 90 之间")
+        # This field is retained for configuration-file compatibility, but the
+        # direction model contract now always receives exactly 30 daily bars.
+        self.ai_history_days = AI_DIRECTION_DAILY_BARS
         if not 1 <= self.ai_news_days <= 30:
             raise ValueError("AI 新闻回看天数必须在 1 到 30 之间")
         if not 1 <= self.ai_news_limit <= 20:
