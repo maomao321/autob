@@ -640,6 +640,13 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertIn("｜金额 100.00｜收益 0.00", order_messages[-1])
             self.assertNotIn("paper-test", order_messages[-1])
             self.assertEqual(1, max(snapshot.trades_today for snapshot in snapshots))
+            self.assertEqual(
+                Decimal("100"),
+                max(snapshot.session_open_notional for snapshot in snapshots),
+            )
+            self.assertEqual(
+                Decimal("0"), snapshots[-1].session_open_notional
+            )
             signal_messages = [
                 message
                 for level, _symbol, message in logs

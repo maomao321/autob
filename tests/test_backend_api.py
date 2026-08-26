@@ -135,7 +135,7 @@ class BackendRuntimeTests(unittest.TestCase):
                 ma_value=Decimal("120"),
                 position_quantity=Decimal("0.123456"),
                 average_entry_price=Decimal("119.995"),
-                daily_buy_notional=Decimal("100"),
+                session_open_notional=Decimal("100"),
                 realized_pnl=Decimal("4.321"),
                 unrealized_pnl=Decimal("5.555"),
                 profit=Decimal("9.876"),
@@ -153,7 +153,7 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("120.00", snapshot["ma_value"])
         self.assertEqual("0.123456", snapshot["position_quantity"])
         self.assertEqual("120.00", snapshot["average_entry_price"])
-        self.assertEqual("100.00", snapshot["daily_buy_notional"])
+        self.assertEqual("100.00", snapshot["session_open_notional"])
         self.assertEqual("4.32", snapshot["realized_pnl"])
         self.assertEqual("5.56", snapshot["unrealized_pnl"])
         self.assertEqual("9.88", snapshot["profit"])

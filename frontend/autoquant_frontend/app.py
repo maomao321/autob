@@ -634,10 +634,11 @@ class AutoQuantApp(QMainWindow):
 
         headers = [
             "标的", "状态", "实际方向", "手动方向", "最新价", "已实现收益",
-            "未实现收益", "程序持仓", "持仓均价", "未决订单", "今日开仓额",
+            "未实现收益", "程序持仓", "持仓均价", "未决订单",
+            "开仓额",
             "操作", "信息",
         ]
-        widths = [80, 80, 85, 90, 90, 95, 95, 85, 85, 75, 90, 64, 300]
+        widths = [80, 80, 85, 90, 90, 95, 95, 85, 85, 75, 120, 64, 300]
         self.tree = KeyedTable(headers, widths, multi_select=True)
         self.tree.setMinimumHeight(250)
         self.tree.verticalHeader().setDefaultSectionSize(40)
@@ -1711,7 +1712,9 @@ class AutoQuantApp(QMainWindow):
             self._format_decimal(snapshot.realized_pnl, 2),
             self._format_decimal(snapshot.unrealized_pnl, 2),
             self._format_decimal(snapshot.position_quantity, 2), self._format_decimal(snapshot.average_entry_price, 2),
-            str(snapshot.pending_orders), self._format_decimal(snapshot.daily_buy_notional, 2), "", snapshot.message,
+            str(snapshot.pending_orders),
+            self._format_decimal(snapshot.session_open_notional, 2),
+            "", snapshot.message,
         )
         self.tree.item_update(snapshot.symbol, values=values, tags=(tag,) if tag else ())
         for column, pnl in (

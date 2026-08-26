@@ -172,7 +172,7 @@ class SymbolRunner:
         self._position_quantity = Decimal("0")
         self._average_entry_price = Decimal("0")
         self._pending_orders = 0
-        self._daily_buy_notional = Decimal("0")
+        self._session_open_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
         self._ai_decision_day_key: int | None = None
         self._daily_backfill_day_key: int | None = None
@@ -189,6 +189,9 @@ class SymbolRunner:
             if self.is_alive:
                 return
             self._close_position_on_stop = False
+            self._session_open_notional = Decimal("0")
+            with self._snapshot_lock:
+                self._snapshot.session_open_notional = Decimal("0")
             self.stop_event.clear()
             self.thread = threading.Thread(
                 target=self._run,
@@ -484,6 +487,8 @@ class SymbolRunner:
                 result.order_id,
                 result.message,
             )
+            if not order.reduce_only:
+                self._session_open_notional += order.buy_notional
             action = "平仓" if order.reduce_only else "开仓"
             mode = "模拟" if result.paper else "实盘"
             message = f"{mode}{action}订单已提交"
@@ -922,12 +927,6 @@ class SymbolRunner:
         self._pending_orders = self.ledger.pending_count(
             self.symbol, paper=paper
         )
-        day_key = getattr(self.strategy, "current_day_key", None)
-        self._daily_buy_notional = (
-            self.ledger.daily_buy_notional(day_key, paper=paper)
-            if day_key is not None
-            else Decimal("0")
-        )
 
     def _reconcile_orders(self) -> None:
         for record in self.ledger.unresolved_with_order_id(self.symbol):
@@ -1240,7 +1239,7 @@ class SymbolRunner:
             self._snapshot.position_quantity = self._position_quantity
             self._snapshot.average_entry_price = self._average_entry_price
             self._snapshot.pending_orders = self._pending_orders
-            self._snapshot.daily_buy_notional = self._daily_buy_notional
+            self._snapshot.session_open_notional = self._session_open_notional
             self._snapshot.realized_pnl = performance.realized_pnl
             self._snapshot.unrealized_pnl = performance.unrealized_pnl
             self._snapshot.profit = profit
@@ -1258,8 +1257,11 @@ class SymbolRunner:
         self.snapshot_callback(snapshot)
 
     def _update(self, state: RunState, message: str) -> None:
+        if state in {RunState.STOPPED, RunState.ERROR}:
+            self._session_open_notional = Decimal("0")
         with self._snapshot_lock:
             self._snapshot.state = state
+            self._snapshot.session_open_notional = self._session_open_notional
             self._snapshot.message = message
             self._snapshot.updated_at = int(time.time() * 1000)
             snapshot = replace(self._snapshot)

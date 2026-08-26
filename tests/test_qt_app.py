@@ -118,6 +118,8 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertNotIn("MA", headers)
             self.assertNotIn("实时K线", headers)
             self.assertNotIn("今日交易", headers)
+            self.assertNotIn("今日开仓额", headers)
+            self.assertIn("开仓额", headers)
 
             action_button = window.tree.action_button("AAPL")
             self.assertEqual("▶", action_button.text())
@@ -142,6 +144,7 @@ class QtAppWidgetTests(unittest.TestCase):
                     realized_pnl=Decimal("4.25"),
                     unrealized_pnl=Decimal("5.25"),
                     profit=Decimal("9.5"),
+                    session_open_notional=Decimal("100"),
                     message="运行中",
                 )
             )
@@ -149,6 +152,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual("4.25", window.tree.item(0, 5).text())
             self.assertEqual("5.25", window.tree.item(0, 6).text())
             self.assertEqual("1.24", window.tree.item(0, 7).text())
+            self.assertEqual("100.00", window.tree.item(0, 10).text())
             self.assertEqual("●", action_button.text())
             self.assertIn(COLORS["negative"], action_button.styleSheet())
             self.assertIn("background: #fdecea", action_button.styleSheet())

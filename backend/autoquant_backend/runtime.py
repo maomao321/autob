@@ -45,7 +45,7 @@ def snapshot_payload(snapshot: RuntimeSnapshot) -> dict[str, Any]:
         "last_price",
         "ma_value",
         "average_entry_price",
-        "daily_buy_notional",
+        "session_open_notional",
         "realized_pnl",
         "unrealized_pnl",
         "profit",
