@@ -33,7 +33,7 @@ _PUBLIC_CACHE_LOCK = threading.Lock()
 _PUBLIC_CACHE: dict[str, tuple[float, bytes]] = {}
 _PUBLIC_INFLIGHT: dict[str, threading.Event] = {}
 ModelInputCapture = Callable[[str, str, str, dict[str, Any]], None]
-ModelOutputCapture = Callable[[str, str, str, dict[str, Any]], None]
+ModelOutputCapture = Callable[[str, str, str, dict[str, Any], int], None]
 
 
 class DecisionError(RuntimeError):
@@ -231,11 +231,12 @@ def _capture_model_output(
     provider: str,
     model: str,
     response: dict[str, Any],
+    response_ms: int,
 ) -> None:
     if callback is None:
         return
     try:
-        callback(stage, provider, model, response)
+        callback(stage, provider, model, response, max(0, int(response_ms)))
     except Exception:
         # Persistence/observability must never change a trading decision.
         pass
@@ -279,11 +280,15 @@ class OpenAIResponsesDecisionClient:
             "max_output_tokens": 900,
             "store": False,
         }
+        response_started_at = time.monotonic()
         response = self._post_json(
             OPENAI_RESPONSES_URL,
             payload,
             self.api_key,
             self.timeout_seconds,
+        )
+        response_ms = max(
+            0, int(round((time.monotonic() - response_started_at) * 1000))
         )
         _capture_model_output(
             self.output_capture_callback,
@@ -291,6 +296,7 @@ class OpenAIResponsesDecisionClient:
             self.provider,
             self.model,
             response,
+            response_ms,
         )
         _log_model_output(
             self.output_log_callback,
@@ -320,11 +326,15 @@ class OpenAIResponsesDecisionClient:
             "max_output_tokens": 900,
             "store": False,
         }
+        response_started_at = time.monotonic()
         response = self._post_json(
             OPENAI_RESPONSES_URL,
             payload,
             self.api_key,
             self.timeout_seconds,
+        )
+        response_ms = max(
+            0, int(round((time.monotonic() - response_started_at) * 1000))
         )
         _capture_model_output(
             self.output_capture_callback,
@@ -332,6 +342,7 @@ class OpenAIResponsesDecisionClient:
             self.provider,
             self.model,
             response,
+            response_ms,
         )
         _log_model_output(
             self.output_log_callback,
@@ -352,6 +363,8 @@ class DeepSeekDecisionClient:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        thinking_enabled: bool = True,
+        reasoning_effort: str = "max",
         post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
         | None = None,
         output_log_callback: Callable[[str], None] | None = None,
@@ -360,6 +373,10 @@ class DeepSeekDecisionClient:
         self.api_key = api_key.strip()
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
+        self.thinking_enabled = bool(thinking_enabled)
+        self.reasoning_effort = reasoning_effort.strip().lower()
+        if self.reasoning_effort not in {"low", "medium", "high", "max"}:
+            raise ValueError("DeepSeek 推理强度不正确")
         self._post_json = post_json or _post_json
         self.output_log_callback = output_log_callback
         self.output_capture_callback = output_capture_callback
@@ -372,17 +389,26 @@ class DeepSeekDecisionClient:
                 {"role": "user", "content": _decision_prompt(context)},
             ],
             "response_format": {"type": "json_object"},
-            "thinking": {"type": "disabled"},
-            "max_tokens": 900,
+            "thinking": {
+                "type": "enabled" if self.thinking_enabled else "disabled"
+            },
+            "max_tokens": 4096 if self.thinking_enabled else 900,
             "stream": False,
         }
+        if self.thinking_enabled:
+            payload["reasoning_effort"] = self.reasoning_effort
         last_error: DecisionError | None = None
         for _attempt in range(2):
+            response_started_at = time.monotonic()
             response = self._post_json(
                 DEEPSEEK_CHAT_URL,
                 payload,
                 self.api_key,
                 self.timeout_seconds,
+            )
+            response_ms = max(
+                0,
+                int(round((time.monotonic() - response_started_at) * 1000)),
             )
             _capture_model_output(
                 self.output_capture_callback,
@@ -390,6 +416,7 @@ class DeepSeekDecisionClient:
                 self.provider,
                 self.model,
                 response,
+                response_ms,
             )
             _log_model_output(
                 self.output_log_callback,
@@ -415,17 +442,26 @@ class DeepSeekDecisionClient:
                 {"role": "user", "content": _entry_timing_prompt(context)},
             ],
             "response_format": {"type": "json_object"},
-            "thinking": {"type": "disabled"},
-            "max_tokens": 900,
+            "thinking": {
+                "type": "enabled" if self.thinking_enabled else "disabled"
+            },
+            "max_tokens": 4096 if self.thinking_enabled else 900,
             "stream": False,
         }
+        if self.thinking_enabled:
+            payload["reasoning_effort"] = self.reasoning_effort
         last_error: DecisionError | None = None
         for _attempt in range(2):
+            response_started_at = time.monotonic()
             response = self._post_json(
                 DEEPSEEK_CHAT_URL,
                 payload,
                 self.api_key,
                 self.timeout_seconds,
+            )
+            response_ms = max(
+                0,
+                int(round((time.monotonic() - response_started_at) * 1000)),
             )
             _capture_model_output(
                 self.output_capture_callback,
@@ -433,6 +469,7 @@ class DeepSeekDecisionClient:
                 self.provider,
                 self.model,
                 response,
+                response_ms,
             )
             _log_model_output(
                 self.output_log_callback,

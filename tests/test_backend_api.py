@@ -399,6 +399,7 @@ class BackendHTTPTests(unittest.TestCase):
                 output_json='[{"response":{"direction":"FLAT"}}]',
                 fallback=False,
                 elapsed_ms=7031,
+                response_ms=6123,
             )
         )
         client = BackendClient(self.base_url, api_token="test-token")
@@ -415,6 +416,8 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertEqual("FLAT", item["outcome"])
         self.assertIn('"symbol":"SOXLUSDT"', item["input_json"])
         self.assertIn('"direction":"FLAT"', item["output_json"])
+        self.assertEqual(7031, item["elapsed_ms"])
+        self.assertEqual(6123, item["response_ms"])
 
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):

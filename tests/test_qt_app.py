@@ -50,6 +50,8 @@ class QtAppWidgetTests(unittest.TestCase):
                     ai_provider="CHATGPT",
                     openai_api_key="saved-openai-key",
                     ai_entry_timing_bars=90,
+                    deepseek_thinking_enabled=False,
+                    deepseek_reasoning_effort="high",
                     manual_directions={"AAPL": "LONG"},
                 )
             )
@@ -62,12 +64,18 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertTrue(window.ai_enabled_checkbox.isChecked())
             self.assertEqual("saved-openai-key", window.openai_api_key_var.get())
             self.assertEqual("90", window.ai_entry_timing_bars_var.get())
+            self.assertFalse(window.deepseek_thinking_checkbox.isChecked())
+            self.assertEqual("high", window.deepseek_reasoning_effort_var.get())
             window._start_symbols(["AAPL"])
             enabled_config = window.controller.start.call_args.args[1]
             self.assertEqual(
                 Direction.UNKNOWN, enabled_config.manual_direction
             )
             self.assertEqual("CHATGPT", enabled_config.app.ai_provider)
+            self.assertFalse(enabled_config.app.deepseek_thinking_enabled)
+            self.assertEqual(
+                "high", enabled_config.app.deepseek_reasoning_effort
+            )
             self.assertEqual(90, enabled_config.app.ai_entry_timing_bars)
             self.assertEqual(
                 "saved-openai-key", enabled_config.app.openai_api_key
@@ -150,6 +158,7 @@ class QtAppWidgetTests(unittest.TestCase):
                         ),
                         fallback=False,
                         elapsed_ms=7000,
+                        response_ms=6500,
                     )
                 ]
             )
@@ -159,6 +168,7 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("今日方向", window.ai_decision_tree.item(0, 2).text())
         self.assertEqual("72%", window.ai_decision_tree.item(0, 6).text())
         self.assertIn("短线动能偏多", window.ai_decision_result_detail.toPlainText())
+        self.assertIn("模型响应时间：6500 ms", window.ai_decision_result_detail.toPlainText())
         self.assertIn("SOXLUSDT", window.ai_decision_input_detail.toPlainText())
         self.assertIn("deepseek-v4-pro", window.ai_decision_output_detail.toPlainText())
 

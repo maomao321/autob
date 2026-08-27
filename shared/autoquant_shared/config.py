@@ -53,6 +53,8 @@ class AppConfig:
     ai_provider: str = "DISABLED"
     openai_model: str = "gpt-5.6"
     deepseek_model: str = "deepseek-v4-pro"
+    deepseek_thinking_enabled: bool = True
+    deepseek_reasoning_effort: str = "max"
     openai_api_key: str = ""
     deepseek_api_key: str = ""
     ai_min_confidence: str = "0.70"
@@ -116,6 +118,20 @@ class AppConfig:
             )
         self.openai_model = str(self.openai_model).strip()
         self.deepseek_model = str(self.deepseek_model).strip()
+        if not isinstance(self.deepseek_thinking_enabled, bool):
+            raise ValueError("DeepSeek 深度思考开关必须是布尔值")
+        self.deepseek_reasoning_effort = str(
+            self.deepseek_reasoning_effort
+        ).strip().lower()
+        if self.deepseek_reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "max",
+        }:
+            raise ValueError(
+                "DeepSeek 推理强度必须是 low、medium、high 或 max"
+            )
         if MODEL_PATTERN.fullmatch(self.openai_model) is None:
             raise ValueError("OpenAI 模型名称格式不正确")
         if MODEL_PATTERN.fullmatch(self.deepseek_model) is None:

@@ -137,3 +137,4 @@ class AiDecisionHistoryItem:
     output_json: str
     fallback: bool
     elapsed_ms: int
+    response_ms: int = 0

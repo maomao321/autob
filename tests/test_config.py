@@ -40,6 +40,8 @@ class ConfigTests(unittest.TestCase):
                 ai_min_confidence="0.75",
                 openai_api_key="openai-secret",
                 deepseek_api_key="deepseek-secret",
+                deepseek_thinking_enabled=True,
+                deepseek_reasoning_effort="max",
                 ai_entry_timing_bars=90,
             )
             store.save(config)
@@ -56,6 +58,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual("0.75", loaded.ai_min_confidence)
             self.assertEqual("openai-secret", loaded.openai_api_key)
             self.assertEqual("deepseek-secret", loaded.deepseek_api_key)
+            self.assertTrue(loaded.deepseek_thinking_enabled)
+            self.assertEqual("max", loaded.deepseek_reasoning_effort)
             self.assertEqual(90, loaded.ai_entry_timing_bars)
             self.assertEqual("binance-key", loaded.api_key)
             self.assertEqual("binance-secret", loaded.api_secret)
@@ -137,6 +141,10 @@ class ConfigTests(unittest.TestCase):
             AppConfig(symbols=["AAPL"], ai_provider="unknown").validate()
         with self.assertRaisesRegex(ValueError, "K 线数量"):
             AppConfig(symbols=["AAPL"], ai_entry_timing_bars=9).validate()
+        with self.assertRaisesRegex(ValueError, "推理强度"):
+            AppConfig(
+                symbols=["AAPL"], deepseek_reasoning_effort="ultra"
+            ).validate()
 
     def test_futures_provider_and_leverage_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

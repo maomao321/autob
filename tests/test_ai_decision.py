@@ -323,6 +323,7 @@ class AiDecisionTests(unittest.TestCase):
 
     def test_deepseek_retries_one_invalid_json_response(self) -> None:
         output_logs = []
+        calls = []
         responses = [
             {
                 "choices": [
@@ -336,7 +337,8 @@ class AiDecisionTests(unittest.TestCase):
             {"choices": [{"message": {"content": decision_json("SHORT")}}]},
         ]
 
-        def post(_url, _payload, _api_key, _timeout):
+        def post(_url, payload, _api_key, _timeout):
+            calls.append(payload)
             return responses.pop(0)
 
         client = DeepSeekDecisionClient(
@@ -350,6 +352,9 @@ class AiDecisionTests(unittest.TestCase):
 
         self.assertEqual(Direction.SHORT, decision.direction)
         self.assertEqual([], responses)
+        self.assertEqual("enabled", calls[0]["thinking"]["type"])
+        self.assertEqual("max", calls[0]["reasoning_effort"])
+        self.assertEqual(4096, calls[0]["max_tokens"])
         self.assertEqual(2, len(output_logs))
         self.assertIn("]]}", output_logs[0])
         self.assertIn('\\"direction\\": \\"SHORT\\"', output_logs[1])

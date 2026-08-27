@@ -482,6 +482,7 @@ class BackendRuntime:
                     "output_json": item.output_json,
                     "fallback": item.fallback,
                     "elapsed_ms": item.elapsed_ms,
+                    "response_ms": item.response_ms,
                 }
                 for item in items
             ],

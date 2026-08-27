@@ -20,6 +20,8 @@
   "ai_provider": "DISABLED",
   "openai_model": "gpt-5.6",
   "deepseek_model": "deepseek-v4-pro",
+  "deepseek_thinking_enabled": true,
+  "deepseek_reasoning_effort": "max",
   "ai_min_confidence": "0.70",
   "ai_history_days": 30,
   "ai_news_days": 7,

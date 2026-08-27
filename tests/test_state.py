@@ -58,6 +58,7 @@ class OrderLedgerTests(unittest.TestCase):
                     output_json='[{"response":{"direction":"LONG"}}]',
                     fallback=False,
                     elapsed_ms=1234,
+                    response_ms=987,
                 )
             )
 
@@ -73,6 +74,8 @@ class OrderLedgerTests(unittest.TestCase):
         self.assertEqual(("接近日内高点",), records[0].factors)
         self.assertIn('"symbol":"SOXLUSDT"', records[0].input_json)
         self.assertIn('"direction":"LONG"', records[0].output_json)
+        self.assertEqual(1234, records[0].elapsed_ms)
+        self.assertEqual(987, records[0].response_ms)
 
     def test_old_order_ledger_migrates_and_backfills_close_profit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

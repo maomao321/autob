@@ -192,6 +192,7 @@ def _ai_decision_history_item(
         output_json=str(payload.get("output_json", "[]")),
         fallback=bool(payload.get("fallback", False)),
         elapsed_ms=int(payload.get("elapsed_ms", 0)),
+        response_ms=int(payload.get("response_ms", 0)),
     )
 
 

@@ -202,10 +202,20 @@ class OrderLedger:
                     input_json TEXT NOT NULL DEFAULT '{}',
                     output_json TEXT NOT NULL DEFAULT '[]',
                     fallback INTEGER NOT NULL DEFAULT 0,
-                    elapsed_ms INTEGER NOT NULL DEFAULT 0
+                    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+                    response_ms INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            ai_decision_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(ai_decisions)")
+            }
+            if "response_ms" not in ai_decision_columns:
+                connection.execute(
+                    "ALTER TABLE ai_decisions ADD COLUMN response_ms "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ai_decisions_symbol_time "
                 "ON ai_decisions(symbol, decided_at DESC)"
@@ -226,8 +236,8 @@ class OrderLedger:
                 INSERT INTO ai_decisions (
                     record_id, decided_at, symbol, stage, provider, model,
                     outcome, confidence, summary, factors_json, risks_json,
-                    input_json, output_json, fallback, elapsed_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    input_json, output_json, fallback, elapsed_ms, response_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.record_id,
@@ -245,6 +255,7 @@ class OrderLedger:
                     item.output_json,
                     int(item.fallback),
                     max(0, int(item.elapsed_ms)),
+                    max(0, int(item.response_ms)),
                 ),
             )
 
@@ -310,6 +321,7 @@ class OrderLedger:
             output_json=str(row["output_json"]),
             fallback=bool(row["fallback"]),
             elapsed_ms=int(row["elapsed_ms"]),
+            response_ms=int(row["response_ms"]),
         )
 
     @staticmethod

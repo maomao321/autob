@@ -125,7 +125,7 @@ def create_opening_decider(
     ]
     | None = None,
     model_output_capture_callback: Callable[
-        [str, str, str, dict[str, Any]], None
+        [str, str, str, dict[str, Any], int], None
     ]
     | None = None,
 ) -> OpeningDecider | None:
@@ -153,6 +153,8 @@ def create_opening_decider(
                 api_key=config.deepseek_api_key,
                 model=config.app.deepseek_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
+                thinking_enabled=config.app.deepseek_thinking_enabled,
+                reasoning_effort=config.app.deepseek_reasoning_effort,
                 output_log_callback=model_log_callback,
                 output_capture_callback=model_output_capture_callback,
             )
@@ -920,11 +922,13 @@ class SymbolRunner:
         provider: str,
         model: str,
         response: dict[str, Any],
+        response_ms: int = 0,
     ) -> None:
         envelope = {
             "stage": stage,
             "provider": provider,
             "model": model,
+            "response_ms": max(0, int(response_ms)),
             "response": json.loads(
                 json.dumps(response, ensure_ascii=False, separators=(",", ":"))
             ),
@@ -932,15 +936,22 @@ class SymbolRunner:
         with self._ai_trace_lock:
             self._ai_trace_outputs.append(envelope)
 
-    def _consume_ai_trace(self) -> tuple[str, str]:
+    def _consume_ai_trace(self) -> tuple[str, str, int]:
         with self._ai_trace_lock:
             input_json = self._ai_trace_input
+            response_by_provider: dict[str, int] = {}
+            for item in self._ai_trace_outputs:
+                provider = str(item.get("provider", ""))
+                response_by_provider[provider] = response_by_provider.get(
+                    provider, 0
+                ) + max(0, int(item.get("response_ms", 0)))
+            response_ms = max(response_by_provider.values(), default=0)
             output_json = json.dumps(
                 self._ai_trace_outputs,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-        return input_json, output_json
+        return input_json, output_json, response_ms
 
     def _persist_ai_decision(
         self,
@@ -956,7 +967,7 @@ class SymbolRunner:
         fallback: bool,
         elapsed_ms: int,
     ) -> None:
-        input_json, output_json = self._consume_ai_trace()
+        input_json, output_json, response_ms = self._consume_ai_trace()
         try:
             self.ledger.record_ai_decision(
                 AiDecisionHistoryItem(
@@ -975,6 +986,7 @@ class SymbolRunner:
                     output_json=output_json,
                     fallback=fallback,
                     elapsed_ms=elapsed_ms,
+                    response_ms=response_ms,
                 )
             )
         except Exception as exc:

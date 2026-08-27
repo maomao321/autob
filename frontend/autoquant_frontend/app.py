@@ -482,6 +482,9 @@ class AutoQuantApp(QMainWindow):
         )
         self.openai_model_var = TextValue(self.config.openai_model)
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
+        self.deepseek_reasoning_effort_var = TextValue(
+            self.config.deepseek_reasoning_effort
+        )
         self.openai_api_key_var = TextValue(
             credential_or_environment(
                 self.config.openai_api_key, "OPENAI_API_KEY"
@@ -842,12 +845,29 @@ class AutoQuantApp(QMainWindow):
             ai_grid,
             3,
             0,
+            "DeepSeek 深度思考",
+            self._deepseek_thinking_control(),
+        )
+        self._grid_field(
+            ai_grid,
+            3,
+            2,
+            "DeepSeek 推理强度",
+            self._combo(
+                self.deepseek_reasoning_effort_var,
+                ["max", "high", "medium", "low"],
+            ),
+        )
+        self._grid_field(
+            ai_grid,
+            4,
+            0,
             "最低置信度",
             self._line(self.ai_min_confidence_var),
         )
         self._grid_field(
             ai_grid,
-            3,
+            4,
             2,
             "决策超时(秒)",
             self._line(self.ai_timeout_var),
@@ -856,7 +876,7 @@ class AutoQuantApp(QMainWindow):
         ai_history_line.setEnabled(False)
         self._grid_field(
             ai_grid,
-            4,
+            5,
             0,
             "方向日线(固定30根)",
             ai_history_line,
@@ -869,14 +889,14 @@ class AutoQuantApp(QMainWindow):
         news_window_layout.addWidget(self._line(self.ai_news_limit_var))
         self._grid_field(
             ai_grid,
-            4,
+            5,
             2,
             "新闻天数/条数",
             news_window,
         )
         self._grid_field(
             ai_grid,
-            5,
+            6,
             0,
             "时机K线数量",
             self._line(self.ai_entry_timing_bars_var),
@@ -892,7 +912,7 @@ class AutoQuantApp(QMainWindow):
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 6, 0, 1, 4)
+        ai_grid.addWidget(ai_note, 7, 0, 1, 4)
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -1101,10 +1121,11 @@ class AutoQuantApp(QMainWindow):
             "结果",
             "置信度",
             "安全兜底",
-            "耗时",
+            "总耗时",
+            "响应时间",
             "结论摘要",
         ]
-        widths = [155, 90, 90, 90, 155, 75, 75, 85, 75, 360]
+        widths = [155, 90, 90, 90, 155, 75, 75, 85, 75, 85, 360]
         self.ai_decision_tree = KeyedTable(
             headers,
             widths,
@@ -1225,6 +1246,7 @@ class AutoQuantApp(QMainWindow):
                     f"{item.confidence:.0%}",
                     "是" if item.fallback else "否",
                     f"{item.elapsed_ms} ms",
+                    f"{item.response_ms} ms",
                     item.summary,
                 ),
                 tags=(tag,),
@@ -1255,7 +1277,8 @@ class AutoQuantApp(QMainWindow):
             f"置信度：{item.confidence:.2%}\n"
             f"供应商/模型：{item.provider}/{item.model or '-'}\n"
             f"安全兜底：{'是' if item.fallback else '否'}\n"
-            f"决策耗时：{item.elapsed_ms} ms\n\n"
+            f"总决策耗时：{item.elapsed_ms} ms\n"
+            f"模型响应时间：{item.response_ms} ms\n\n"
             f"结论\n{item.summary}\n\n"
             f"主要依据\n{factors}\n\n"
             f"主要风险\n{risks}"
@@ -1387,6 +1410,16 @@ class AutoQuantApp(QMainWindow):
         widget.addItems(values)
         variable.bind_combo(widget)
         return widget
+
+    def _deepseek_thinking_control(self) -> QCheckBox:
+        self.deepseek_thinking_checkbox = QCheckBox("启用深度思考")
+        self.deepseek_thinking_checkbox.setChecked(
+            self.config.deepseek_thinking_enabled
+        )
+        self.deepseek_thinking_checkbox.setToolTip(
+            "启用后发送 thinking=enabled；推理强度 max 为最高档。"
+        )
+        return self.deepseek_thinking_checkbox
 
     @staticmethod
     def _bound_label(
@@ -1633,6 +1666,12 @@ class AutoQuantApp(QMainWindow):
                 else "DISABLED"
             ), openai_model=self.openai_model_var.get().strip(),
             deepseek_model=self.deepseek_model_var.get().strip(),
+            deepseek_thinking_enabled=(
+                self.deepseek_thinking_checkbox.isChecked()
+            ),
+            deepseek_reasoning_effort=(
+                self.deepseek_reasoning_effort_var.get().strip()
+            ),
             openai_api_key=self.openai_api_key_var.get().strip(),
             deepseek_api_key=self.deepseek_api_key_var.get().strip(),
             ai_min_confidence=self.ai_min_confidence_var.get().strip(),
