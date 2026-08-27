@@ -52,7 +52,7 @@ class AppConfig:
     max_signal_age_seconds: int = 30
     ai_provider: str = "DISABLED"
     openai_model: str = "gpt-5.6"
-    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_model: str = "deepseek-v4-pro"
     openai_api_key: str = ""
     deepseek_api_key: str = ""
     ai_min_confidence: str = "0.70"

@@ -19,7 +19,7 @@
   "max_signal_age_seconds": 30,
   "ai_provider": "DISABLED",
   "openai_model": "gpt-5.6",
-  "deepseek_model": "deepseek-v4-flash",
+  "deepseek_model": "deepseek-v4-pro",
   "ai_min_confidence": "0.70",
   "ai_history_days": 30,
   "ai_news_days": 7,

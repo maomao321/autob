@@ -360,7 +360,7 @@ class DeepSeekDecisionClient:
                 return parse_opening_decision(content, self.provider, self.model)
             except DecisionError as exc:
                 last_error = exc
-                if "空响应" not in str(exc):
+                if _attempt == 1:
                     raise
         raise last_error or DecisionError("DeepSeek 返回空响应")
 
@@ -398,7 +398,7 @@ class DeepSeekDecisionClient:
                 )
             except DecisionError as exc:
                 last_error = exc
-                if "空响应" not in str(exc):
+                if _attempt == 1:
                     raise
         raise last_error or DecisionError("DeepSeek 返回空响应")
 

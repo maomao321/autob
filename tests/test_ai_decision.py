@@ -312,10 +312,18 @@ class AiDecisionTests(unittest.TestCase):
             output_logs[1],
         )
 
-    def test_deepseek_retries_one_empty_json_response(self) -> None:
+    def test_deepseek_retries_one_invalid_json_response(self) -> None:
         output_logs = []
         responses = [
-            {"choices": [{"message": {"content": ""}}]},
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": decision_json("SHORT")[:-1] + "]}"
+                        }
+                    }
+                ]
+            },
             {"choices": [{"message": {"content": decision_json("SHORT")}}]},
         ]
 
@@ -334,8 +342,37 @@ class AiDecisionTests(unittest.TestCase):
         self.assertEqual(Direction.SHORT, decision.direction)
         self.assertEqual([], responses)
         self.assertEqual(2, len(output_logs))
-        self.assertIn('"content":""', output_logs[0])
+        self.assertIn("]]}", output_logs[0])
         self.assertIn('\\"direction\\": \\"SHORT\\"', output_logs[1])
+
+    def test_deepseek_retries_one_invalid_entry_timing_response(self) -> None:
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": entry_timing_json()[:-1] + "]}"
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"message": {"content": entry_timing_json()}}]},
+        ]
+
+        def post(_url, _payload, _api_key, _timeout):
+            return responses.pop(0)
+
+        client = DeepSeekDecisionClient(
+            "secret",
+            "deepseek-test",
+            12,
+            post_json=post,
+        )
+
+        decision = client.decide_entry({"symbol": "AAPL"})
+
+        self.assertTrue(decision.enter_now)
+        self.assertEqual([], responses)
 
     def test_low_confidence_fails_closed(self) -> None:
         service = OpeningDecisionService(
