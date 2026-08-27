@@ -17,6 +17,9 @@ from autoquant_backend.providers.binance_stocks import (
 )
 
 
+PERPETUAL_CONTRACT_TYPES = {"PERPETUAL", "TRADIFI_PERPETUAL"}
+
+
 class BinanceFuturesProvider(BinanceStocksProvider):
     """Binance USDⓈ-M Futures provider using one-way net positions."""
 
@@ -83,11 +86,18 @@ class BinanceFuturesProvider(BinanceStocksProvider):
             raise ProviderError(
                 f"{symbol} 当前合约状态为 {info.get('status', 'UNKNOWN')}"
             )
-        if str(info.get("contractType", "")).upper() != "PERPETUAL":
+        contract_type = str(info.get("contractType", "")).upper()
+        if contract_type not in PERPETUAL_CONTRACT_TYPES:
             raise ProviderError(f"{symbol} 不是 USDⓈ-M 永续合约")
         info["tradability"] = "BUY_SELL"
+        contract_label = (
+            "TradFi 永续合约"
+            if contract_type == "TRADIFI_PERPETUAL"
+            else "永续合约"
+        )
         info["validation"] = (
-            f"USDⓈ-M 永续合约校验通过；实盘首单前设置杠杆 {self.leverage}x"
+            f"USDⓈ-M {contract_label}校验通过；"
+            f"实盘首单前设置杠杆 {self.leverage}x"
         )
         self._symbol_info[symbol] = info
         self._symbol_info_cached_at[symbol] = time.monotonic()

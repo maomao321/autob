@@ -11,11 +11,13 @@ from autoquant_backend.providers.binance_stocks import (
 )
 
 
-def futures_info(symbol: str = "BTCUSDT") -> dict:
+def futures_info(
+    symbol: str = "BTCUSDT", contract_type: str = "PERPETUAL"
+) -> dict:
     return {
         "symbol": symbol,
         "status": "TRADING",
-        "contractType": "PERPETUAL",
+        "contractType": contract_type,
         "quoteAsset": "USDT",
         "filters": [
             {
@@ -57,6 +59,30 @@ class BinanceFuturesProviderTests(unittest.TestCase):
         self.assertEqual("BUY_SELL", result["tradability"])
         self.assertIn("3x", result["validation"])
         self.assertEqual(("GET", "/fapi/v1/exchangeInfo", {}, False), provider.request)
+
+    def test_symbol_validation_accepts_tradfi_perpetual_contract(self) -> None:
+        class SymbolProvider(BinanceFuturesProvider):
+            def _request_json(self, method, path, params, signed):
+                return {
+                    "symbols": [
+                        futures_info("SOXLUSDT", "TRADIFI_PERPETUAL")
+                    ]
+                }
+
+        result = SymbolProvider(leverage=3).check_symbol("soxlusdt")
+
+        self.assertEqual("BUY_SELL", result["tradability"])
+        self.assertIn("TradFi 永续合约校验通过", result["validation"])
+
+    def test_symbol_validation_rejects_delivery_contract(self) -> None:
+        class SymbolProvider(BinanceFuturesProvider):
+            def _request_json(self, method, path, params, signed):
+                return {
+                    "symbols": [futures_info("BTCUSDT", "CURRENT_QUARTER")]
+                }
+
+        with self.assertRaisesRegex(RuntimeError, "不是 USDⓈ-M 永续合约"):
+            SymbolProvider().check_symbol("BTCUSDT")
 
     def test_live_buy_sets_leverage_and_converts_notional_to_quantity(self) -> None:
         class CapturingProvider(BinanceFuturesProvider):
