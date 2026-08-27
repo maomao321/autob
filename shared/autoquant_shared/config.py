@@ -62,7 +62,7 @@ class AppConfig:
     ai_entry_timing_bars: int = 60
     ai_news_days: int = 7
     ai_news_limit: int = 8
-    ai_timeout_seconds: int = 20
+    ai_timeout_seconds: int = 600
     rest_base_url: str = DEFAULT_REST_URL
     websocket_base_url: str = DEFAULT_WS_URL
     recv_window: int = 5000
@@ -171,8 +171,8 @@ class AppConfig:
             raise ValueError("AI 新闻回看天数必须在 1 到 30 之间")
         if not 1 <= self.ai_news_limit <= 20:
             raise ValueError("AI 新闻条数必须在 1 到 20 之间")
-        if not 5 <= self.ai_timeout_seconds <= 60:
-            raise ValueError("AI 请求超时必须在 5 到 60 秒之间")
+        if not 5 <= self.ai_timeout_seconds <= 600:
+            raise ValueError("AI 请求超时必须在 5 到 600 秒之间")
         self.buy_notional = str(self.buy_notional)
         self.sell_quantity = str(self.sell_quantity)
         self.max_order_notional = str(self.max_order_notional)

@@ -145,6 +145,11 @@ class ConfigTests(unittest.TestCase):
             AppConfig(
                 symbols=["AAPL"], deepseek_reasoning_effort="ultra"
             ).validate()
+        config = AppConfig(symbols=["AAPL"], ai_timeout_seconds=600)
+        config.validate()
+        self.assertEqual(600, config.ai_timeout_seconds)
+        with self.assertRaisesRegex(ValueError, "超时"):
+            AppConfig(symbols=["AAPL"], ai_timeout_seconds=601).validate()
 
     def test_futures_provider_and_leverage_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

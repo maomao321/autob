@@ -869,7 +869,7 @@ class AutoQuantApp(QMainWindow):
             ai_grid,
             4,
             2,
-            "决策超时(秒)",
+            "决策超时(秒，最高600)",
             self._line(self.ai_timeout_var),
         )
         ai_history_line = self._line(self.ai_history_days_var)

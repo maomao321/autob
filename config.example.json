@@ -34,7 +34,7 @@
   "ai_entry_timing_bars": 60,
   "ai_news_days": 7,
   "ai_news_limit": 8,
-  "ai_timeout_seconds": 20,
+  "ai_timeout_seconds": 600,
   "rest_base_url": "https://api.binance.com",
   "websocket_base_url": "wss://nbstream.binance.com/equity",
   "recv_window": 5000
