@@ -242,6 +242,7 @@ class AiDecisionTests(unittest.TestCase):
 
     def test_openai_client_uses_structured_response_text(self) -> None:
         calls = []
+        output_logs = []
 
         def post(url, payload, api_key, timeout):
             calls.append((url, payload, api_key, timeout))
@@ -257,7 +258,11 @@ class AiDecisionTests(unittest.TestCase):
             }
 
         client = OpenAIResponsesDecisionClient(
-            "secret", "gpt-test", 12, post_json=post
+            "secret",
+            "gpt-test",
+            12,
+            post_json=post,
+            output_log_callback=output_logs.append,
         )
         decision = client.decide({"symbol": "AAPL"})
 
@@ -282,15 +287,29 @@ class AiDecisionTests(unittest.TestCase):
             }
 
         timing_client = OpenAIResponsesDecisionClient(
-            "secret", "gpt-test", 12, post_json=timing_post
+            "secret",
+            "gpt-test",
+            12,
+            post_json=timing_post,
+            output_log_callback=output_logs.append,
         )
         timing = timing_client.decide_entry({"symbol": "AAPL"})
         self.assertTrue(timing.enter_now)
         self.assertEqual(
             "entry_timing", calls[-1][1]["text"]["format"]["name"]
         )
+        self.assertEqual(2, len(output_logs))
+        self.assertIn(
+            "大模型今日方向原始输出（CHATGPT/gpt-test）", output_logs[0]
+        )
+        self.assertIn('"output"', output_logs[0])
+        self.assertIn(
+            "大模型开仓时机原始输出（CHATGPT/gpt-test）",
+            output_logs[1],
+        )
 
     def test_deepseek_retries_one_empty_json_response(self) -> None:
+        output_logs = []
         responses = [
             {"choices": [{"message": {"content": ""}}]},
             {"choices": [{"message": {"content": decision_json("SHORT")}}]},
@@ -300,12 +319,19 @@ class AiDecisionTests(unittest.TestCase):
             return responses.pop(0)
 
         client = DeepSeekDecisionClient(
-            "secret", "deepseek-test", 12, post_json=post
+            "secret",
+            "deepseek-test",
+            12,
+            post_json=post,
+            output_log_callback=output_logs.append,
         )
         decision = client.decide({"symbol": "AAPL"})
 
         self.assertEqual(Direction.SHORT, decision.direction)
         self.assertEqual([], responses)
+        self.assertEqual(2, len(output_logs))
+        self.assertIn('"content":""', output_logs[0])
+        self.assertIn('\\"direction\\": \\"SHORT\\"', output_logs[1])
 
     def test_low_confidence_fails_closed(self) -> None:
         service = OpeningDecisionService(
@@ -319,6 +345,29 @@ class AiDecisionTests(unittest.TestCase):
 
         self.assertEqual(Direction.FLAT, decision.direction)
         self.assertTrue(decision.fallback)
+
+    def test_logs_each_complete_model_input_once(self) -> None:
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
+        input_logs = []
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (client,),
+            min_confidence=0.7,
+            mode="CHATGPT",
+            input_log_callback=input_logs.append,
+        )
+
+        service.decide("AAPL", daily_bar())
+        service.decide_entry(
+            "AAPL", candidate_signal(), intraday_bar(), intraday_history()
+        )
+
+        self.assertEqual(2, len(input_logs))
+        self.assertIn("大模型今日方向输入（CHATGPT/chatgpt）", input_logs[0])
+        self.assertIn('"current_session"', input_logs[0])
+        self.assertIn("大模型开仓时机输入（CHATGPT/chatgpt）", input_logs[1])
+        self.assertIn('"candidate_entry"', input_logs[1])
+        self.assertIn('"recent_intraday_bars"', input_logs[1])
 
     def test_dual_mode_requires_same_direction(self) -> None:
         service = OpeningDecisionService(

@@ -115,7 +115,10 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
     raise ValueError(f"未知策略: {config.app.strategy}")
 
 
-def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
+def create_opening_decider(
+    config: RunnerConfig,
+    model_log_callback: Callable[[str], None] | None = None,
+) -> OpeningDecider | None:
     mode = config.app.ai_provider
     if mode == "DISABLED":
         return None
@@ -128,6 +131,7 @@ def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
                 api_key=config.openai_api_key,
                 model=config.app.openai_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
+                output_log_callback=model_log_callback,
             )
         )
     if mode in {"DEEPSEEK", "DUAL"}:
@@ -138,6 +142,7 @@ def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
                 api_key=config.deepseek_api_key,
                 model=config.app.deepseek_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
+                output_log_callback=model_log_callback,
             )
         )
     collector = PublicMarketContextCollector(
@@ -152,6 +157,7 @@ def create_opening_decider(config: RunnerConfig) -> OpeningDecider | None:
         min_confidence=float(Decimal(config.app.ai_min_confidence)),
         mode=mode,
         entry_timing_bar_count=config.app.ai_entry_timing_bars,
+        input_log_callback=model_log_callback,
     )
 
 
@@ -168,6 +174,8 @@ class SymbolRunner:
     ) -> None:
         self.symbol = symbol.upper()
         self.config = config
+        self.snapshot_callback = snapshot_callback
+        self.log_callback = log_callback
         self.provider = create_provider(config)
         self.strategy = create_strategy(self.symbol, config)
         self.opening_decider = opening_decider
@@ -176,14 +184,15 @@ class SymbolRunner:
             and self.opening_decider is None
             and config.app.ai_provider != "DISABLED"
         ):
-            self.opening_decider = create_opening_decider(config)
+            self.opening_decider = create_opening_decider(
+                config,
+                model_log_callback=lambda message: self._log("AI", message),
+            )
         self.entry_timing_decider = entry_timing_decider
         if self.entry_timing_decider is None and callable(
             getattr(self.opening_decider, "decide_entry", None)
         ):
             self.entry_timing_decider = self.opening_decider  # type: ignore[assignment]
-        self.snapshot_callback = snapshot_callback
-        self.log_callback = log_callback
         self.ledger = ledger or OrderLedger()
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
