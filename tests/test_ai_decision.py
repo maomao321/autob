@@ -111,7 +111,11 @@ def intraday_history(count: int = 60) -> tuple[Bar, ...]:
 
 
 class StaticCollector:
+    def __init__(self) -> None:
+        self.symbols = []
+
     def collect(self, symbol: str, current_daily_bar: Bar):
+        self.symbols.append(symbol)
         return {
             "symbol": symbol,
             "current": str(current_daily_bar.close),
@@ -368,6 +372,24 @@ class AiDecisionTests(unittest.TestCase):
         self.assertIn("大模型开仓时机输入（CHATGPT/chatgpt）", input_logs[1])
         self.assertIn('"candidate_entry"', input_logs[1])
         self.assertIn('"recent_intraday_bars"', input_logs[1])
+
+    def test_tradfi_symbol_uses_underlying_for_public_market_data(self) -> None:
+        collector = StaticCollector()
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
+        service = OpeningDecisionService(
+            collector,
+            (client,),
+            min_confidence=0.7,
+            mode="CHATGPT",
+        )
+        service.set_market_data_symbol("SOXLUSDT", "SOXL")
+
+        decision = service.decide("SOXLUSDT", daily_bar())
+
+        self.assertEqual(Direction.LONG, decision.direction)
+        self.assertEqual(["SOXL"], collector.symbols)
+        self.assertEqual("SOXLUSDT", client.decision_contexts[-1]["symbol"])
+        self.assertEqual("SOXL", client.decision_contexts[-1]["market_data_symbol"])
 
     def test_dual_mode_requires_same_direction(self) -> None:
         service = OpeningDecisionService(

@@ -425,12 +425,30 @@ class OpeningDecisionService:
             raise ValueError("开仓时机五分钟 K 线数量必须在 10 到 300 之间")
         self._context_lock = threading.Lock()
         self._daily_contexts: dict[str, tuple[int, int, dict[str, Any]]] = {}
+        self._market_data_symbols: dict[str, str] = {}
+
+    def set_market_data_symbol(
+        self, trading_symbol: str, market_data_symbol: str
+    ) -> None:
+        trading_symbol = trading_symbol.strip().upper()
+        market_data_symbol = market_data_symbol.strip().upper()
+        if not trading_symbol or not market_data_symbol:
+            return
+        with self._context_lock:
+            self._market_data_symbols[trading_symbol] = market_data_symbol
 
     def decide(self, symbol: str, current_daily_bar: Bar) -> OpeningDecision:
+        trading_symbol = symbol.upper()
         provider_label = self.mode
         model_label = "+".join(client.model for client in self.clients)
+        with self._context_lock:
+            market_data_symbol = self._market_data_symbols.get(
+                trading_symbol, trading_symbol
+            )
         try:
-            context = self.collector.collect(symbol, current_daily_bar)
+            context = self.collector.collect(
+                market_data_symbol, current_daily_bar
+            )
         except Exception as exc:
             return OpeningDecision.flat(
                 f"市场上下文获取失败：{_safe_error(exc)}",
@@ -439,11 +457,14 @@ class OpeningDecisionService:
                 risks=("新闻或走势数据不可用，已禁止当日新开仓",),
             )
         context = dict(context)
+        context["symbol"] = trading_symbol
+        if market_data_symbol != trading_symbol:
+            context["market_data_symbol"] = market_data_symbol
         # The service owns this field so every collector implementation gives
         # both decision stages the same complete daily OHLC contract.
         context["current_session"] = _bar_payload(current_daily_bar)
         with self._context_lock:
-            self._daily_contexts[symbol.upper()] = (
+            self._daily_contexts[trading_symbol] = (
                 current_daily_bar.open_time,
                 current_daily_bar.close_time,
                 context,

@@ -276,6 +276,18 @@ class SymbolRunner:
                     "INFO",
                     f"标的校验通过，tradability={info.get('tradability', 'UNKNOWN')}",
                 )
+            if str(info.get("contractType", "")).upper() == "TRADIFI_PERPETUAL":
+                market_data_symbol = str(info.get("baseAsset", "")).strip().upper()
+                set_market_data_symbol = getattr(
+                    self.opening_decider, "set_market_data_symbol", None
+                )
+                if market_data_symbol and callable(set_market_data_symbol):
+                    set_market_data_symbol(self.symbol, market_data_symbol)
+                    self._log(
+                        "INFO",
+                        f"AI 市场数据代码映射：{self.symbol} -> "
+                        f"{market_data_symbol}",
+                    )
             if self.config.app.trading_mode == "REAL":
                 self._reconcile_orders()
             is_paper = self.config.app.trading_mode != "REAL"
