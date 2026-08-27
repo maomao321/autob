@@ -16,7 +16,13 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from autoquant_frontend.app import AutoQuantApp, COLORS, KeyedTable, TextValue
 from autoquant_frontend.client import BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
-from autoquant_shared.models import Direction, RunState, RuntimeSnapshot, TradeHistoryItem
+from autoquant_shared.models import (
+    AiDecisionHistoryItem,
+    Direction,
+    RunState,
+    RuntimeSnapshot,
+    TradeHistoryItem,
+)
 
 
 class QtAppWidgetTests(unittest.TestCase):
@@ -112,6 +118,49 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("110.00", window.trade_history_tree.item(0, 4).text())
         self.assertEqual("19.00", window.trade_history_tree.item(0, 8).text())
         self.assertIn("平仓收益合计 19.00", window.trade_history_status_var.get())
+
+    def test_ai_decision_page_displays_result_input_and_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["SOXLUSDT"]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window._apply_ai_decisions(
+                [
+                    AiDecisionHistoryItem(
+                        record_id="decision-ui-1",
+                        decided_at=1_700_000_000_000,
+                        symbol="SOXLUSDT",
+                        stage="OPENING_DIRECTION",
+                        provider="DEEPSEEK",
+                        model="deepseek-v4-pro",
+                        outcome="LONG",
+                        confidence=0.72,
+                        summary="短线动能偏多",
+                        factors=("接近日内高点",),
+                        risks=("三倍杠杆波动",),
+                        input_json='{"context":{"symbol":"SOXLUSDT"}}',
+                        output_json=(
+                            '[{"model":"deepseek-v4-pro",'
+                            '"response":{"direction":"LONG"}}]'
+                        ),
+                        fallback=False,
+                        elapsed_ms=7000,
+                    )
+                ]
+            )
+
+        self.assertEqual(1, window.ai_decision_tree.rowCount())
+        self.assertEqual("SOXLUSDT", window.ai_decision_tree.item(0, 1).text())
+        self.assertEqual("今日方向", window.ai_decision_tree.item(0, 2).text())
+        self.assertEqual("72%", window.ai_decision_tree.item(0, 6).text())
+        self.assertIn("短线动能偏多", window.ai_decision_result_detail.toPlainText())
+        self.assertIn("SOXLUSDT", window.ai_decision_input_detail.toPlainText())
+        self.assertIn("deepseek-v4-pro", window.ai_decision_output_detail.toPlainText())
 
     def test_keyed_table_keeps_symbol_identity_when_values_change(self) -> None:
         table = KeyedTable(["股票", "状态", "信息"], [80, 90, 180], multi_select=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -9,7 +10,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from autoquant_shared.config import default_config_path
-from autoquant_shared.models import OrderRequest, Side, TradeHistoryItem
+from autoquant_shared.models import (
+    AiDecisionHistoryItem,
+    OrderRequest,
+    Side,
+    TradeHistoryItem,
+)
 
 
 CONSUMED_STATUSES = {
@@ -179,6 +185,132 @@ class OrderLedger:
                 "CREATE INDEX IF NOT EXISTS idx_orders_position "
                 "ON orders(symbol, paper, created_at)"
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ai_decisions (
+                    record_id TEXT PRIMARY KEY,
+                    decided_at INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    outcome TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    summary TEXT NOT NULL,
+                    factors_json TEXT NOT NULL DEFAULT '[]',
+                    risks_json TEXT NOT NULL DEFAULT '[]',
+                    input_json TEXT NOT NULL DEFAULT '{}',
+                    output_json TEXT NOT NULL DEFAULT '[]',
+                    fallback INTEGER NOT NULL DEFAULT 0,
+                    elapsed_ms INTEGER NOT NULL DEFAULT 0
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ai_decisions_symbol_time "
+                "ON ai_decisions(symbol, decided_at DESC)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ai_decisions_stage_time "
+                "ON ai_decisions(stage, decided_at DESC)"
+            )
+
+    def record_ai_decision(self, item: AiDecisionHistoryItem) -> None:
+        if not item.record_id.strip():
+            raise ValueError("AI 决策记录 ID 不能为空")
+        if item.stage not in {"OPENING_DIRECTION", "ENTRY_TIMING"}:
+            raise ValueError("AI 决策阶段不正确")
+        with self._lock, closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                INSERT INTO ai_decisions (
+                    record_id, decided_at, symbol, stage, provider, model,
+                    outcome, confidence, summary, factors_json, risks_json,
+                    input_json, output_json, fallback, elapsed_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.record_id,
+                    int(item.decided_at),
+                    item.symbol.strip().upper(),
+                    item.stage,
+                    item.provider,
+                    item.model,
+                    item.outcome,
+                    float(item.confidence),
+                    item.summary,
+                    json.dumps(item.factors, ensure_ascii=False),
+                    json.dumps(item.risks, ensure_ascii=False),
+                    item.input_json,
+                    item.output_json,
+                    int(item.fallback),
+                    max(0, int(item.elapsed_ms)),
+                ),
+            )
+
+    def ai_decision_history(
+        self,
+        *,
+        symbol: str = "",
+        stage: str = "ALL",
+        limit: int = 100,
+    ) -> list[AiDecisionHistoryItem]:
+        normalized_symbol = symbol.strip().upper()
+        normalized_stage = stage.strip().upper() or "ALL"
+        if normalized_stage not in {
+            "ALL",
+            "OPENING_DIRECTION",
+            "ENTRY_TIMING",
+        }:
+            raise ValueError(
+                "AI 决策阶段必须是 ALL、OPENING_DIRECTION 或 ENTRY_TIMING"
+            )
+        clauses: list[str] = []
+        params: list[object] = []
+        if normalized_symbol:
+            clauses.append("symbol = ?")
+            params.append(normalized_symbol)
+        if normalized_stage != "ALL":
+            clauses.append("stage = ?")
+            params.append(normalized_stage)
+        bounded_limit = min(max(int(limit), 1), 500)
+        params.append(bounded_limit)
+        query = "SELECT * FROM ai_decisions"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY decided_at DESC, record_id DESC LIMIT ?"
+        with self._lock, closing(self._connect()) as connection, connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        return [self._to_ai_decision(row) for row in rows]
+
+    @staticmethod
+    def _to_ai_decision(row: sqlite3.Row) -> AiDecisionHistoryItem:
+        def text_tuple(raw: str) -> tuple[str, ...]:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return ()
+            if not isinstance(parsed, list):
+                return ()
+            return tuple(str(item) for item in parsed)
+
+        return AiDecisionHistoryItem(
+            record_id=str(row["record_id"]),
+            decided_at=int(row["decided_at"]),
+            symbol=str(row["symbol"]),
+            stage=str(row["stage"]),
+            provider=str(row["provider"]),
+            model=str(row["model"]),
+            outcome=str(row["outcome"]),
+            confidence=float(row["confidence"]),
+            summary=str(row["summary"]),
+            factors=text_tuple(str(row["factors_json"])),
+            risks=text_tuple(str(row["risks_json"])),
+            input_json=str(row["input_json"]),
+            output_json=str(row["output_json"]),
+            fallback=bool(row["fallback"]),
+            elapsed_ms=int(row["elapsed_ms"]),
+        )
 
     @staticmethod
     def _backfill_realized_pnl(connection: sqlite3.Connection) -> None:

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from autoquant_shared.config import AppConfig
 from autoquant_shared.models import (
     AccountOverview,
+    AiDecisionHistoryItem,
     Direction,
     RunState,
     RuntimeSnapshot,
@@ -172,6 +173,28 @@ def _trade_history_item(payload: dict[str, Any]) -> TradeHistoryItem:
     )
 
 
+def _ai_decision_history_item(
+    payload: dict[str, Any],
+) -> AiDecisionHistoryItem:
+    return AiDecisionHistoryItem(
+        record_id=str(payload.get("record_id", "")),
+        decided_at=int(payload.get("decided_at", 0)),
+        symbol=str(payload.get("symbol", "")),
+        stage=str(payload.get("stage", "")),
+        provider=str(payload.get("provider", "")),
+        model=str(payload.get("model", "")),
+        outcome=str(payload.get("outcome", "")),
+        confidence=float(payload.get("confidence", 0)),
+        summary=str(payload.get("summary", "")),
+        factors=tuple(str(item) for item in payload.get("factors", [])),
+        risks=tuple(str(item) for item in payload.get("risks", [])),
+        input_json=str(payload.get("input_json", "{}")),
+        output_json=str(payload.get("output_json", "[]")),
+        fallback=bool(payload.get("fallback", False)),
+        elapsed_ms=int(payload.get("elapsed_ms", 0)),
+    )
+
+
 class RemoteTradingController:
     def __init__(
         self,
@@ -305,6 +328,29 @@ class RemoteTradingController:
         payload = self.client.request("GET", f"/api/v1/trades?{query}")
         return [
             _trade_history_item(item)
+            for item in payload.get("items", [])
+            if isinstance(item, dict)
+        ]
+
+    def ai_decision_history(
+        self,
+        *,
+        symbol: str = "",
+        stage: str = "ALL",
+        limit: int = 100,
+    ) -> list[AiDecisionHistoryItem]:
+        query = urlencode(
+            {
+                "symbol": symbol.strip().upper(),
+                "stage": stage.strip().upper(),
+                "limit": min(max(int(limit), 1), 500),
+            }
+        )
+        payload = self.client.request(
+            "GET", f"/api/v1/ai-decisions?{query}"
+        )
+        return [
+            _ai_decision_history_item(item)
             for item in payload.get("items", [])
             if isinstance(item, dict)
         ]

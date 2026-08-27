@@ -118,3 +118,22 @@ class TradeHistoryItem:
     fee: Decimal
     profit: Decimal
     paper: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AiDecisionHistoryItem:
+    record_id: str
+    decided_at: int
+    symbol: str
+    stage: str
+    provider: str
+    model: str
+    outcome: str
+    confidence: float
+    summary: str
+    factors: tuple[str, ...]
+    risks: tuple[str, ...]
+    input_json: str
+    output_json: str
+    fallback: bool
+    elapsed_ms: int

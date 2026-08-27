@@ -32,6 +32,8 @@ ENTRY_TIMING_BAR_COUNT = 60
 _PUBLIC_CACHE_LOCK = threading.Lock()
 _PUBLIC_CACHE: dict[str, tuple[float, bytes]] = {}
 _PUBLIC_INFLIGHT: dict[str, threading.Event] = {}
+ModelInputCapture = Callable[[str, str, str, dict[str, Any]], None]
+ModelOutputCapture = Callable[[str, str, str, dict[str, Any]], None]
 
 
 class DecisionError(RuntimeError):
@@ -223,6 +225,22 @@ def _log_model_output(
         pass
 
 
+def _capture_model_output(
+    callback: ModelOutputCapture | None,
+    stage: str,
+    provider: str,
+    model: str,
+    response: dict[str, Any],
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage, provider, model, response)
+    except Exception:
+        # Persistence/observability must never change a trading decision.
+        pass
+
+
 class OpenAIResponsesDecisionClient:
     provider = "CHATGPT"
 
@@ -234,12 +252,14 @@ class OpenAIResponsesDecisionClient:
         post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
         | None = None,
         output_log_callback: Callable[[str], None] | None = None,
+        output_capture_callback: ModelOutputCapture | None = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
         self._post_json = post_json or _post_json
         self.output_log_callback = output_log_callback
+        self.output_capture_callback = output_capture_callback
 
     def decide(self, context: dict[str, Any]) -> OpeningDecision:
         payload = {
@@ -264,6 +284,13 @@ class OpenAIResponsesDecisionClient:
             payload,
             self.api_key,
             self.timeout_seconds,
+        )
+        _capture_model_output(
+            self.output_capture_callback,
+            "OPENING_DIRECTION",
+            self.provider,
+            self.model,
+            response,
         )
         _log_model_output(
             self.output_log_callback,
@@ -299,6 +326,13 @@ class OpenAIResponsesDecisionClient:
             self.api_key,
             self.timeout_seconds,
         )
+        _capture_model_output(
+            self.output_capture_callback,
+            "ENTRY_TIMING",
+            self.provider,
+            self.model,
+            response,
+        )
         _log_model_output(
             self.output_log_callback,
             "开仓时机",
@@ -321,12 +355,14 @@ class DeepSeekDecisionClient:
         post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
         | None = None,
         output_log_callback: Callable[[str], None] | None = None,
+        output_capture_callback: ModelOutputCapture | None = None,
     ) -> None:
         self.api_key = api_key.strip()
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
         self._post_json = post_json or _post_json
         self.output_log_callback = output_log_callback
+        self.output_capture_callback = output_capture_callback
 
     def decide(self, context: dict[str, Any]) -> OpeningDecision:
         payload = {
@@ -347,6 +383,13 @@ class DeepSeekDecisionClient:
                 payload,
                 self.api_key,
                 self.timeout_seconds,
+            )
+            _capture_model_output(
+                self.output_capture_callback,
+                "OPENING_DIRECTION",
+                self.provider,
+                self.model,
+                response,
             )
             _log_model_output(
                 self.output_log_callback,
@@ -384,6 +427,13 @@ class DeepSeekDecisionClient:
                 self.api_key,
                 self.timeout_seconds,
             )
+            _capture_model_output(
+                self.output_capture_callback,
+                "ENTRY_TIMING",
+                self.provider,
+                self.model,
+                response,
+            )
             _log_model_output(
                 self.output_log_callback,
                 "开仓时机",
@@ -411,7 +461,7 @@ class OpeningDecisionService:
         min_confidence: float,
         mode: str,
         entry_timing_bar_count: int = ENTRY_TIMING_BAR_COUNT,
-        input_log_callback: Callable[[str], None] | None = None,
+        input_capture_callback: ModelInputCapture | None = None,
     ) -> None:
         if not clients:
             raise ValueError("至少需要一个大模型客户端")
@@ -420,7 +470,7 @@ class OpeningDecisionService:
         self.min_confidence = min_confidence
         self.mode = mode.upper()
         self.entry_timing_bar_count = int(entry_timing_bar_count)
-        self.input_log_callback = input_log_callback
+        self.input_capture_callback = input_capture_callback
         if not 10 <= self.entry_timing_bar_count <= 300:
             raise ValueError("开仓时机五分钟 K 线数量必须在 10 到 300 之间")
         self._context_lock = threading.Lock()
@@ -478,7 +528,7 @@ class OpeningDecisionService:
                 risks=("近期新闻数据缺失，已禁止当日新开仓",),
             )
 
-        self._log_model_input("今日方向", context)
+        self._capture_model_input("今日方向", context)
         if len(self.clients) == 1:
             try:
                 decision = self.clients[0].decide(context)
@@ -609,7 +659,7 @@ class OpeningDecisionService:
             for bar in eligible_bars[-self.entry_timing_bar_count :]
         ]
 
-        self._log_model_input("开仓时机", context)
+        self._capture_model_input("开仓时机", context)
         if len(self.clients) == 1:
             try:
                 decision = self.clients[0].decide_entry(context)
@@ -682,22 +732,24 @@ class OpeningDecisionService:
             model=model_label,
         )
 
-    def _log_model_input(self, stage: str, context: dict[str, Any]) -> None:
-        if self.input_log_callback is None:
-            return
-        try:
-            models = "+".join(client.model for client in self.clients)
-            serialized = json.dumps(
-                context,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            self.input_log_callback(
-                f"大模型{stage}输入（{self.mode}/{models}）：{serialized}"
-            )
-        except Exception:
-            # Observability must never block or change a trading decision.
-            pass
+    def _capture_model_input(
+        self, stage: str, context: dict[str, Any]
+    ) -> None:
+        models = "+".join(client.model for client in self.clients)
+        if self.input_capture_callback is not None:
+            try:
+                self.input_capture_callback(
+                    {
+                        "今日方向": "OPENING_DIRECTION",
+                        "开仓时机": "ENTRY_TIMING",
+                    }.get(stage, stage),
+                    self.mode,
+                    models,
+                    context,
+                )
+            except Exception:
+                # Persistence/observability must never change a decision.
+                pass
 
     def _enforce_confidence(self, decision: OpeningDecision) -> OpeningDecision:
         if decision.direction is Direction.FLAT:

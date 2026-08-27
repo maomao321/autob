@@ -225,6 +225,35 @@ class FlatOpeningDecider:
         )
 
 
+class TracedOpeningDecider:
+    def __init__(self) -> None:
+        self.input_capture = lambda *_args: None
+        self.output_capture = lambda *_args: None
+
+    def decide(self, symbol, current_daily_bar):
+        self.input_capture(
+            "OPENING_DIRECTION",
+            "CHATGPT",
+            "gpt-test",
+            {"symbol": symbol, "close": str(current_daily_bar.close)},
+        )
+        self.output_capture(
+            "OPENING_DIRECTION",
+            "CHATGPT",
+            "gpt-test",
+            {"output": [{"direction": "FLAT"}]},
+        )
+        return OpeningDecision(
+            direction=Direction.FLAT,
+            confidence=0.75,
+            summary="输入与输出已捕获",
+            factors=("测试依据",),
+            risks=("测试风险",),
+            provider="CHATGPT",
+            model="gpt-test",
+        )
+
+
 class EntryGateDecider:
     def __init__(self, enter_now: bool) -> None:
         self.enter_now = enter_now
@@ -255,6 +284,43 @@ class EntryGateDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_ai_decision_persists_final_result_input_and_raw_output(self) -> None:
+        decider = TracedOpeningDecider()
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ma_period=3,
+                        ai_provider="CHATGPT",
+                    ),
+                    openai_api_key="test-key",
+                    manual_direction=Direction.UNKNOWN,
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+                opening_decider=decider,
+            )
+            decider.input_capture = runner._capture_ai_input
+            decider.output_capture = runner._capture_ai_output
+            runner.provider = FakeProvider()
+
+            runner.start()
+            runner.join(timeout=2)
+            records = ledger.ai_decision_history(
+                symbol="AAPL",
+                stage="OPENING_DIRECTION",
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual("FLAT", records[0].outcome)
+        self.assertEqual(0.75, records[0].confidence)
+        self.assertIn('"symbol":"AAPL"', records[0].input_json)
+        self.assertIn('"direction":"FLAT"', records[0].output_json)
+
     def test_manual_mode_subscribes_only_to_five_minute_stream(self) -> None:
         provider = create_provider(
             RunnerConfig(

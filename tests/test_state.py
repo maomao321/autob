@@ -8,7 +8,7 @@ from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 
-from autoquant_shared.models import OrderRequest, Side
+from autoquant_shared.models import AiDecisionHistoryItem, OrderRequest, Side
 from autoquant_backend.state import OrderLedger, RiskLimitError
 
 
@@ -37,6 +37,43 @@ def order(
 
 
 class OrderLedgerTests(unittest.TestCase):
+    def test_ai_decision_history_persists_input_output_and_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            ledger = OrderLedger(path)
+            ledger.record_ai_decision(
+                AiDecisionHistoryItem(
+                    record_id="decision-1",
+                    decided_at=1_700_000_000_000,
+                    symbol="soxlusdt",
+                    stage="OPENING_DIRECTION",
+                    provider="DEEPSEEK",
+                    model="deepseek-v4-pro",
+                    outcome="LONG",
+                    confidence=0.81,
+                    summary="短线动能偏多",
+                    factors=("接近日内高点",),
+                    risks=("波动较大",),
+                    input_json='{"context":{"symbol":"SOXLUSDT"}}',
+                    output_json='[{"response":{"direction":"LONG"}}]',
+                    fallback=False,
+                    elapsed_ms=1234,
+                )
+            )
+
+            records = OrderLedger(path).ai_decision_history(
+                symbol="soxlusdt",
+                stage="OPENING_DIRECTION",
+                limit=10,
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual("SOXLUSDT", records[0].symbol)
+        self.assertEqual("deepseek-v4-pro", records[0].model)
+        self.assertEqual(("接近日内高点",), records[0].factors)
+        self.assertIn('"symbol":"SOXLUSDT"', records[0].input_json)
+        self.assertIn('"direction":"LONG"', records[0].output_json)
+
     def test_old_order_ledger_migrates_and_backfills_close_profit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "orders.sqlite3"

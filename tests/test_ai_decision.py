@@ -247,6 +247,7 @@ class AiDecisionTests(unittest.TestCase):
     def test_openai_client_uses_structured_response_text(self) -> None:
         calls = []
         output_logs = []
+        captured_outputs = []
 
         def post(url, payload, api_key, timeout):
             calls.append((url, payload, api_key, timeout))
@@ -267,6 +268,7 @@ class AiDecisionTests(unittest.TestCase):
             12,
             post_json=post,
             output_log_callback=output_logs.append,
+            output_capture_callback=lambda *args: captured_outputs.append(args),
         )
         decision = client.decide({"symbol": "AAPL"})
 
@@ -296,6 +298,7 @@ class AiDecisionTests(unittest.TestCase):
             12,
             post_json=timing_post,
             output_log_callback=output_logs.append,
+            output_capture_callback=lambda *args: captured_outputs.append(args),
         )
         timing = timing_client.decide_entry({"symbol": "AAPL"})
         self.assertTrue(timing.enter_now)
@@ -311,6 +314,12 @@ class AiDecisionTests(unittest.TestCase):
             "大模型开仓时机原始输出（CHATGPT/gpt-test）",
             output_logs[1],
         )
+        self.assertEqual(
+            ["OPENING_DIRECTION", "ENTRY_TIMING"],
+            [item[0] for item in captured_outputs],
+        )
+        self.assertEqual("CHATGPT", captured_outputs[0][1])
+        self.assertIn("output", captured_outputs[0][3])
 
     def test_deepseek_retries_one_invalid_json_response(self) -> None:
         output_logs = []
@@ -387,15 +396,16 @@ class AiDecisionTests(unittest.TestCase):
         self.assertEqual(Direction.FLAT, decision.direction)
         self.assertTrue(decision.fallback)
 
-    def test_logs_each_complete_model_input_once(self) -> None:
+    def test_captures_each_complete_model_input_without_logging(self) -> None:
         client = StaticClient("CHATGPT", Direction.LONG, 0.82)
         input_logs = []
+        captured_inputs = []
         service = OpeningDecisionService(
             StaticCollector(),
             (client,),
             min_confidence=0.7,
             mode="CHATGPT",
-            input_log_callback=input_logs.append,
+            input_capture_callback=lambda *args: captured_inputs.append(args),
         )
 
         service.decide("AAPL", daily_bar())
@@ -403,12 +413,13 @@ class AiDecisionTests(unittest.TestCase):
             "AAPL", candidate_signal(), intraday_bar(), intraday_history()
         )
 
-        self.assertEqual(2, len(input_logs))
-        self.assertIn("大模型今日方向输入（CHATGPT/chatgpt）", input_logs[0])
-        self.assertIn('"current_session"', input_logs[0])
-        self.assertIn("大模型开仓时机输入（CHATGPT/chatgpt）", input_logs[1])
-        self.assertIn('"candidate_entry"', input_logs[1])
-        self.assertIn('"recent_intraday_bars"', input_logs[1])
+        self.assertEqual([], input_logs)
+        self.assertEqual(
+            ["OPENING_DIRECTION", "ENTRY_TIMING"],
+            [item[0] for item in captured_inputs],
+        )
+        self.assertEqual("CHATGPT", captured_inputs[0][1])
+        self.assertEqual("AAPL", captured_inputs[0][3]["symbol"])
 
     def test_tradfi_symbol_uses_underlying_for_public_market_data(self) -> None:
         collector = StaticCollector()

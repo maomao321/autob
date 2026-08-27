@@ -452,6 +452,42 @@ class BackendRuntime:
             "count": len(items),
         }
 
+    def ai_decision_history(
+        self,
+        *,
+        symbol: str = "",
+        stage: str = "ALL",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        items = self.ledger.ai_decision_history(
+            symbol=symbol,
+            stage=stage,
+            limit=limit,
+        )
+        return {
+            "items": [
+                {
+                    "record_id": item.record_id,
+                    "decided_at": item.decided_at,
+                    "symbol": item.symbol,
+                    "stage": item.stage,
+                    "provider": item.provider,
+                    "model": item.model,
+                    "outcome": item.outcome,
+                    "confidence": item.confidence,
+                    "summary": item.summary,
+                    "factors": list(item.factors),
+                    "risks": list(item.risks),
+                    "input_json": item.input_json,
+                    "output_json": item.output_json,
+                    "fallback": item.fallback,
+                    "elapsed_ms": item.elapsed_ms,
+                }
+                for item in items
+            ],
+            "count": len(items),
+        }
+
     def restore_desired_runners(self) -> list[str]:
         if not self.desired_state_path.exists():
             return []

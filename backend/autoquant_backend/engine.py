@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
 from decimal import Decimal
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from autoquant_backend.ai_decision import (
     DecisionClient,
@@ -19,6 +20,7 @@ from autoquant_backend.ai_decision import (
 from autoquant_shared.config import AppConfig
 from autoquant_shared.formatting import financial_text
 from autoquant_shared.models import (
+    AiDecisionHistoryItem,
     Bar,
     Direction,
     OrderRequest,
@@ -118,6 +120,14 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
 def create_opening_decider(
     config: RunnerConfig,
     model_log_callback: Callable[[str], None] | None = None,
+    model_input_capture_callback: Callable[
+        [str, str, str, dict[str, Any]], None
+    ]
+    | None = None,
+    model_output_capture_callback: Callable[
+        [str, str, str, dict[str, Any]], None
+    ]
+    | None = None,
 ) -> OpeningDecider | None:
     mode = config.app.ai_provider
     if mode == "DISABLED":
@@ -132,6 +142,7 @@ def create_opening_decider(
                 model=config.app.openai_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
                 output_log_callback=model_log_callback,
+                output_capture_callback=model_output_capture_callback,
             )
         )
     if mode in {"DEEPSEEK", "DUAL"}:
@@ -143,6 +154,7 @@ def create_opening_decider(
                 model=config.app.deepseek_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
                 output_log_callback=model_log_callback,
+                output_capture_callback=model_output_capture_callback,
             )
         )
     collector = PublicMarketContextCollector(
@@ -157,7 +169,7 @@ def create_opening_decider(
         min_confidence=float(Decimal(config.app.ai_min_confidence)),
         mode=mode,
         entry_timing_bar_count=config.app.ai_entry_timing_bars,
-        input_log_callback=model_log_callback,
+        input_capture_callback=model_input_capture_callback,
     )
 
 
@@ -178,6 +190,10 @@ class SymbolRunner:
         self.log_callback = log_callback
         self.provider = create_provider(config)
         self.strategy = create_strategy(self.symbol, config)
+        self.ledger = ledger or OrderLedger()
+        self._ai_trace_lock = threading.Lock()
+        self._ai_trace_input = "{}"
+        self._ai_trace_outputs: list[dict[str, Any]] = []
         self.opening_decider = opening_decider
         if (
             config.manual_direction is Direction.UNKNOWN
@@ -187,13 +203,14 @@ class SymbolRunner:
             self.opening_decider = create_opening_decider(
                 config,
                 model_log_callback=lambda message: self._log("AI", message),
+                model_input_capture_callback=self._capture_ai_input,
+                model_output_capture_callback=self._capture_ai_output,
             )
         self.entry_timing_decider = entry_timing_decider
         if self.entry_timing_decider is None and callable(
             getattr(self.opening_decider, "decide_entry", None)
         ):
             self.entry_timing_decider = self.opening_decider  # type: ignore[assignment]
-        self.ledger = ledger or OrderLedger()
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self._snapshot = RuntimeSnapshot(symbol=self.symbol)
@@ -607,6 +624,7 @@ class SymbolRunner:
             )
             return False
         self._update(RunState.SIGNAL, "大模型正在审核当前候选开仓时机")
+        self._begin_ai_trace()
         decision_started_at = time.monotonic()
         try:
             recent_bars = tuple(getattr(self.strategy, "recent_bars", ()))
@@ -626,6 +644,18 @@ class SymbolRunner:
             0, int(round((time.monotonic() - decision_started_at) * 1000))
         )
         action = "ENTER" if decision.enter_now else "WAIT"
+        self._persist_ai_decision(
+            stage="ENTRY_TIMING",
+            outcome=action,
+            confidence=decision.confidence,
+            summary=decision.summary,
+            factors=decision.factors,
+            risks=decision.risks,
+            provider=decision.provider,
+            model=decision.model,
+            fallback=decision.fallback,
+            elapsed_ms=elapsed_ms,
+        )
         level = "ERROR" if decision.fallback else "AI"
         self._log(
             level,
@@ -816,6 +846,7 @@ class SymbolRunner:
             RunState.STARTING,
             "正在结合近期新闻、大盘和个股走势生成今日方向",
         )
+        self._begin_ai_trace()
         decision_started_at = time.monotonic()
         try:
             decision = self.opening_decider.decide(self.symbol, bar)
@@ -827,6 +858,18 @@ class SymbolRunner:
             )
         elapsed_ms = max(
             0, int(round((time.monotonic() - decision_started_at) * 1000))
+        )
+        self._persist_ai_decision(
+            stage="OPENING_DIRECTION",
+            outcome=decision.direction.value,
+            confidence=decision.confidence,
+            summary=decision.summary,
+            factors=decision.factors,
+            risks=decision.risks,
+            provider=decision.provider,
+            model=decision.model,
+            fallback=decision.fallback,
+            elapsed_ms=elapsed_ms,
         )
         self._ai_decision_day_key = bar.open_time
         setter = getattr(self.strategy, "set_opening_direction", None)
@@ -845,6 +888,101 @@ class SymbolRunner:
             self._log("AI", "主要依据：" + "；".join(decision.factors))
         if decision.risks:
             self._log("AI", "主要风险：" + "；".join(decision.risks))
+
+    def _begin_ai_trace(self) -> None:
+        with self._ai_trace_lock:
+            self._ai_trace_input = "{}"
+            self._ai_trace_outputs = []
+
+    def _capture_ai_input(
+        self,
+        stage: str,
+        provider: str,
+        models: str,
+        context: dict[str, Any],
+    ) -> None:
+        serialized = json.dumps(
+            {
+                "stage": stage,
+                "provider": provider,
+                "models": models,
+                "context": context,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        with self._ai_trace_lock:
+            self._ai_trace_input = serialized
+
+    def _capture_ai_output(
+        self,
+        stage: str,
+        provider: str,
+        model: str,
+        response: dict[str, Any],
+    ) -> None:
+        envelope = {
+            "stage": stage,
+            "provider": provider,
+            "model": model,
+            "response": json.loads(
+                json.dumps(response, ensure_ascii=False, separators=(",", ":"))
+            ),
+        }
+        with self._ai_trace_lock:
+            self._ai_trace_outputs.append(envelope)
+
+    def _consume_ai_trace(self) -> tuple[str, str]:
+        with self._ai_trace_lock:
+            input_json = self._ai_trace_input
+            output_json = json.dumps(
+                self._ai_trace_outputs,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        return input_json, output_json
+
+    def _persist_ai_decision(
+        self,
+        *,
+        stage: str,
+        outcome: str,
+        confidence: float,
+        summary: str,
+        factors: tuple[str, ...],
+        risks: tuple[str, ...],
+        provider: str,
+        model: str,
+        fallback: bool,
+        elapsed_ms: int,
+    ) -> None:
+        input_json, output_json = self._consume_ai_trace()
+        try:
+            self.ledger.record_ai_decision(
+                AiDecisionHistoryItem(
+                    record_id=str(uuid.uuid4()),
+                    decided_at=int(time.time() * 1000),
+                    symbol=self.symbol,
+                    stage=stage,
+                    provider=provider,
+                    model=model,
+                    outcome=outcome,
+                    confidence=float(confidence),
+                    summary=summary,
+                    factors=factors,
+                    risks=risks,
+                    input_json=input_json,
+                    output_json=output_json,
+                    fallback=fallback,
+                    elapsed_ms=elapsed_ms,
+                )
+            )
+        except Exception as exc:
+            self._log(
+                "ERROR",
+                "AI 决策记录持久化失败："
+                + " ".join(str(exc).split())[:240],
+            )
 
     def _backfill_warmup(self, daily_bar: Bar) -> None:
         if self._warmup_backfill_day_key == daily_bar.open_time:

@@ -20,6 +20,7 @@ from autoquant_backend.server import create_server
 from autoquant_backend.state import OrderLedger
 from autoquant_shared.models import (
     AccountOverview,
+    AiDecisionHistoryItem,
     Direction,
     OrderRequest,
     RuntimeSnapshot,
@@ -379,6 +380,41 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertEqual("0.12", item["fee"])
         self.assertNotIn("order_id", item)
         self.assertNotIn("aq-private-id", str(payload))
+
+    def test_ai_decision_api_returns_input_output_and_result(self) -> None:
+        self.runtime.ledger.record_ai_decision(
+            AiDecisionHistoryItem(
+                record_id="decision-api-1",
+                decided_at=1_700_000_000_000,
+                symbol="SOXLUSDT",
+                stage="OPENING_DIRECTION",
+                provider="DEEPSEEK",
+                model="deepseek-v4-pro",
+                outcome="FLAT",
+                confidence=0.7,
+                summary="暂无明确方向",
+                factors=("大盘震荡",),
+                risks=("波动较大",),
+                input_json='{"context":{"symbol":"SOXLUSDT"}}',
+                output_json='[{"response":{"direction":"FLAT"}}]',
+                fallback=False,
+                elapsed_ms=7031,
+            )
+        )
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        payload = client.request(
+            "GET",
+            "/api/v1/ai-decisions?symbol=SOXLUSDT&"
+            "stage=OPENING_DIRECTION&limit=10",
+        )
+
+        self.assertEqual(1, payload["count"])
+        item = payload["items"][0]
+        self.assertEqual("deepseek-v4-pro", item["model"])
+        self.assertEqual("FLAT", item["outcome"])
+        self.assertIn('"symbol":"SOXLUSDT"', item["input_json"])
+        self.assertIn('"direction":"FLAT"', item["output_json"])
 
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):

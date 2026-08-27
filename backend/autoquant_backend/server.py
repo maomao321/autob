@@ -152,6 +152,13 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 paper=None if mode == "ALL" else mode == "PAPER",
                 limit=int(query.get("limit", ["500"])[0]),
             )
+        if path == "/api/v1/ai-decisions" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.ai_decision_history(
+                symbol=query.get("symbol", [""])[0],
+                stage=query.get("stage", ["ALL"])[0],
+                limit=int(query.get("limit", ["100"])[0]),
+            )
 
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) >= 5 and parts[:3] == ["api", "v1", "runners"]:
