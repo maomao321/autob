@@ -57,6 +57,10 @@ class QtAppWidgetTests(unittest.TestCase):
                     ai_provider="CHATGPT",
                     openai_api_key="saved-openai-key",
                     qwen_api_key="saved-qwen-key",
+                    openai_reasoning_enabled=True,
+                    openai_reasoning_effort="high",
+                    qwen_thinking_enabled=True,
+                    qwen_reasoning_effort="xhigh",
                     ai_entry_timing_bars=90,
                     deepseek_thinking_enabled=False,
                     deepseek_reasoning_effort="high",
@@ -72,6 +76,8 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertTrue(window.ai_enabled_checkbox.isChecked())
             self.assertEqual("saved-openai-key", window.openai_api_key_var.get())
             self.assertEqual("saved-qwen-key", window.qwen_api_key_var.get())
+            self.assertTrue(window.openai_reasoning_checkbox.isChecked())
+            self.assertEqual("high", window.openai_reasoning_effort_var.get())
             self.assertEqual("90", window.ai_entry_timing_bars_var.get())
             self.assertFalse(window.deepseek_thinking_checkbox.isChecked())
             self.assertEqual("high", window.deepseek_reasoning_effort_var.get())
@@ -81,6 +87,9 @@ class QtAppWidgetTests(unittest.TestCase):
                 Direction.UNKNOWN, enabled_config.manual_direction
             )
             self.assertEqual("CHATGPT", enabled_config.app.ai_provider)
+            self.assertFalse(window.openai_settings_group.isHidden())
+            self.assertTrue(window.deepseek_settings_group.isHidden())
+            self.assertTrue(window.qwen_settings_group.isHidden())
             self.assertFalse(enabled_config.app.deepseek_thinking_enabled)
             self.assertEqual(
                 "high", enabled_config.app.deepseek_reasoning_effort
@@ -92,11 +101,21 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.controller.start.reset_mock()
             window.ai_provider_var.set("QWEN")
+            self.assertTrue(window.openai_settings_group.isHidden())
+            self.assertTrue(window.deepseek_settings_group.isHidden())
+            self.assertFalse(window.qwen_settings_group.isHidden())
             window._start_symbols(["AAPL"])
             qwen_config = window.controller.start.call_args.args[1]
             self.assertEqual("QWEN", qwen_config.app.ai_provider)
             self.assertEqual("saved-qwen-key", qwen_config.qwen_api_key)
             self.assertEqual("qwen-plus", qwen_config.app.qwen_model)
+            self.assertTrue(qwen_config.app.qwen_thinking_enabled)
+            self.assertEqual("xhigh", qwen_config.app.qwen_reasoning_effort)
+
+            window.ai_provider_var.set("DUAL")
+            self.assertFalse(window.openai_settings_group.isHidden())
+            self.assertFalse(window.deepseek_settings_group.isHidden())
+            self.assertTrue(window.qwen_settings_group.isHidden())
 
             window.controller.start.reset_mock()
             window.ai_enabled_checkbox.setChecked(False)

@@ -267,6 +267,8 @@ class AiDecisionTests(unittest.TestCase):
             "secret",
             "gpt-test",
             12,
+            reasoning_enabled=True,
+            reasoning_effort="max",
             post_json=post,
             output_log_callback=output_logs.append,
             output_capture_callback=lambda *args: captured_outputs.append(args),
@@ -276,6 +278,8 @@ class AiDecisionTests(unittest.TestCase):
         self.assertEqual(Direction.LONG, decision.direction)
         self.assertEqual("json_schema", calls[0][1]["text"]["format"]["type"])
         self.assertFalse(calls[0][1]["store"])
+        self.assertEqual({"effort": "max"}, calls[0][1]["reasoning"])
+        self.assertEqual(8192, calls[0][1]["max_output_tokens"])
 
         def timing_post(url, payload, api_key, timeout):
             calls.append((url, payload, api_key, timeout))
@@ -405,6 +409,8 @@ class AiDecisionTests(unittest.TestCase):
             "qwen-plus",
             "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             12,
+            thinking_enabled=True,
+            reasoning_effort="xhigh",
             post_json=post,
         )
 
@@ -414,8 +420,9 @@ class AiDecisionTests(unittest.TestCase):
         self.assertEqual("QWEN", decision.provider)
         self.assertEqual(2, len(calls))
         self.assertEqual("json_object", calls[0][1]["response_format"]["type"])
-        self.assertFalse(calls[0][1]["enable_thinking"])
-        self.assertEqual(900, calls[0][1]["max_completion_tokens"])
+        self.assertTrue(calls[0][1]["enable_thinking"])
+        self.assertEqual("xhigh", calls[0][1]["reasoning_effort"])
+        self.assertEqual(16384, calls[0][1]["max_completion_tokens"])
         self.assertEqual("qwen-secret", calls[0][2])
 
     def test_qwen_client_decides_entry_timing(self) -> None:

@@ -42,6 +42,10 @@ class ConfigTests(unittest.TestCase):
                 deepseek_api_key="deepseek-secret",
                 qwen_api_key="qwen-secret",
                 qwen_model="qwen-plus",
+                openai_reasoning_enabled=True,
+                openai_reasoning_effort="high",
+                qwen_thinking_enabled=True,
+                qwen_reasoning_effort="medium",
                 deepseek_thinking_enabled=True,
                 deepseek_reasoning_effort="max",
                 ai_entry_timing_bars=90,
@@ -62,6 +66,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual("deepseek-secret", loaded.deepseek_api_key)
             self.assertEqual("qwen-secret", loaded.qwen_api_key)
             self.assertEqual("qwen-plus", loaded.qwen_model)
+            self.assertTrue(loaded.openai_reasoning_enabled)
+            self.assertEqual("high", loaded.openai_reasoning_effort)
+            self.assertTrue(loaded.qwen_thinking_enabled)
+            self.assertEqual("medium", loaded.qwen_reasoning_effort)
             self.assertTrue(loaded.deepseek_thinking_enabled)
             self.assertEqual("max", loaded.deepseek_reasoning_effort)
             self.assertEqual(90, loaded.ai_entry_timing_bars)
@@ -149,6 +157,14 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "推理强度"):
             AppConfig(
                 symbols=["AAPL"], deepseek_reasoning_effort="ultra"
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "OpenAI 推理强度"):
+            AppConfig(
+                symbols=["AAPL"], openai_reasoning_effort="ultra"
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "Qwen 推理强度"):
+            AppConfig(
+                symbols=["AAPL"], qwen_reasoning_effort="ultra"
             ).validate()
         AppConfig(symbols=["AAPL"], ai_provider="qwen").validate()
         with self.assertRaisesRegex(ValueError, "Qwen 接口地址"):

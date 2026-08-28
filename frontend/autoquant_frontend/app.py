@@ -537,8 +537,14 @@ class AutoQuantApp(QMainWindow):
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
         self.qwen_model_var = TextValue(self.config.qwen_model)
         self.qwen_chat_url_var = TextValue(self.config.qwen_chat_url)
+        self.openai_reasoning_effort_var = TextValue(
+            self.config.openai_reasoning_effort
+        )
         self.deepseek_reasoning_effort_var = TextValue(
             self.config.deepseek_reasoning_effort
+        )
+        self.qwen_reasoning_effort_var = TextValue(
+            self.config.qwen_reasoning_effort
         )
         self.openai_api_key_var = TextValue(
             credential_or_environment(
@@ -872,105 +878,150 @@ class AutoQuantApp(QMainWindow):
         content_layout.addWidget(settings)
 
         ai_settings = QGroupBox("大模型开仓决策")
-        ai_grid = QGridLayout(ai_settings)
-        ai_grid.setHorizontalSpacing(12)
-        ai_grid.setVerticalSpacing(10)
-        ai_grid.setColumnStretch(1, 1)
-        ai_grid.setColumnStretch(3, 1)
+        ai_layout = QVBoxLayout(ai_settings)
+        ai_layout.setSpacing(12)
+
+        ai_header = QHBoxLayout()
         self.ai_enabled_checkbox = QCheckBox(
             "启用大模型决策（今日方向 + 候选开仓时机）"
         )
         self.ai_enabled_checkbox.setChecked(
             self.config.ai_provider != "DISABLED"
         )
-        ai_grid.addWidget(self.ai_enabled_checkbox, 0, 0, 1, 2)
-        self._grid_field(
-            ai_grid,
-            0,
-            2,
-            "模型模式",
-            self._combo(
-                self.ai_provider_var,
-                ["CHATGPT", "DEEPSEEK", "QWEN", "DUAL"],
-            ),
+        ai_header.addWidget(self.ai_enabled_checkbox)
+        ai_header.addStretch()
+        ai_header.addWidget(QLabel("模型模式"))
+        self.ai_provider_combo = self._combo(
+            self.ai_provider_var,
+            ["CHATGPT", "DEEPSEEK", "QWEN", "DUAL"],
         )
+        self.ai_provider_combo.setMinimumWidth(180)
+        ai_header.addWidget(self.ai_provider_combo)
+        ai_layout.addLayout(ai_header)
+
+        provider_layout = QHBoxLayout()
+        provider_layout.setSpacing(12)
+
+        self.openai_settings_group = QGroupBox("OpenAI")
+        openai_grid = QGridLayout(self.openai_settings_group)
+        openai_grid.setColumnStretch(1, 1)
         self._grid_field(
-            ai_grid,
-            1,
+            openai_grid,
             0,
-            "OpenAI API Key",
+            0,
+            "API Key",
             self._line(self.openai_api_key_var, secret=True),
         )
         self._grid_field(
-            ai_grid,
+            openai_grid,
             1,
-            2,
-            "DeepSeek API Key",
-            self._line(self.deepseek_api_key_var, secret=True),
-        )
-        self._grid_field(
-            ai_grid,
-            2,
             0,
-            "OpenAI 模型",
+            "模型",
             self._line(self.openai_model_var),
         )
         self._grid_field(
-            ai_grid,
+            openai_grid,
             2,
-            2,
-            "DeepSeek 模型",
+            0,
+            "推理设置",
+            self._openai_reasoning_control(),
+        )
+        openai_note = QLabel(
+            "GPT-5/o 系列可指定 reasoning.effort；关闭时不发送推理参数。"
+        )
+        openai_note.setWordWrap(True)
+        openai_note.setStyleSheet(f"color: {COLORS['muted']};")
+        openai_grid.addWidget(openai_note, 3, 0, 1, 2)
+        provider_layout.addWidget(self.openai_settings_group, 1)
+
+        self.deepseek_settings_group = QGroupBox("DeepSeek")
+        deepseek_grid = QGridLayout(self.deepseek_settings_group)
+        deepseek_grid.setColumnStretch(1, 1)
+        self._grid_field(
+            deepseek_grid,
+            0,
+            0,
+            "API Key",
+            self._line(self.deepseek_api_key_var, secret=True),
+        )
+        self._grid_field(
+            deepseek_grid,
+            1,
+            0,
+            "模型",
             self._line(self.deepseek_model_var),
         )
         self._grid_field(
-            ai_grid,
-            3,
+            deepseek_grid,
+            2,
             0,
-            "Qwen API Key",
+            "推理设置",
+            self._deepseek_reasoning_control(),
+        )
+        deepseek_note = QLabel(
+            "V4 模型支持思考开关；强度 low / high / max。"
+        )
+        deepseek_note.setWordWrap(True)
+        deepseek_note.setStyleSheet(f"color: {COLORS['muted']};")
+        deepseek_grid.addWidget(deepseek_note, 3, 0, 1, 2)
+        provider_layout.addWidget(self.deepseek_settings_group, 1)
+
+        self.qwen_settings_group = QGroupBox("Qwen · 阿里云百炼")
+        qwen_grid = QGridLayout(self.qwen_settings_group)
+        qwen_grid.setColumnStretch(1, 1)
+        self._grid_field(
+            qwen_grid,
+            0,
+            0,
+            "API Key",
             self._line(self.qwen_api_key_var, secret=True),
         )
         self._grid_field(
-            ai_grid,
-            3,
-            2,
-            "Qwen 模型",
+            qwen_grid,
+            1,
+            0,
+            "模型",
             self._line(self.qwen_model_var),
         )
         self._grid_field(
-            ai_grid,
-            4,
-            0,
-            "Qwen Chat 接口",
-            self._line(self.qwen_chat_url_var),
-            span=3,
-        )
-        self._grid_field(
-            ai_grid,
-            5,
-            0,
-            "DeepSeek 深度思考",
-            self._deepseek_thinking_control(),
-        )
-        self._grid_field(
-            ai_grid,
-            5,
+            qwen_grid,
             2,
-            "DeepSeek 推理强度",
-            self._combo(
-                self.deepseek_reasoning_effort_var,
-                ["max", "high", "medium", "low"],
-            ),
+            0,
+            "Chat 接口",
+            self._line(self.qwen_chat_url_var),
         )
         self._grid_field(
+            qwen_grid,
+            3,
+            0,
+            "推理设置",
+            self._qwen_reasoning_control(),
+        )
+        qwen_note = QLabel(
+            "Qwen3+ 支持思考模式；具体强度档位随模型变化。"
+        )
+        qwen_note.setWordWrap(True)
+        qwen_note.setStyleSheet(f"color: {COLORS['muted']};")
+        qwen_grid.addWidget(qwen_note, 4, 0, 1, 2)
+        provider_layout.addWidget(self.qwen_settings_group, 1)
+        ai_layout.addLayout(provider_layout)
+
+        self.ai_common_group = QGroupBox("通用决策参数")
+        ai_grid = QGridLayout(self.ai_common_group)
+        ai_grid.setHorizontalSpacing(12)
+        ai_grid.setVerticalSpacing(10)
+        ai_grid.setColumnStretch(1, 1)
+        ai_grid.setColumnStretch(3, 1)
+        self._grid_field(
             ai_grid,
-            6,
+            0,
             0,
             "最低置信度",
             self._line(self.ai_min_confidence_var),
         )
         self._grid_field(
             ai_grid,
-            6,
+            0,
             2,
             "决策超时(秒，最高600)",
             self._line(self.ai_timeout_var),
@@ -979,7 +1030,7 @@ class AutoQuantApp(QMainWindow):
         ai_history_line.setEnabled(False)
         self._grid_field(
             ai_grid,
-            7,
+            1,
             0,
             "方向日线(固定30根)",
             ai_history_line,
@@ -992,18 +1043,20 @@ class AutoQuantApp(QMainWindow):
         news_window_layout.addWidget(self._line(self.ai_news_limit_var))
         self._grid_field(
             ai_grid,
-            7,
+            1,
             2,
             "新闻天数/条数",
             news_window,
         )
         self._grid_field(
             ai_grid,
-            8,
+            2,
             0,
             "时机K线数量",
             self._line(self.ai_entry_timing_bars_var),
         )
+        ai_layout.addWidget(self.ai_common_group)
+
         ai_note = QLabel(
             "开关关闭时完全使用表格中的手动方向，不调用大模型。"
             "开关开启时，模型先生成今日 LONG/SHORT/FLAT，"
@@ -1016,7 +1069,18 @@ class AutoQuantApp(QMainWindow):
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 9, 0, 1, 4)
+        ai_layout.addWidget(ai_note)
+
+        self.ai_provider_combo.currentTextChanged.connect(
+            self._update_ai_provider_layout
+        )
+        self.ai_enabled_checkbox.toggled.connect(
+            self._update_ai_controls_enabled
+        )
+        self._update_ai_provider_layout(self.ai_provider_var.get())
+        self._update_ai_controls_enabled(
+            self.ai_enabled_checkbox.isChecked()
+        )
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -1515,15 +1579,87 @@ class AutoQuantApp(QMainWindow):
         variable.bind_combo(widget)
         return widget
 
-    def _deepseek_thinking_control(self) -> QCheckBox:
-        self.deepseek_thinking_checkbox = QCheckBox("启用深度思考")
-        self.deepseek_thinking_checkbox.setChecked(
-            self.config.deepseek_thinking_enabled
+    def _reasoning_control(
+        self,
+        *,
+        provider: str,
+        enabled: bool,
+        effort_var: TextValue,
+        effort_values: list[str],
+        tooltip: str,
+    ) -> QWidget:
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        checkbox = QCheckBox("启用")
+        checkbox.setChecked(enabled)
+        checkbox.setToolTip(tooltip)
+        effort = self._combo(effort_var, effort_values)
+        effort.setMinimumWidth(110)
+        effort.setToolTip(tooltip)
+        effort.setEnabled(enabled)
+        checkbox.toggled.connect(effort.setEnabled)
+        layout.addWidget(checkbox)
+        layout.addWidget(QLabel("强度"))
+        layout.addWidget(effort)
+        layout.addStretch()
+        setattr(self, f"{provider}_reasoning_checkbox", checkbox)
+        setattr(self, f"{provider}_reasoning_effort_combo", effort)
+        return container
+
+    def _openai_reasoning_control(self) -> QWidget:
+        return self._reasoning_control(
+            provider="openai",
+            enabled=self.config.openai_reasoning_enabled,
+            effort_var=self.openai_reasoning_effort_var,
+            effort_values=["low", "medium", "high", "xhigh", "max"],
+            tooltip=(
+                "启用后向 OpenAI Responses API 发送 reasoning.effort；"
+                "关闭时不发送该参数，以兼容非推理模型。"
+            ),
         )
-        self.deepseek_thinking_checkbox.setToolTip(
-            "启用后发送 thinking=enabled；推理强度 max 为最高档。"
+
+    def _deepseek_reasoning_control(self) -> QWidget:
+        control = self._reasoning_control(
+            provider="deepseek",
+            enabled=self.config.deepseek_thinking_enabled,
+            effort_var=self.deepseek_reasoning_effort_var,
+            effort_values=["low", "medium", "high", "max"],
+            tooltip=(
+                "启用后发送 thinking=enabled 和 reasoning_effort；"
+                "DeepSeek V4 会把 medium 映射为 high。"
+            ),
         )
-        return self.deepseek_thinking_checkbox
+        self.deepseek_thinking_checkbox = self.deepseek_reasoning_checkbox
+        return control
+
+    def _qwen_reasoning_control(self) -> QWidget:
+        return self._reasoning_control(
+            provider="qwen",
+            enabled=self.config.qwen_thinking_enabled,
+            effort_var=self.qwen_reasoning_effort_var,
+            effort_values=["low", "medium", "high", "xhigh", "max"],
+            tooltip=(
+                "启用后向百炼 Chat 接口发送 enable_thinking=true 和 "
+                "reasoning_effort；支持档位由具体 Qwen 模型决定。"
+            ),
+        )
+
+    def _update_ai_provider_layout(self, mode: str = "") -> None:
+        selected = (mode or self.ai_provider_var.get()).strip().upper()
+        self.openai_settings_group.setVisible(
+            selected in {"CHATGPT", "DUAL"}
+        )
+        self.deepseek_settings_group.setVisible(
+            selected in {"DEEPSEEK", "DUAL"}
+        )
+        self.qwen_settings_group.setVisible(selected == "QWEN")
+
+    def _update_ai_controls_enabled(self, enabled: bool) -> None:
+        self.openai_settings_group.setEnabled(enabled)
+        self.deepseek_settings_group.setEnabled(enabled)
+        self.qwen_settings_group.setEnabled(enabled)
+        self.ai_common_group.setEnabled(enabled)
 
     @staticmethod
     def _bound_label(
@@ -1772,11 +1908,23 @@ class AutoQuantApp(QMainWindow):
             deepseek_model=self.deepseek_model_var.get().strip(),
             qwen_model=self.qwen_model_var.get().strip(),
             qwen_chat_url=self.qwen_chat_url_var.get().strip(),
+            openai_reasoning_enabled=(
+                self.openai_reasoning_checkbox.isChecked()
+            ),
+            openai_reasoning_effort=(
+                self.openai_reasoning_effort_var.get().strip()
+            ),
             deepseek_thinking_enabled=(
                 self.deepseek_thinking_checkbox.isChecked()
             ),
             deepseek_reasoning_effort=(
                 self.deepseek_reasoning_effort_var.get().strip()
+            ),
+            qwen_thinking_enabled=(
+                self.qwen_reasoning_checkbox.isChecked()
+            ),
+            qwen_reasoning_effort=(
+                self.qwen_reasoning_effort_var.get().strip()
             ),
             openai_api_key=self.openai_api_key_var.get().strip(),
             deepseek_api_key=self.deepseek_api_key_var.get().strip(),

@@ -292,13 +292,20 @@ class SymbolRunnerTests(unittest.TestCase):
     def test_qwen_mode_builds_qwen_decision_client(self) -> None:
         decider = create_opening_decider(
             RunnerConfig(
-                AppConfig(symbols=["AAPL"], ai_provider="QWEN"),
+                AppConfig(
+                    symbols=["AAPL"],
+                    ai_provider="QWEN",
+                    qwen_thinking_enabled=True,
+                    qwen_reasoning_effort="high",
+                ),
                 qwen_api_key="qwen-secret",
             )
         )
 
         self.assertIsNotNone(decider)
         self.assertEqual("QWEN", decider.clients[0].provider)  # type: ignore[union-attr]
+        self.assertTrue(decider.clients[0].thinking_enabled)  # type: ignore[union-attr]
+        self.assertEqual("high", decider.clients[0].reasoning_effort)  # type: ignore[union-attr]
 
     def test_ai_decision_persists_final_result_input_and_raw_output(self) -> None:
         decider = TracedOpeningDecider()

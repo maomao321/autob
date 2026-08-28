@@ -129,6 +129,7 @@ py -m autoquant_backend
 - `DEEPSEEK`：通过 DeepSeek Chat Completions JSON Output 决策。
 - `QWEN`：通过阿里云百炼 OpenAI 兼容 Chat Completions 接口和 JSON Output 决策。默认模型为 `qwen-plus`；北京地域新工作区可把界面中的 Qwen Chat 接口改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions`。
 - `DUAL`：两个模型并行请求。今日方向必须一致，候选入场也必须同时返回 `ENTER`，否则不开仓。
+- 配置页按当前模式显示对应模型卡片；`DUAL` 同时显示 OpenAI 与 DeepSeek，避免无关供应商参数混在一起。推理设置会按接口分别转换：OpenAI 使用 `reasoning.effort`，DeepSeek 使用 `thinking.type + reasoning_effort`，Qwen 使用 `enable_thinking + reasoning_effort`。关闭 OpenAI 推理设置时不发送推理参数，以兼容不支持推理控制的模型。
 - 每个交易日首先结合近期新闻、SPY/QQQ 大盘走势、个股走势与当前日线生成 `LONG / SHORT / FLAT`。
 - 今日方向判断固定提供最近 30 根日线 OHLC（开盘、最高、最低、收盘）数据；五分钟策略产生候选突破信号后，模型根据今日日线、配置数量的最近五分钟 OHLC、MA 和突破原因返回 `ENTER / WAIT`。时机 K 线数量默认为 60，可在 10～300 根之间配置。
 - 任意网络失败、数据缺失、响应格式错误、置信度低于阈值或双模型分歧，都会安全降级为 `FLAT/WAIT`，不会绕过模型改用手动方向开仓。

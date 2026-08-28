@@ -64,8 +64,12 @@ class AppConfig:
     deepseek_model: str = "deepseek-v4-pro"
     qwen_model: str = "qwen-plus"
     qwen_chat_url: str = DEFAULT_QWEN_CHAT_URL
+    openai_reasoning_enabled: bool = False
+    openai_reasoning_effort: str = "medium"
     deepseek_thinking_enabled: bool = True
     deepseek_reasoning_effort: str = "max"
+    qwen_thinking_enabled: bool = False
+    qwen_reasoning_effort: str = "xhigh"
     openai_api_key: str = ""
     deepseek_api_key: str = ""
     qwen_api_key: str = ""
@@ -134,6 +138,21 @@ class AppConfig:
         self.deepseek_model = str(self.deepseek_model).strip()
         self.qwen_model = str(self.qwen_model).strip()
         self.qwen_chat_url = str(self.qwen_chat_url).strip()
+        if not isinstance(self.openai_reasoning_enabled, bool):
+            raise ValueError("OpenAI 推理开关必须是布尔值")
+        self.openai_reasoning_effort = str(
+            self.openai_reasoning_effort
+        ).strip().lower()
+        if self.openai_reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise ValueError(
+                "OpenAI 推理强度必须是 low、medium、high、xhigh 或 max"
+            )
         if not isinstance(self.deepseek_thinking_enabled, bool):
             raise ValueError("DeepSeek 深度思考开关必须是布尔值")
         self.deepseek_reasoning_effort = str(
@@ -147,6 +166,21 @@ class AppConfig:
         }:
             raise ValueError(
                 "DeepSeek 推理强度必须是 low、medium、high 或 max"
+            )
+        if not isinstance(self.qwen_thinking_enabled, bool):
+            raise ValueError("Qwen 深度思考开关必须是布尔值")
+        self.qwen_reasoning_effort = str(
+            self.qwen_reasoning_effort
+        ).strip().lower()
+        if self.qwen_reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise ValueError(
+                "Qwen 推理强度必须是 low、medium、high、xhigh 或 max"
             )
         if MODEL_PATTERN.fullmatch(self.openai_model) is None:
             raise ValueError("OpenAI 模型名称格式不正确")

@@ -250,6 +250,8 @@ class OpenAIResponsesDecisionClient:
         api_key: str,
         model: str,
         timeout_seconds: int,
+        reasoning_enabled: bool = False,
+        reasoning_effort: str = "medium",
         post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
         | None = None,
         output_log_callback: Callable[[str], None] | None = None,
@@ -258,6 +260,16 @@ class OpenAIResponsesDecisionClient:
         self.api_key = api_key.strip()
         self.model = model.strip()
         self.timeout_seconds = timeout_seconds
+        self.reasoning_enabled = bool(reasoning_enabled)
+        self.reasoning_effort = reasoning_effort.strip().lower()
+        if self.reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise ValueError("OpenAI 推理强度不正确")
         self._post_json = post_json or _post_json
         self.output_log_callback = output_log_callback
         self.output_capture_callback = output_capture_callback
@@ -277,9 +289,11 @@ class OpenAIResponsesDecisionClient:
                     "schema": _DECISION_SCHEMA,
                 }
             },
-            "max_output_tokens": 900,
+            "max_output_tokens": 8192 if self.reasoning_enabled else 900,
             "store": False,
         }
+        if self.reasoning_enabled:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
         response_started_at = time.monotonic()
         response = self._post_json(
             OPENAI_RESPONSES_URL,
@@ -323,9 +337,11 @@ class OpenAIResponsesDecisionClient:
                     "schema": _ENTRY_TIMING_SCHEMA,
                 }
             },
-            "max_output_tokens": 900,
+            "max_output_tokens": 8192 if self.reasoning_enabled else 900,
             "store": False,
         }
+        if self.reasoning_enabled:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
         response_started_at = time.monotonic()
         response = self._post_json(
             OPENAI_RESPONSES_URL,
@@ -499,6 +515,8 @@ class QwenDecisionClient:
         model: str,
         chat_url: str,
         timeout_seconds: int,
+        thinking_enabled: bool = False,
+        reasoning_effort: str = "xhigh",
         post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
         | None = None,
         output_log_callback: Callable[[str], None] | None = None,
@@ -508,6 +526,16 @@ class QwenDecisionClient:
         self.model = model.strip()
         self.chat_url = chat_url.strip()
         self.timeout_seconds = timeout_seconds
+        self.thinking_enabled = bool(thinking_enabled)
+        self.reasoning_effort = reasoning_effort.strip().lower()
+        if self.reasoning_effort not in {
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise ValueError("Qwen 推理强度不正确")
         self._post_json = post_json or _post_json
         self.output_log_callback = output_log_callback
         self.output_capture_callback = output_capture_callback
@@ -555,10 +583,14 @@ class QwenDecisionClient:
                 {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
-            "enable_thinking": False,
-            "max_completion_tokens": 900,
+            "enable_thinking": self.thinking_enabled,
+            "max_completion_tokens": (
+                16384 if self.thinking_enabled else 900
+            ),
             "stream": False,
         }
+        if self.thinking_enabled:
+            payload["reasoning_effort"] = self.reasoning_effort
         last_error: DecisionError | None = None
         for _attempt in range(2):
             response_started_at = time.monotonic()

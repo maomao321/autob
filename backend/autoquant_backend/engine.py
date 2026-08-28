@@ -143,6 +143,8 @@ def create_opening_decider(
                 api_key=config.openai_api_key,
                 model=config.app.openai_model,
                 timeout_seconds=config.app.ai_timeout_seconds,
+                reasoning_enabled=config.app.openai_reasoning_enabled,
+                reasoning_effort=config.app.openai_reasoning_effort,
                 output_log_callback=model_log_callback,
                 output_capture_callback=model_output_capture_callback,
             )
@@ -170,6 +172,8 @@ def create_opening_decider(
                 model=config.app.qwen_model,
                 chat_url=config.app.qwen_chat_url,
                 timeout_seconds=config.app.ai_timeout_seconds,
+                thinking_enabled=config.app.qwen_thinking_enabled,
+                reasoning_effort=config.app.qwen_reasoning_effort,
                 output_log_callback=model_log_callback,
                 output_capture_callback=model_output_capture_callback,
             )
