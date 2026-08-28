@@ -60,6 +60,37 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertNotIn("server-key", str(payload))
         self.assertNotIn("server-secret", str(payload))
 
+    def test_futures_rankings_reuses_server_cache_and_slices_limit(self) -> None:
+        market = {
+            "gainers": [
+                {"symbol": "BTCUSDT"},
+                {"symbol": "ETHUSDT"},
+            ],
+            "losers": [
+                {"symbol": "SOLUSDT"},
+                {"symbol": "XRPUSDT"},
+            ],
+            "tickers": {
+                "BTCUSDT": {"symbol": "BTCUSDT"},
+                "ETHUSDT": {"symbol": "ETHUSDT"},
+            },
+            "updated_at": 1_700_000_000_000,
+            "window": "24h",
+        }
+        with patch(
+            "autoquant_backend.runtime.BinanceFuturesProvider"
+        ) as provider_class:
+            provider_class.return_value.get_24h_rankings.return_value = market
+
+            first = self.runtime.futures_rankings(limit=1)
+            second = self.runtime.futures_rankings(limit=20)
+
+        provider_class.assert_called_once_with(include_daily_stream=False)
+        provider_class.return_value.get_24h_rankings.assert_called_once_with(100)
+        self.assertEqual([{"symbol": "BTCUSDT"}], first["gainers"])
+        self.assertEqual(2, len(second["gainers"]))
+        self.assertEqual(market["tickers"], second["tickers"])
+
     def test_public_config_redacts_persisted_model_credentials(self) -> None:
         config = self.store.load()
         config.openai_api_key = "saved-openai-key"

@@ -178,6 +178,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             self.assertEqual(30 * 60 * 1000, window.futures_rankings_timer.interval())
             self.assertEqual(60 * 1000, window.contract_pool_timer.interval())
+            self.assertFalse(window.contract_pool_timer.isActive())
             self.assertEqual(2, window.futures_ranking_tabs.count())
             self.assertEqual("涨幅榜", window.futures_ranking_tabs.tabText(0))
             self.assertEqual("跌幅榜", window.futures_ranking_tabs.tabText(1))
@@ -186,6 +187,12 @@ class QtAppWidgetTests(unittest.TestCase):
                 window.futures_gainers_tree.contextMenuPolicy(),
             )
             self.assertFalse(hasattr(window, "contract_pool_add_button"))
+            with patch.object(window, "_refresh_futures_rankings") as refresh:
+                window.notebook.setCurrentWidget(window.contract_pool_page)
+                self.assertTrue(window.contract_pool_timer.isActive())
+                refresh.assert_called_once()
+                window.notebook.setCurrentWidget(window.main_page)
+                self.assertFalse(window.contract_pool_timer.isActive())
 
             window._apply_backtest_data(
                 [

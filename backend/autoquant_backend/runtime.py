@@ -30,6 +30,9 @@ from autoquant_backend.state import OrderLedger
 from autoquant_shared.formatting import financial_text
 
 
+FUTURES_MARKET_CACHE_SECONDS = 60.0
+
+
 def _json_value(value: Any) -> Any:
     if isinstance(value, Decimal):
         return format(value, "f")
@@ -100,6 +103,8 @@ class BackendRuntime:
         )
         self._lock = threading.RLock()
         self._config_lock = threading.RLock()
+        self._futures_market_lock = threading.RLock()
+        self._futures_market_cache: tuple[float, dict[str, Any]] | None = None
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._logs: deque[ServiceLog] = deque(maxlen=max(100, log_capacity))
         self._log_sequence = 0
@@ -198,9 +203,55 @@ class BackendRuntime:
             return payload
 
     def futures_rankings(self, limit: int = 20) -> dict[str, Any]:
-        return BinanceFuturesProvider(include_daily_stream=False).get_24h_rankings(
-            limit
-        )
+        requested_limit = int(limit)
+        if not 1 <= requested_limit <= 100:
+            raise ValueError("涨跌榜数量必须在 1 到 100 之间")
+        with self._futures_market_lock:
+            cached = self._futures_market_cache
+            now = time.monotonic()
+            if (
+                cached is None
+                or now - cached[0] >= FUTURES_MARKET_CACHE_SECONDS
+            ):
+                try:
+                    payload = BinanceFuturesProvider(
+                        include_daily_stream=False
+                    ).get_24h_rankings(100)
+                except Exception:
+                    if cached is None:
+                        raise
+                    payload = cached[1]
+                else:
+                    self._futures_market_cache = (time.monotonic(), payload)
+            else:
+                payload = cached[1]
+
+            gainers = payload.get("gainers", [])
+            losers = payload.get("losers", [])
+            tickers = payload.get("tickers", {})
+            if not isinstance(gainers, list) or not isinstance(losers, list):
+                raise RuntimeError("Futures 行情缓存格式不正确")
+            if not isinstance(tickers, dict):
+                raise RuntimeError("Futures 行情缓存格式不正确")
+            return {
+                "gainers": [
+                    dict(item)
+                    for item in gainers[:requested_limit]
+                    if isinstance(item, dict)
+                ],
+                "losers": [
+                    dict(item)
+                    for item in losers[:requested_limit]
+                    if isinstance(item, dict)
+                ],
+                "tickers": {
+                    str(symbol): dict(item)
+                    for symbol, item in tickers.items()
+                    if isinstance(item, dict)
+                },
+                "updated_at": int(payload.get("updated_at", 0)),
+                "window": str(payload.get("window", "24h")),
+            }
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._config_lock:

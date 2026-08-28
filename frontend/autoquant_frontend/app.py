@@ -653,7 +653,7 @@ class AutoQuantApp(QMainWindow):
         self.contract_pool_timer.timeout.connect(
             self._auto_refresh_contract_pool
         )
-        self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
+        self.contract_pool_timer.setInterval(CONTRACT_POOL_REFRESH_MS)
         QTimer.singleShot(500, self._account_refresh_tick)
 
     def _load_config(self) -> AppConfig:
@@ -913,21 +913,22 @@ class AutoQuantApp(QMainWindow):
         self._sync_contract_pool_table()
 
     def _on_page_changed(self, _index: int) -> None:
-        if (
-            self.notebook.currentWidget() is self.contract_pool_page
-            and not self._futures_rankings_loaded
-        ):
+        if self.notebook.currentWidget() is self.contract_pool_page:
+            self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
             self._refresh_futures_rankings()
+        else:
+            self.contract_pool_timer.stop()
 
     def _auto_refresh_futures_rankings(self) -> None:
-        if (
-            self._futures_rankings_loaded
-            or self.notebook.currentWidget() is self.contract_pool_page
-        ):
+        if self.notebook.currentWidget() is self.contract_pool_page:
             self._refresh_futures_rankings()
 
     def _auto_refresh_contract_pool(self) -> None:
-        if self._futures_rankings_loaded and self.config.contract_pool:
+        if (
+            self.notebook.currentWidget() is self.contract_pool_page
+            and self._futures_rankings_loaded
+            and self.config.contract_pool
+        ):
             self._refresh_contract_pool_tickers()
 
     def _refresh_contract_pool_tickers(self) -> None:
@@ -1111,7 +1112,8 @@ class AutoQuantApp(QMainWindow):
         except (TypeError, ValueError, OSError, OverflowError):
             refreshed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._futures_rankings_loaded = True
-        self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
+        if self.notebook.currentWidget() is self.contract_pool_page:
+            self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
         self._sync_contract_pool_table()
         self.contract_pool_status_var.set(
             f"更新于 {refreshed_at}；涨幅榜 {self.futures_gainers_tree.rowCount()} 个，"
