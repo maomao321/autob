@@ -22,6 +22,24 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual([], store.load().symbols)
 
+    def test_contract_pool_is_normalized_and_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["AAPL"],
+                    contract_pool=[" btcusdt ", "ETHUSDT", "BTCUSDT"],
+                )
+            )
+
+            self.assertEqual(
+                ["BTCUSDT", "ETHUSDT"], store.load().contract_pool
+            )
+
+    def test_contract_pool_rejects_non_usdt_symbols(self) -> None:
+        with self.assertRaisesRegex(ValueError, "仅支持 USDT"):
+            AppConfig(contract_pool=["BTCUSD"]).validate()
+
     def test_normalize_symbols_deduplicates_and_uppercases(self) -> None:
         self.assertEqual(["AAPL", "BRK.B"], normalize_symbols([" aapl ", "BRK.B", "AAPL"]))
 

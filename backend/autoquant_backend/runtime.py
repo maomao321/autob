@@ -18,6 +18,7 @@ from autoquant_shared.config import (
     default_config_path,
 )
 from autoquant_backend.engine import RunnerConfig, TradingController, create_provider
+from autoquant_backend.providers.binance_futures import BinanceFuturesProvider
 from autoquant_backend.backtest import (
     BacktestService,
     BacktestStore,
@@ -195,6 +196,11 @@ class BackendRuntime:
                 SECRET_SENTINEL if self._qwen_api_key(config) else ""
             )
             return payload
+
+    def futures_rankings(self, limit: int = 20) -> dict[str, Any]:
+        return BinanceFuturesProvider(include_daily_stream=False).get_24h_rankings(
+            limit
+        )
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._config_lock:

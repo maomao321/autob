@@ -121,6 +121,74 @@ class BinanceFuturesProvider(BinanceStocksProvider):
             )
             return payload
 
+    def get_24h_rankings(self, limit: int = 20) -> dict[str, Any]:
+        """Return active USDT perpetual gainers and losers for the rolling 24h."""
+        if not 1 <= int(limit) <= 100:
+            raise ValueError("涨跌榜数量必须在 1 到 100 之间")
+
+        exchange_info = self._cached_exchange_info()
+        active_symbols = {
+            str(item.get("symbol", "")).upper()
+            for item in exchange_info.get("symbols", [])
+            if isinstance(item, dict)
+            and str(item.get("status", "")).upper() == "TRADING"
+            and str(item.get("contractType", "")).upper()
+            in PERPETUAL_CONTRACT_TYPES
+            and str(item.get("quoteAsset", "")).upper() == "USDT"
+        }
+        payload = self._request_json(
+            "GET", "/fapi/v1/ticker/24hr", {}, signed=False
+        )
+        if not isinstance(payload, list):
+            raise ProviderError("Binance Futures 24 小时行情返回结构不符合预期")
+
+        rows: list[tuple[Decimal, dict[str, str]]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol", "")).upper()
+            if symbol not in active_symbols:
+                continue
+            try:
+                change = Decimal(str(item.get("priceChangePercent", "")))
+                last_price = Decimal(str(item.get("lastPrice", "")))
+                quote_volume = Decimal(str(item.get("quoteVolume", "0")))
+            except (ArithmeticError, ValueError):
+                continue
+            if (
+                not change.is_finite()
+                or not last_price.is_finite()
+                or last_price <= 0
+                or not quote_volume.is_finite()
+                or quote_volume < 0
+            ):
+                continue
+            rows.append(
+                (
+                    change,
+                    {
+                        "symbol": symbol,
+                        "price_change_percent": format(change, "f"),
+                        "last_price": format(last_price, "f"),
+                        "quote_volume": format(quote_volume, "f"),
+                    },
+                )
+            )
+
+        gainers = [row for change, row in rows if change > 0]
+        losers = [row for change, row in rows if change < 0]
+        gainers.sort(
+            key=lambda row: Decimal(row["price_change_percent"]), reverse=True
+        )
+        losers.sort(key=lambda row: Decimal(row["price_change_percent"]))
+        return {
+            "gainers": gainers[: int(limit)],
+            "losers": losers[: int(limit)],
+            "tickers": {row["symbol"]: row for _change, row in rows},
+            "updated_at": int(time.time() * 1000),
+            "window": "24h",
+        }
+
     def place_order(self, order: OrderRequest) -> OrderResult:
         if not self.live_trading:
             order_id = f"paper-futures-{uuid.uuid4().hex}"

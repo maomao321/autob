@@ -368,6 +368,23 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertEqual("75.00", saved.buy_notional)
         self.assertEqual("75.00", self.runtime.config_store.load().buy_notional)
 
+    def test_futures_rankings_api_returns_runtime_payload(self) -> None:
+        expected = {
+            "gainers": [{"symbol": "BTCUSDT"}],
+            "losers": [{"symbol": "ETHUSDT"}],
+            "updated_at": 1_700_000_000_000,
+            "window": "24h",
+        }
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        with patch.object(
+            self.runtime, "futures_rankings", return_value=expected
+        ) as rankings_mock:
+            payload = client.futures_rankings(limit=12)
+
+        rankings_mock.assert_called_once_with(limit=12)
+        self.assertEqual(expected, payload)
+
     def test_trade_history_api_returns_financial_fields_without_order_ids(self) -> None:
         from autoquant_shared.models import OrderRequest, Side
 

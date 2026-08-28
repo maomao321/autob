@@ -162,6 +162,11 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             after = int(query.get("after_log", ["0"])[0])
             return HTTPStatus.OK, runtime.status(after)
+        if path == "/api/v1/futures/rankings" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.futures_rankings(
+                limit=int(query.get("limit", ["20"])[0])
+            )
         if path == "/api/v1/stop-targets" and self.command == "POST":
             payload = self._json_body()
             symbols = payload.get("symbols")

@@ -35,6 +35,7 @@ QWEN_WORKSPACE_HOST_PATTERN = re.compile(
     re.ASCII,
 )
 MAX_SYMBOLS = 20
+MAX_CONTRACT_POOL_SYMBOLS = 100
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
 AI_DIRECTION_DAILY_BARS = 30
 SECRET_SENTINEL = "••••••••"
@@ -43,6 +44,7 @@ SECRET_SENTINEL = "••••••••"
 @dataclass(slots=True)
 class AppConfig:
     symbols: list[str] = field(default_factory=lambda: ["AAPL"])
+    contract_pool: list[str] = field(default_factory=list)
     manual_directions: dict[str, str] = field(default_factory=dict)
     provider: str = "binance_stocks"
     leverage: int = 1
@@ -94,6 +96,20 @@ class AppConfig:
         self.symbols = normalize_symbols(self.symbols)
         if len(self.symbols) > MAX_SYMBOLS:
             raise ValueError(f"标的数量不能超过 {MAX_SYMBOLS} 个")
+        if not isinstance(self.contract_pool, list):
+            raise ValueError("contract_pool 必须是合约代码列表")
+        self.contract_pool = normalize_symbols(self.contract_pool)
+        if len(self.contract_pool) > MAX_CONTRACT_POOL_SYMBOLS:
+            raise ValueError(
+                f"合约池数量不能超过 {MAX_CONTRACT_POOL_SYMBOLS} 个"
+            )
+        invalid_contracts = [
+            symbol for symbol in self.contract_pool if not symbol.endswith("USDT")
+        ]
+        if invalid_contracts:
+            raise ValueError(
+                "合约池仅支持 USDT 永续合约: " + ", ".join(invalid_contracts)
+            )
         if not isinstance(self.manual_directions, dict):
             raise ValueError("manual_directions 必须是股票与手动方向的映射")
         normalized_manual_directions: dict[str, str] = {}

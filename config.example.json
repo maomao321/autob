@@ -3,6 +3,7 @@
     "AAPL",
     "NVDA"
   ],
+  "contract_pool": [],
   "manual_directions": {
     "AAPL": "FLAT",
     "NVDA": "FLAT"

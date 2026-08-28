@@ -84,6 +84,62 @@ class BinanceFuturesProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "不是 USDⓈ-M 永续合约"):
             SymbolProvider().check_symbol("BTCUSDT")
 
+    def test_24h_rankings_filter_and_sort_active_usdt_perpetuals(self) -> None:
+        class RankingProvider(BinanceFuturesProvider):
+            def _request_json(self, method, path, params, signed):
+                if path.endswith("exchangeInfo"):
+                    inactive = futures_info("OLDUSDT")
+                    inactive["status"] = "SETTLING"
+                    usdc = futures_info("BTCUSDC")
+                    usdc["quoteAsset"] = "USDC"
+                    return {
+                        "symbols": [
+                            futures_info("BTCUSDT"),
+                            futures_info("ETHUSDT"),
+                            futures_info("SOLUSDT"),
+                            futures_info("BTCUSDT_260925", "CURRENT_QUARTER"),
+                            inactive,
+                            usdc,
+                        ]
+                    }
+                return [
+                    {
+                        "symbol": "ETHUSDT",
+                        "priceChangePercent": "3.5",
+                        "lastPrice": "3200",
+                        "quoteVolume": "2000000",
+                    },
+                    {
+                        "symbol": "SOLUSDT",
+                        "priceChangePercent": "-8.2",
+                        "lastPrice": "150",
+                        "quoteVolume": "1000000",
+                    },
+                    {
+                        "symbol": "BTCUSDT",
+                        "priceChangePercent": "7.1",
+                        "lastPrice": "65000",
+                        "quoteVolume": "9000000",
+                    },
+                    {
+                        "symbol": "BTCUSDT_260925",
+                        "priceChangePercent": "99",
+                        "lastPrice": "66000",
+                        "quoteVolume": "1",
+                    },
+                ]
+
+        result = RankingProvider().get_24h_rankings(limit=10)
+
+        self.assertEqual(
+            ["BTCUSDT", "ETHUSDT"],
+            [item["symbol"] for item in result["gainers"]],
+        )
+        self.assertEqual(["SOLUSDT"], [item["symbol"] for item in result["losers"]])
+        self.assertEqual("7.1", result["gainers"][0]["price_change_percent"])
+        self.assertEqual("-8.2", result["tickers"]["SOLUSDT"]["price_change_percent"])
+        self.assertNotIn("BTCUSDT_260925", result["tickers"])
+
     def test_live_buy_sets_leverage_and_converts_notional_to_quantity(self) -> None:
         class CapturingProvider(BinanceFuturesProvider):
             def __init__(self) -> None:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -172,7 +172,20 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
             self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
+
+            self.assertEqual(30 * 60 * 1000, window.futures_rankings_timer.interval())
+            self.assertEqual(60 * 1000, window.contract_pool_timer.interval())
+            self.assertEqual(2, window.futures_ranking_tabs.count())
+            self.assertEqual("涨幅榜", window.futures_ranking_tabs.tabText(0))
+            self.assertEqual("跌幅榜", window.futures_ranking_tabs.tabText(1))
+            self.assertEqual(
+                Qt.ContextMenuPolicy.CustomContextMenu,
+                window.futures_gainers_tree.contextMenuPolicy(),
+            )
+            self.assertFalse(hasattr(window, "contract_pool_add_button"))
 
             window._apply_backtest_data(
                 [
@@ -492,6 +505,118 @@ class QtAppWidgetTests(unittest.TestCase):
                 window.tree.get_children(),
             )
             show_error_mock.assert_not_called()
+
+    def test_selected_gainer_is_persisted_to_contract_pool(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"], contract_pool=["BTCUSDT"]))
+            backend_client = MagicMock()
+
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=backend_client)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window._apply_futures_rankings(
+                {
+                    "gainers": [
+                        {
+                            "symbol": "ETHUSDT",
+                            "price_change_percent": "6.25",
+                            "last_price": "3200",
+                            "quote_volume": "1250000",
+                        }
+                    ],
+                    "losers": [
+                        {
+                            "symbol": "SOLUSDT",
+                            "price_change_percent": "-4.5",
+                            "last_price": "150",
+                            "quote_volume": "900000",
+                        }
+                    ],
+                    "tickers": {
+                        "BTCUSDT": {
+                            "symbol": "BTCUSDT",
+                            "price_change_percent": "1.2",
+                            "last_price": "65000",
+                            "quote_volume": "9000000",
+                        },
+                        "ETHUSDT": {
+                            "symbol": "ETHUSDT",
+                            "price_change_percent": "6.25",
+                            "last_price": "3200",
+                            "quote_volume": "1250000",
+                        },
+                        "SOLUSDT": {
+                            "symbol": "SOLUSDT",
+                            "price_change_percent": "-4.5",
+                            "last_price": "150",
+                            "quote_volume": "900000",
+                        },
+                    },
+                    "updated_at": 1_700_000_000_000,
+                },
+                "",
+            )
+            window.futures_gainers_tree.selectRow(0)
+            window._add_selected_gainers_to_pool()
+
+            self.assertEqual(
+                ["BTCUSDT", "ETHUSDT"], store.load().contract_pool
+            )
+            self.assertEqual(
+                ("BTCUSDT", "ETHUSDT"),
+                window.contract_pool_tree.get_children(),
+            )
+            self.assertEqual(
+                "+6.25%", window.futures_gainers_tree.item(0, 1).text()
+            )
+            self.assertEqual(
+                "+1.2%", window.contract_pool_tree.item(0, 1).text()
+            )
+            self.assertEqual(
+                "+6.25%", window.contract_pool_tree.item(1, 1).text()
+            )
+            window._apply_contract_pool_tickers(
+                {
+                    "BTCUSDT": {
+                        "symbol": "BTCUSDT",
+                        "price_change_percent": "-2.4",
+                        "last_price": "64000",
+                        "quote_volume": "9500000",
+                    }
+                },
+                "",
+            )
+            self.assertEqual(
+                "-2.4%", window.contract_pool_tree.item(0, 1).text()
+            )
+            self.assertEqual(
+                Qt.ContextMenuPolicy.CustomContextMenu,
+                window.futures_losers_tree.contextMenuPolicy(),
+            )
+            self.assertEqual(
+                Qt.ContextMenuPolicy.CustomContextMenu,
+                window.contract_pool_tree.contextMenuPolicy(),
+            )
+
+            window.futures_losers_tree.selectRow(0)
+            window._add_selected_rankings_to_pool(window.futures_losers_tree)
+            self.assertEqual(
+                ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+                store.load().contract_pool,
+            )
+
+            window.contract_pool_tree.selectRow(0)
+            window._remove_selected_pool_contracts()
+            self.assertEqual(
+                ["ETHUSDT", "SOLUSDT"], store.load().contract_pool
+            )
 
     def test_removing_last_symbol_persists_without_saving_other_ui_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -139,6 +139,13 @@ class BackendClient:
     def save_config(self, config: AppConfig) -> AppConfig:
         return AppConfig(**self.request("PUT", "/api/v1/config", asdict(config)))
 
+    def futures_rankings(self, limit: int = 20) -> dict[str, Any]:
+        query = urlencode({"limit": min(max(int(limit), 1), 100)})
+        payload = self.request("GET", f"/api/v1/futures/rankings?{query}")
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的合约涨跌榜格式不正确")
+        return payload
+
     def start_historical_download(self, symbol: str) -> str:
         payload = self.request(
             "POST", "/api/v1/backtest/downloads", {"symbol": symbol.strip().upper()}
