@@ -56,6 +56,7 @@ class QtAppWidgetTests(unittest.TestCase):
                     symbols=["AAPL"],
                     ai_provider="CHATGPT",
                     openai_api_key="saved-openai-key",
+                    qwen_api_key="saved-qwen-key",
                     ai_entry_timing_bars=90,
                     deepseek_thinking_enabled=False,
                     deepseek_reasoning_effort="high",
@@ -70,6 +71,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             self.assertTrue(window.ai_enabled_checkbox.isChecked())
             self.assertEqual("saved-openai-key", window.openai_api_key_var.get())
+            self.assertEqual("saved-qwen-key", window.qwen_api_key_var.get())
             self.assertEqual("90", window.ai_entry_timing_bars_var.get())
             self.assertFalse(window.deepseek_thinking_checkbox.isChecked())
             self.assertEqual("high", window.deepseek_reasoning_effort_var.get())
@@ -87,6 +89,14 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(
                 "saved-openai-key", enabled_config.app.openai_api_key
             )
+
+            window.controller.start.reset_mock()
+            window.ai_provider_var.set("QWEN")
+            window._start_symbols(["AAPL"])
+            qwen_config = window.controller.start.call_args.args[1]
+            self.assertEqual("QWEN", qwen_config.app.ai_provider)
+            self.assertEqual("saved-qwen-key", qwen_config.qwen_api_key)
+            self.assertEqual("qwen-plus", qwen_config.app.qwen_model)
 
             window.controller.start.reset_mock()
             window.ai_enabled_checkbox.setChecked(False)

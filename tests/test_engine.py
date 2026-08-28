@@ -7,7 +7,12 @@ from pathlib import Path
 from threading import Event
 
 from autoquant_shared.config import AppConfig
-from autoquant_backend.engine import RunnerConfig, SymbolRunner, create_provider
+from autoquant_backend.engine import (
+    RunnerConfig,
+    SymbolRunner,
+    create_opening_decider,
+    create_provider,
+)
 from autoquant_backend.ai_decision import EntryTimingDecision, OpeningDecision
 from autoquant_shared.models import (
     Bar,
@@ -284,6 +289,17 @@ class EntryGateDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_qwen_mode_builds_qwen_decision_client(self) -> None:
+        decider = create_opening_decider(
+            RunnerConfig(
+                AppConfig(symbols=["AAPL"], ai_provider="QWEN"),
+                qwen_api_key="qwen-secret",
+            )
+        )
+
+        self.assertIsNotNone(decider)
+        self.assertEqual("QWEN", decider.clients[0].provider)  # type: ignore[union-attr]
+
     def test_ai_decision_persists_final_result_input_and_raw_output(self) -> None:
         decider = TracedOpeningDecider()
         with tempfile.TemporaryDirectory() as directory:

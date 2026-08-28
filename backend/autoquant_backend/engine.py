@@ -16,6 +16,7 @@ from autoquant_backend.ai_decision import (
     OpeningDecision,
     OpeningDecisionService,
     PublicMarketContextCollector,
+    QwenDecisionClient,
 )
 from autoquant_shared.config import AppConfig
 from autoquant_shared.formatting import financial_text
@@ -59,6 +60,7 @@ class RunnerConfig:
     api_secret: str = ""
     openai_api_key: str = ""
     deepseek_api_key: str = ""
+    qwen_api_key: str = ""
     manual_direction: Direction = Direction.FLAT
 
 
@@ -155,6 +157,19 @@ def create_opening_decider(
                 timeout_seconds=config.app.ai_timeout_seconds,
                 thinking_enabled=config.app.deepseek_thinking_enabled,
                 reasoning_effort=config.app.deepseek_reasoning_effort,
+                output_log_callback=model_log_callback,
+                output_capture_callback=model_output_capture_callback,
+            )
+        )
+    if mode == "QWEN":
+        if not config.qwen_api_key.strip():
+            raise ValueError("QWEN 模式必须填写 Qwen API Key")
+        clients.append(
+            QwenDecisionClient(
+                api_key=config.qwen_api_key,
+                model=config.app.qwen_model,
+                chat_url=config.app.qwen_chat_url,
+                timeout_seconds=config.app.ai_timeout_seconds,
                 output_log_callback=model_log_callback,
                 output_capture_callback=model_output_capture_callback,
             )

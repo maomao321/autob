@@ -490,6 +490,112 @@ class DeepSeekDecisionClient:
         raise last_error or DecisionError("DeepSeek 返回空响应")
 
 
+class QwenDecisionClient:
+    provider = "QWEN"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        chat_url: str,
+        timeout_seconds: int,
+        post_json: Callable[[str, dict[str, Any], str, int], dict[str, Any]]
+        | None = None,
+        output_log_callback: Callable[[str], None] | None = None,
+        output_capture_callback: ModelOutputCapture | None = None,
+    ) -> None:
+        self.api_key = api_key.strip()
+        self.model = model.strip()
+        self.chat_url = chat_url.strip()
+        self.timeout_seconds = timeout_seconds
+        self._post_json = post_json or _post_json
+        self.output_log_callback = output_log_callback
+        self.output_capture_callback = output_capture_callback
+
+    def decide(self, context: dict[str, Any]) -> OpeningDecision:
+        decision = self._request(
+            "OPENING_DIRECTION",
+            "今日方向",
+            _DIRECTION_SYSTEM_PROMPT,
+            _decision_prompt(context),
+            lambda content: parse_opening_decision(
+                content, self.provider, self.model
+            ),
+        )
+        if not isinstance(decision, OpeningDecision):
+            raise DecisionError("Qwen 今日方向响应格式错误")
+        return decision
+
+    def decide_entry(self, context: dict[str, Any]) -> EntryTimingDecision:
+        decision = self._request(
+            "ENTRY_TIMING",
+            "开仓时机",
+            _ENTRY_TIMING_SYSTEM_PROMPT,
+            _entry_timing_prompt(context),
+            lambda content: parse_entry_timing_decision(
+                content, self.provider, self.model
+            ),
+        )
+        if not isinstance(decision, EntryTimingDecision):
+            raise DecisionError("Qwen 开仓时机响应格式错误")
+        return decision
+
+    def _request(
+        self,
+        capture_stage: str,
+        log_stage: str,
+        system_prompt: str,
+        user_prompt: str,
+        parser: Callable[[str], Any],
+    ) -> Any:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "enable_thinking": False,
+            "max_completion_tokens": 900,
+            "stream": False,
+        }
+        last_error: DecisionError | None = None
+        for _attempt in range(2):
+            response_started_at = time.monotonic()
+            response = self._post_json(
+                self.chat_url,
+                payload,
+                self.api_key,
+                self.timeout_seconds,
+            )
+            response_ms = max(
+                0,
+                int(round((time.monotonic() - response_started_at) * 1000)),
+            )
+            _capture_model_output(
+                self.output_capture_callback,
+                capture_stage,
+                self.provider,
+                self.model,
+                response,
+                response_ms,
+            )
+            _log_model_output(
+                self.output_log_callback,
+                log_stage,
+                self.provider,
+                self.model,
+                response,
+            )
+            try:
+                return parser(_extract_qwen_output_text(response))
+            except DecisionError as exc:
+                last_error = exc
+                if _attempt == 1:
+                    raise
+        raise last_error or DecisionError("Qwen 返回空响应")
+
+
 class OpeningDecisionService:
     def __init__(
         self,
@@ -1074,6 +1180,19 @@ def _extract_deepseek_output_text(response: dict[str, Any]) -> str:
     content = first["message"].get("content")
     if not isinstance(content, str) or not content.strip():
         raise DecisionError("DeepSeek 返回空响应")
+    return content
+
+
+def _extract_qwen_output_text(response: dict[str, Any]) -> str:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise DecisionError("Qwen 响应缺少 choices")
+    first = choices[0]
+    if not isinstance(first, dict) or not isinstance(first.get("message"), dict):
+        raise DecisionError("Qwen 响应缺少 message")
+    content = first["message"].get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise DecisionError("Qwen 返回空响应")
     return content
 
 

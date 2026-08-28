@@ -64,19 +64,23 @@ class BackendRuntimeTests(unittest.TestCase):
         config = self.store.load()
         config.openai_api_key = "saved-openai-key"
         config.deepseek_api_key = "saved-deepseek-key"
+        config.qwen_api_key = "saved-qwen-key"
         self.store.save(config)
 
         payload = self.runtime.public_config()
 
         self.assertEqual(SECRET_SENTINEL, payload["openai_api_key"])
         self.assertEqual(SECRET_SENTINEL, payload["deepseek_api_key"])
+        self.assertEqual(SECRET_SENTINEL, payload["qwen_api_key"])
         self.assertNotIn("saved-openai-key", str(payload))
         self.assertNotIn("saved-deepseek-key", str(payload))
+        self.assertNotIn("saved-qwen-key", str(payload))
 
     def test_saving_sentinel_preserves_server_credentials(self) -> None:
         config = self.store.load()
         config.openai_api_key = "saved-openai-key"
         config.deepseek_api_key = "saved-deepseek-key"
+        config.qwen_api_key = "saved-qwen-key"
         self.store.save(config)
         payload = self.runtime.public_config()
         payload["buy_notional"] = "50.00"
@@ -88,6 +92,7 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("server-secret", saved.api_secret)
         self.assertEqual("saved-openai-key", saved.openai_api_key)
         self.assertEqual("saved-deepseek-key", saved.deepseek_api_key)
+        self.assertEqual("saved-qwen-key", saved.qwen_api_key)
         self.assertEqual("50.00", saved.buy_notional)
 
     def test_ai_mode_uses_unknown_direction_and_ephemeral_key(self) -> None:
@@ -132,6 +137,23 @@ class BackendRuntimeTests(unittest.TestCase):
 
         runner_config = start_mock.call_args.args[1]
         self.assertEqual("persisted-openai-key", runner_config.openai_api_key)
+
+    def test_qwen_mode_uses_dashscope_environment_key(self) -> None:
+        config = self.store.load()
+        config.ai_provider = "QWEN"
+        self.store.save(config)
+
+        with (
+            patch.dict(
+                "os.environ", {"DASHSCOPE_API_KEY": "environment-qwen-key"}
+            ),
+            patch.object(self.runtime.controller, "start") as start_mock,
+        ):
+            self.runtime.start("AAPL", "FLAT")
+
+        runner_config = start_mock.call_args.args[1]
+        self.assertEqual("environment-qwen-key", runner_config.qwen_api_key)
+        self.assertEqual(Direction.UNKNOWN, runner_config.manual_direction)
 
     def test_concurrent_config_updates_are_serialized(self) -> None:
         original_load = self.store.load

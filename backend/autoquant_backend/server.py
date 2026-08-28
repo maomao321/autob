@@ -256,6 +256,7 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                     str(payload.get("direction", "FLAT")),
                     openai_api_key=str(payload.get("openai_api_key", "")),
                     deepseek_api_key=str(payload.get("deepseek_api_key", "")),
+                    qwen_api_key=str(payload.get("qwen_api_key", "")),
                 )
                 return HTTPStatus.ACCEPTED, {"accepted": True}
             if action == "stop" and self.command == "POST":

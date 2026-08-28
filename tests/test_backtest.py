@@ -112,6 +112,7 @@ class BacktestTests(unittest.TestCase):
                 api_secret="binance-secret",
                 openai_api_key="openai-key",
                 deepseek_api_key="deepseek-key",
+                qwen_api_key="qwen-key",
             )
             run_id = store.create_run(
                 "binance_futures",
@@ -132,6 +133,7 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual("", payload["api_secret"])
             self.assertEqual("", payload["openai_api_key"])
             self.assertEqual("", payload["deepseek_api_key"])
+            self.assertEqual("", payload["qwen_api_key"])
 
     def test_historical_archive_round_trip_is_scoped_to_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

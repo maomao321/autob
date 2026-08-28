@@ -40,6 +40,8 @@ class ConfigTests(unittest.TestCase):
                 ai_min_confidence="0.75",
                 openai_api_key="openai-secret",
                 deepseek_api_key="deepseek-secret",
+                qwen_api_key="qwen-secret",
+                qwen_model="qwen-plus",
                 deepseek_thinking_enabled=True,
                 deepseek_reasoning_effort="max",
                 ai_entry_timing_bars=90,
@@ -58,6 +60,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual("0.75", loaded.ai_min_confidence)
             self.assertEqual("openai-secret", loaded.openai_api_key)
             self.assertEqual("deepseek-secret", loaded.deepseek_api_key)
+            self.assertEqual("qwen-secret", loaded.qwen_api_key)
+            self.assertEqual("qwen-plus", loaded.qwen_model)
             self.assertTrue(loaded.deepseek_thinking_enabled)
             self.assertEqual("max", loaded.deepseek_reasoning_effort)
             self.assertEqual(90, loaded.ai_entry_timing_bars)
@@ -69,6 +73,7 @@ class ConfigTests(unittest.TestCase):
             self.assertIn('"api_secret": "binance-secret"', content)
             self.assertIn('"openai_api_key": "openai-secret"', content)
             self.assertIn('"deepseek_api_key": "deepseek-secret"', content)
+            self.assertIn('"qwen_api_key": "qwen-secret"', content)
 
     def test_configured_credential_takes_priority_over_environment(self) -> None:
         with patch.dict("os.environ", {"BINANCE_API_KEY": "environment-key"}):
@@ -145,6 +150,19 @@ class ConfigTests(unittest.TestCase):
             AppConfig(
                 symbols=["AAPL"], deepseek_reasoning_effort="ultra"
             ).validate()
+        AppConfig(symbols=["AAPL"], ai_provider="qwen").validate()
+        with self.assertRaisesRegex(ValueError, "Qwen 接口地址"):
+            AppConfig(
+                symbols=["AAPL"],
+                qwen_chat_url="https://example.com/v1/chat/completions",
+            ).validate()
+        AppConfig(
+            symbols=["AAPL"],
+            qwen_chat_url=(
+                "https://workspace-id.cn-beijing.maas.aliyuncs.com/"
+                "compatible-mode/v1/chat/completions"
+            ),
+        ).validate()
         config = AppConfig(symbols=["AAPL"], ai_timeout_seconds=600)
         config.validate()
         self.assertEqual(600, config.ai_timeout_seconds)

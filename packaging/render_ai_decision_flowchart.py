@@ -155,7 +155,7 @@ def arrow(
 draw.text((75, 55), "AutoQuant 大模型开仓决策流程图", font=TITLE_FONT, fill=INK)
 draw.text(
     (79, 135),
-    "ChatGPT / DeepSeek / DUAL · 30 根日线方向决策 + 可配置五分钟 K 线时机审核",
+    "ChatGPT / DeepSeek / Qwen / DUAL · 30 根日线方向决策 + 可配置五分钟 K 线时机审核",
     font=SUBTITLE_FONT,
     fill=MUTED,
 )
@@ -168,14 +168,14 @@ diamond((555, 418), (145, 100), "启用大模型？")
 box((805, 275, 1125, 390), "关闭：使用手动方向", fill="#F3F6F9", outline="#8CA0B3")
 diamond((980, 520), (150, 105), "模型模式")
 box((1265, 285, 1635, 405), "CHATGPT\n校验 OpenAI Key")
-box((1265, 455, 1635, 575), "DEEPSEEK\n校验 DeepSeek Key")
+box((1265, 455, 1635, 575), "DEEPSEEK / QWEN\n校验对应 Key")
 box((1750, 360, 2085, 490), "DUAL\n校验两个 Key", fill=PURPLE_BG, outline=PURPLE)
 box((1695, 555, 2100, 640), "缺少凭据 → 拒绝启动", fill=RED_BG, outline=RED, text_fill=RED)
 arrow([(350, 418), (410, 418)])
 arrow([(700, 418), (805, 335)], label="否", label_at=(750, 355))
 arrow([(555, 518), (555, 520), (830, 520)], label="是", label_at=(720, 490))
 arrow([(1130, 520), (1200, 520), (1200, 345), (1265, 345)], label="GPT", label_at=(1198, 395))
-arrow([(1130, 520), (1265, 515)], label="DeepSeek", label_at=(1198, 555))
+arrow([(1130, 520), (1265, 515)], label="DS / Qwen", label_at=(1198, 555))
 arrow([(980, 625), (980, 650), (1915, 650), (1915, 490)], color=PURPLE, label="DUAL", label_at=(1510, 620))
 
 

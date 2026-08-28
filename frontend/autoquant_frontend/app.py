@@ -535,6 +535,8 @@ class AutoQuantApp(QMainWindow):
         )
         self.openai_model_var = TextValue(self.config.openai_model)
         self.deepseek_model_var = TextValue(self.config.deepseek_model)
+        self.qwen_model_var = TextValue(self.config.qwen_model)
+        self.qwen_chat_url_var = TextValue(self.config.qwen_chat_url)
         self.deepseek_reasoning_effort_var = TextValue(
             self.config.deepseek_reasoning_effort
         )
@@ -546,6 +548,11 @@ class AutoQuantApp(QMainWindow):
         self.deepseek_api_key_var = TextValue(
             credential_or_environment(
                 self.config.deepseek_api_key, "DEEPSEEK_API_KEY"
+            )
+        )
+        self.qwen_api_key_var = TextValue(
+            credential_or_environment(
+                self.config.qwen_api_key, "DASHSCOPE_API_KEY"
             )
         )
         self.ai_min_confidence_var = TextValue(self.config.ai_min_confidence)
@@ -882,7 +889,10 @@ class AutoQuantApp(QMainWindow):
             0,
             2,
             "模型模式",
-            self._combo(self.ai_provider_var, ["CHATGPT", "DEEPSEEK", "DUAL"]),
+            self._combo(
+                self.ai_provider_var,
+                ["CHATGPT", "DEEPSEEK", "QWEN", "DUAL"],
+            ),
         )
         self._grid_field(
             ai_grid,
@@ -916,12 +926,34 @@ class AutoQuantApp(QMainWindow):
             ai_grid,
             3,
             0,
+            "Qwen API Key",
+            self._line(self.qwen_api_key_var, secret=True),
+        )
+        self._grid_field(
+            ai_grid,
+            3,
+            2,
+            "Qwen 模型",
+            self._line(self.qwen_model_var),
+        )
+        self._grid_field(
+            ai_grid,
+            4,
+            0,
+            "Qwen Chat 接口",
+            self._line(self.qwen_chat_url_var),
+            span=3,
+        )
+        self._grid_field(
+            ai_grid,
+            5,
+            0,
             "DeepSeek 深度思考",
             self._deepseek_thinking_control(),
         )
         self._grid_field(
             ai_grid,
-            3,
+            5,
             2,
             "DeepSeek 推理强度",
             self._combo(
@@ -931,14 +963,14 @@ class AutoQuantApp(QMainWindow):
         )
         self._grid_field(
             ai_grid,
-            4,
+            6,
             0,
             "最低置信度",
             self._line(self.ai_min_confidence_var),
         )
         self._grid_field(
             ai_grid,
-            4,
+            6,
             2,
             "决策超时(秒，最高600)",
             self._line(self.ai_timeout_var),
@@ -947,7 +979,7 @@ class AutoQuantApp(QMainWindow):
         ai_history_line.setEnabled(False)
         self._grid_field(
             ai_grid,
-            5,
+            7,
             0,
             "方向日线(固定30根)",
             ai_history_line,
@@ -960,14 +992,14 @@ class AutoQuantApp(QMainWindow):
         news_window_layout.addWidget(self._line(self.ai_news_limit_var))
         self._grid_field(
             ai_grid,
-            5,
+            7,
             2,
             "新闻天数/条数",
             news_window,
         )
         self._grid_field(
             ai_grid,
-            6,
+            8,
             0,
             "时机K线数量",
             self._line(self.ai_entry_timing_bars_var),
@@ -978,12 +1010,13 @@ class AutoQuantApp(QMainWindow):
             "方向判断使用最近30根日线OHLC；再使用今日日线和配置数量的"
             "五分钟K线OHLC判断每个候选信号的 ENTER/WAIT。"
             "失败、低置信度或双模型分歧时不开仓。"
+            "Qwen 使用阿里云百炼 OpenAI 兼容 Chat 接口；新工作区可填写专属接口地址。"
             "大模型配置和 API Key 会保存到后端本地配置文件；"
             "OpenAI Key 也可用于交易经验上传。"
         )
         ai_note.setWordWrap(True)
         ai_note.setStyleSheet(f"color: {COLORS['muted']};")
-        ai_grid.addWidget(ai_note, 7, 0, 1, 4)
+        ai_grid.addWidget(ai_note, 9, 0, 1, 4)
         content_layout.addWidget(ai_settings)
         content_layout.addStretch()
 
@@ -1737,6 +1770,8 @@ class AutoQuantApp(QMainWindow):
                 else "DISABLED"
             ), openai_model=self.openai_model_var.get().strip(),
             deepseek_model=self.deepseek_model_var.get().strip(),
+            qwen_model=self.qwen_model_var.get().strip(),
+            qwen_chat_url=self.qwen_chat_url_var.get().strip(),
             deepseek_thinking_enabled=(
                 self.deepseek_thinking_checkbox.isChecked()
             ),
@@ -1745,6 +1780,7 @@ class AutoQuantApp(QMainWindow):
             ),
             openai_api_key=self.openai_api_key_var.get().strip(),
             deepseek_api_key=self.deepseek_api_key_var.get().strip(),
+            qwen_api_key=self.qwen_api_key_var.get().strip(),
             ai_min_confidence=self.ai_min_confidence_var.get().strip(),
             ai_history_days=int(self.ai_history_days_var.get()),
             ai_entry_timing_bars=int(self.ai_entry_timing_bars_var.get()),
@@ -1762,9 +1798,11 @@ class AutoQuantApp(QMainWindow):
         app = self._current_config()
         openai_api_key = self.openai_api_key_var.get().strip()
         deepseek_api_key = self.deepseek_api_key_var.get().strip()
+        qwen_api_key = self.qwen_api_key_var.get().strip()
         return RemoteRunnerConfig(
             app=app, api_key=self.api_key_var.get(), api_secret=self.api_secret_var.get(),
             openai_api_key=openai_api_key, deepseek_api_key=deepseek_api_key,
+            qwen_api_key=qwen_api_key,
         )
 
     def _insert_symbol(self, symbol: str) -> None:

@@ -56,7 +56,7 @@ curl http://127.0.0.1:8765/health
 
 - `GET /api/v1/config`、`PUT /api/v1/config`：读取或更新服务器配置，读取结果只返回凭据掩码。
 - `GET /api/v1/status?after_log=<序号>`：增量读取运行快照与日志。
-- `POST /api/v1/runners/{symbol}/start`：按手动方向或已保存的大模型模式启动策略；默认使用本地配置中的 OpenAI/DeepSeek Key，也支持随启动请求临时覆盖。
+- `POST /api/v1/runners/{symbol}/start`：按手动方向或已保存的大模型模式启动策略；默认使用本地配置中的 OpenAI/DeepSeek/Qwen Key，也支持随启动请求临时覆盖。
 - `POST /api/v1/runners/{symbol}/stop`：停止策略，可明确要求按服务器账本持仓平仓。
 - `POST /api/v1/stop-targets`：查询运行中、持仓中或存在阻塞订单的目标。
 - `POST /api/v1/connection/check`：由服务器检查 Binance API 和股票代码。
@@ -95,7 +95,7 @@ chmod +x packaging/build_macos.sh run.command
 
 1. 首次运行保留 `PAPER` 模式。
 2. 打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API、交易模式、MA 周期、金额与风控。Futures 杠杆默认为 `1x`。
-3. 需要大模型时，在“运行配置”勾选“启用大模型决策”，选择 `CHATGPT`、`DEEPSEEK` 或 `DUAL`，并填写对应 Key 和模型名。
+3. 需要大模型时，在“运行配置”勾选“启用大模型决策”，选择 `CHATGPT`、`DEEPSEEK`、`QWEN` 或 `DUAL`，并填写对应 Key 和模型名。
 4. 返回“交易监控”页，添加一个或多个标的代码（例如 Stocks 的 `AAPL`；Futures 输入 `BTC` 会自动保存为 `BTCUSDT`）。大模型开关关闭时，为每个标的选择 `LONG`、`SHORT` 或 `FLAT`；开关开启时该手动值被忽略。
 5. 选择标的后点击“启动所选”。每个标的有独立运行器，可分别停止。
 6. 查看状态、程序持仓、持仓均价、未决订单、本次量化开仓金额和日志。大模型模式会记录今日方向、时机 `ENTER/WAIT`、置信度、决策耗时与风险。
@@ -105,13 +105,14 @@ chmod +x packaging/build_macos.sh run.command
 
 交易监控表格的“手动方向”在大模型开关关闭时生效，支持 `LONG`、`SHORT` 或 `FLAT`。该选择在启动标的时读取并锁定，并随“保存配置”写入配置文件。`FLAT` 表示禁止该标的产生普通开仓信号。大模型开关开启时，后端强制使用模型方向，不会回退到手动方向下单。
 
-配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance、OpenAI 和 DeepSeek 凭据不会通过读取配置接口明文回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
+配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance、OpenAI、DeepSeek 和 Qwen 凭据不会通过读取配置接口明文回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"
 $env:BINANCE_API_SECRET = "你的 API Secret"
 $env:OPENAI_API_KEY = "你的 OpenAI API Key"
 $env:DEEPSEEK_API_KEY = "你的 DeepSeek API Key"
+$env:DASHSCOPE_API_KEY = "你的阿里云百炼 API Key"
 $env:AUTOQUANT_API_TOKEN = "前后端共享的随机令牌"
 py -m autoquant_backend
 ```
@@ -126,14 +127,15 @@ py -m autoquant_backend
 
 - `CHATGPT`：通过 OpenAI Responses API 和 JSON Schema 结构化输出决策。
 - `DEEPSEEK`：通过 DeepSeek Chat Completions JSON Output 决策。
+- `QWEN`：通过阿里云百炼 OpenAI 兼容 Chat Completions 接口和 JSON Output 决策。默认模型为 `qwen-plus`；北京地域新工作区可把界面中的 Qwen Chat 接口改为 `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions`。
 - `DUAL`：两个模型并行请求。今日方向必须一致，候选入场也必须同时返回 `ENTER`，否则不开仓。
 - 每个交易日首先结合近期新闻、SPY/QQQ 大盘走势、个股走势与当前日线生成 `LONG / SHORT / FLAT`。
 - 今日方向判断固定提供最近 30 根日线 OHLC（开盘、最高、最低、收盘）数据；五分钟策略产生候选突破信号后，模型根据今日日线、配置数量的最近五分钟 OHLC、MA 和突破原因返回 `ENTER / WAIT`。时机 K 线数量默认为 60，可在 10～300 根之间配置。
 - 任意网络失败、数据缺失、响应格式错误、置信度低于阈值或双模型分歧，都会安全降级为 `FLAT/WAIT`，不会绕过模型改用手动方向开仓。
 - 每次今日方向和开仓时机审核都会把最终结果、结构化市场输入及所有原始模型响应持久化到 `orders.sqlite3`。重试与双模型输出会保留为同一决策记录中的多份原始响应；记录不包含 API Key。
-- 大模型模式、模型名、置信度、新闻窗口、时机 K 线数量以及 OpenAI/DeepSeek Key 会写入后端本地 `config.json`，读取接口只返回掩码；密钥不会写入 `running.json`。配置留空时仍可使用后端环境变量，服务重启后可直接使用已保存或环境变量中的 Key 恢复 AI 运行器。
+- 大模型模式、模型名、置信度、新闻窗口、时机 K 线数量以及 OpenAI/DeepSeek/Qwen Key 会写入后端本地 `config.json`，读取接口只返回掩码；密钥不会写入 `running.json`。配置留空时仍可使用后端环境变量，服务重启后可直接使用已保存或环境变量中的 Key 恢复 AI 运行器。
 
-Binance API Key/Secret 与 OpenAI/DeepSeek Key 会在点击“保存配置”后写入后端服务器配置，请保护该文件的访问权限。OpenAI Key 仍可用于手动上传交易经验库。
+Binance API Key/Secret 与 OpenAI/DeepSeek/Qwen Key 会在点击“保存配置”后写入后端服务器配置，请保护该文件的访问权限。OpenAI Key 仍可用于手动上传交易经验库。
 
 订单保护账本保存在后端服务器的 `orders.sqlite3`。其中保存订单标识、方向、交易日、请求金额、成交价格、成交数量、手续费、平仓收益、程序持仓以及 AI 决策历史，不保存 API 凭据。“交易记录”和“AI 决策”页直接查询该持久化账本，重启前后数据保持一致；交易记录页不会展示订单号。该文件用于恢复交易次数、持仓和资金限额，不能在后端运行期间删除或修改。
 
@@ -144,7 +146,7 @@ Binance API Key/Secret 与 OpenAI/DeepSeek Key 会在点击“保存配置”后
 - 回测直接使用最近一次完成的下载或导入记录所覆盖的实际时间范围与实际样本数，不要求凑满 180 天；样本不足以产生策略信号时仍会正常完成，并持久化为 0 笔交易。
 - 每条回测结果右侧提供蓝色链接式“回测明细”入口，悬停显示手掌并加下划线。弹窗分为“收益曲线”和“交易明细”两个页签：曲线页显示累计盈亏蓝线及盈利/亏损交易点（绿/红），鼠标在绘图区任意横向位置移动或点击都会定位到最近一笔交易，并显示方向、开平仓时间与价格、单笔/累计盈亏及退出原因；明细页展示完整逐笔表格和原始策略信号原因，每个单元格悬停时都会显示该列完整内容。这些数据与回测汇总一同保存在 `backtest_trades` 中。超大明细的图表最多均匀抽样 2000 个点，但表格和累计计算仍覆盖查询到的全部交易。
 - 当前可选择 `five_minute_breakout`。回测使用持久化日线判断前两日方向、5 分钟收盘产生策略信号，并以 1 分钟 K 线检查配置中的止损和止盈；同一分钟同时触及止损和止盈时按止损优先处理。
-- 回测快照使用提交时的 MA、开仓金额、每日交易次数和止盈止损配置。批次汇总及逐笔回测成交都会持久化，但配置快照会清空 Binance、OpenAI 和 DeepSeek 凭据。
+- 回测快照使用提交时的 MA、开仓金额、每日交易次数和止盈止损配置。批次汇总及逐笔回测成交都会持久化，但配置快照会清空 Binance、OpenAI、DeepSeek 和 Qwen 凭据。
 - 收益率以配置的单笔开仓金额作为初始回测资金基数，即 `总盈亏 ÷ 单笔开仓金额 × 100%`；最大回撤从该初始资金出发按逐笔累计权益峰值计算。总盈亏、胜负数和最大回撤同时保存，历史结果不会因后来修改运行配置而改变；界面中的金额和百分比统一显示两位小数。
 - 当前回测不计交易手续费、资金费率和滑点，结果用于策略逻辑验证，不应视为真实收益承诺。
 - “导出 K 线”会生成包含 `manifest.json` 以及日线、5分钟、1分钟 CSV 的 ZIP 数据包；“导入 K 线”要求页面标的与数据包标的一致。导入会校验文件路径、格式版本、行情源、时间顺序、OHLCV、各周期数量及 128 MB 上传限制，成功后可直接用于回测。
@@ -211,6 +213,8 @@ Binance API Key/Secret 与 OpenAI/DeepSeek Key 会在点击“保存配置”后
 - DeepSeek JSON Output：<https://api-docs.deepseek.com/guides/json_mode/>
 - DeepSeek Chat Completions：<https://api-docs.deepseek.com/api/create-chat-completion/>
 - DeepSeek 模型与 API Base URL：<https://api-docs.deepseek.com/>
+- 阿里云百炼 OpenAI 兼容 Chat：<https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions>
+- Qwen 结构化 JSON 输出：<https://help.aliyun.com/zh/model-studio/qwen-structured-output>
 
 ## 项目结构与扩展
 

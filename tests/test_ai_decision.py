@@ -14,6 +14,7 @@ from autoquant_backend.ai_decision import (
     OpeningDecision,
     OpeningDecisionService,
     PublicMarketContextCollector,
+    QwenDecisionClient,
     parse_entry_timing_decision,
     parse_opening_decision,
 )
@@ -387,6 +388,52 @@ class AiDecisionTests(unittest.TestCase):
 
         self.assertTrue(decision.enter_now)
         self.assertEqual([], responses)
+
+    def test_qwen_client_uses_bailian_json_output_and_retries(self) -> None:
+        calls = []
+        responses = [
+            {"choices": [{"message": {"content": "not json"}}]},
+            {"choices": [{"message": {"content": decision_json()}}]},
+        ]
+
+        def post(url, payload, api_key, timeout):
+            calls.append((url, payload, api_key, timeout))
+            return responses.pop(0)
+
+        client = QwenDecisionClient(
+            "qwen-secret",
+            "qwen-plus",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            12,
+            post_json=post,
+        )
+
+        decision = client.decide({"symbol": "AAPL"})
+
+        self.assertEqual(Direction.LONG, decision.direction)
+        self.assertEqual("QWEN", decision.provider)
+        self.assertEqual(2, len(calls))
+        self.assertEqual("json_object", calls[0][1]["response_format"]["type"])
+        self.assertFalse(calls[0][1]["enable_thinking"])
+        self.assertEqual(900, calls[0][1]["max_completion_tokens"])
+        self.assertEqual("qwen-secret", calls[0][2])
+
+    def test_qwen_client_decides_entry_timing(self) -> None:
+        def post(_url, _payload, _api_key, _timeout):
+            return {"choices": [{"message": {"content": entry_timing_json()}}]}
+
+        client = QwenDecisionClient(
+            "qwen-secret",
+            "qwen-plus",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            12,
+            post_json=post,
+        )
+
+        decision = client.decide_entry({"symbol": "AAPL"})
+
+        self.assertTrue(decision.enter_now)
+        self.assertEqual("QWEN", decision.provider)
 
     def test_low_confidence_fails_closed(self) -> None:
         service = OpeningDecisionService(

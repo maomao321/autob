@@ -14,6 +14,9 @@ from urllib.parse import urlparse
 
 DEFAULT_REST_URL = "https://api.binance.com"
 DEFAULT_WS_URL = "wss://nbstream.binance.com/equity"
+DEFAULT_QWEN_CHAT_URL = (
+    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+)
 ALLOWED_REST_HOSTS = {
     "api.binance.com",
     "api-gcp.binance.com",
@@ -25,6 +28,12 @@ ALLOWED_REST_HOSTS = {
 ALLOWED_WS_HOSTS = {"nbstream.binance.com"}
 SYMBOL_PATTERN = re.compile(r"[A-Z][A-Z0-9.-]{0,19}", re.ASCII)
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}", re.ASCII)
+QWEN_WORKSPACE_HOST_PATTERN = re.compile(
+    r"[a-z0-9][a-z0-9-]{0,62}\."
+    r"(?:cn-beijing|ap-southeast-1|ap-northeast-1|eu-central-1|us-east-1)"
+    r"\.maas\.aliyuncs\.com",
+    re.ASCII,
+)
 MAX_SYMBOLS = 20
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
 AI_DIRECTION_DAILY_BARS = 30
@@ -53,10 +62,13 @@ class AppConfig:
     ai_provider: str = "DISABLED"
     openai_model: str = "gpt-5.6"
     deepseek_model: str = "deepseek-v4-pro"
+    qwen_model: str = "qwen-plus"
+    qwen_chat_url: str = DEFAULT_QWEN_CHAT_URL
     deepseek_thinking_enabled: bool = True
     deepseek_reasoning_effort: str = "max"
     openai_api_key: str = ""
     deepseek_api_key: str = ""
+    qwen_api_key: str = ""
     ai_min_confidence: str = "0.70"
     ai_history_days: int = 30
     ai_entry_timing_bars: int = 60
@@ -72,6 +84,7 @@ class AppConfig:
         self.api_secret = str(self.api_secret).strip()
         self.openai_api_key = str(self.openai_api_key).strip()
         self.deepseek_api_key = str(self.deepseek_api_key).strip()
+        self.qwen_api_key = str(self.qwen_api_key).strip()
         if not isinstance(self.symbols, list):
             raise ValueError("symbols 必须是标的代码列表")
         self.symbols = normalize_symbols(self.symbols)
@@ -111,13 +124,16 @@ class AppConfig:
             "DISABLED",
             "CHATGPT",
             "DEEPSEEK",
+            "QWEN",
             "DUAL",
         }:
             raise ValueError(
-                "大模型模式必须是 DISABLED、CHATGPT、DEEPSEEK 或 DUAL"
+                "大模型模式必须是 DISABLED、CHATGPT、DEEPSEEK、QWEN 或 DUAL"
             )
         self.openai_model = str(self.openai_model).strip()
         self.deepseek_model = str(self.deepseek_model).strip()
+        self.qwen_model = str(self.qwen_model).strip()
+        self.qwen_chat_url = str(self.qwen_chat_url).strip()
         if not isinstance(self.deepseek_thinking_enabled, bool):
             raise ValueError("DeepSeek 深度思考开关必须是布尔值")
         self.deepseek_reasoning_effort = str(
@@ -136,6 +152,34 @@ class AppConfig:
             raise ValueError("OpenAI 模型名称格式不正确")
         if MODEL_PATTERN.fullmatch(self.deepseek_model) is None:
             raise ValueError("DeepSeek 模型名称格式不正确")
+        if MODEL_PATTERN.fullmatch(self.qwen_model) is None:
+            raise ValueError("Qwen 模型名称格式不正确")
+        qwen_url = urlparse(self.qwen_chat_url)
+        qwen_host = (qwen_url.hostname or "").lower()
+        try:
+            qwen_port = qwen_url.port
+        except ValueError:
+            qwen_port = -1
+        legacy_qwen_hosts = {
+            "dashscope.aliyuncs.com",
+            "dashscope-intl.aliyuncs.com",
+            "dashscope-us.aliyuncs.com",
+        }
+        if (
+            qwen_url.scheme != "https"
+            or qwen_url.username is not None
+            or qwen_url.password is not None
+            or qwen_port not in {None, 443}
+            or (
+                qwen_host not in legacy_qwen_hosts
+                and QWEN_WORKSPACE_HOST_PATTERN.fullmatch(qwen_host) is None
+            )
+            or qwen_url.path != "/compatible-mode/v1/chat/completions"
+            or qwen_url.params
+            or qwen_url.query
+            or qwen_url.fragment
+        ):
+            raise ValueError("Qwen 接口地址必须是阿里云百炼官方 HTTPS Chat 接口")
         try:
             self.ma_period = int(self.ma_period)
             self.leverage = int(self.leverage)

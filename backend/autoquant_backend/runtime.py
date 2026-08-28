@@ -191,6 +191,9 @@ class BackendRuntime:
             payload["deepseek_api_key"] = (
                 SECRET_SENTINEL if self._deepseek_api_key(config) else ""
             )
+            payload["qwen_api_key"] = (
+                SECRET_SENTINEL if self._qwen_api_key(config) else ""
+            )
             return payload
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -210,6 +213,8 @@ class BackendRuntime:
                 merged["openai_api_key"] = current.openai_api_key
             if payload.get("deepseek_api_key") == SECRET_SENTINEL:
                 merged["deepseek_api_key"] = current.deepseek_api_key
+            if payload.get("qwen_api_key") == SECRET_SENTINEL:
+                merged["qwen_api_key"] = current.qwen_api_key
             config = AppConfig(**merged)
             config.validate()
             self.config_store.save(config)
@@ -283,16 +288,24 @@ class BackendRuntime:
             config.deepseek_api_key, "DEEPSEEK_API_KEY"
         )
 
+    @staticmethod
+    def _qwen_api_key(config: AppConfig) -> str:
+        return credential_or_environment(
+            config.qwen_api_key, "DASHSCOPE_API_KEY"
+        )
+
     def _runner_config(
         self,
         manual_direction: Direction = Direction.FLAT,
         *,
         openai_api_key: str = "",
         deepseek_api_key: str = "",
+        qwen_api_key: str = "",
     ) -> RunnerConfig:
         config = self.config_store.load()
         transient_openai_key = openai_api_key.strip()
         transient_deepseek_key = deepseek_api_key.strip()
+        transient_qwen_key = qwen_api_key.strip()
         return RunnerConfig(
             app=config,
             api_key=self._api_key(config),
@@ -309,6 +322,12 @@ class BackendRuntime:
                 else ""
             )
             or self._deepseek_api_key(config),
+            qwen_api_key=(
+                transient_qwen_key
+                if transient_qwen_key != SECRET_SENTINEL
+                else ""
+            )
+            or self._qwen_api_key(config),
             manual_direction=manual_direction,
         )
 
@@ -319,6 +338,7 @@ class BackendRuntime:
         *,
         openai_api_key: str = "",
         deepseek_api_key: str = "",
+        qwen_api_key: str = "",
     ) -> None:
         config = self.config_store.load()
         manual_direction = Direction(direction.strip().upper())
@@ -334,6 +354,7 @@ class BackendRuntime:
             manual_direction,
             openai_api_key=openai_api_key,
             deepseek_api_key=deepseek_api_key,
+            qwen_api_key=qwen_api_key,
         )
         if config.ai_provider in {"CHATGPT", "DUAL"} and not (
             runner_config.openai_api_key
@@ -343,6 +364,8 @@ class BackendRuntime:
             runner_config.deepseek_api_key
         ):
             raise ValueError("已启用 DeepSeek 决策，但未提供 DeepSeek API Key")
+        if config.ai_provider == "QWEN" and not runner_config.qwen_api_key:
+            raise ValueError("已启用 Qwen 决策，但未提供 Qwen API Key")
         self.controller.start(normalized, runner_config)
         self._set_desired(normalized, manual_direction, running=True)
 

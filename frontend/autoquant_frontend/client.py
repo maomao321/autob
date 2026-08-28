@@ -33,6 +33,7 @@ class RemoteRunnerConfig:
     api_secret: str = ""
     openai_api_key: str = ""
     deepseek_api_key: str = ""
+    qwen_api_key: str = ""
     manual_direction: Direction = Direction.FLAT
 
 
@@ -367,6 +368,7 @@ class RemoteTradingController:
                 "direction": config.manual_direction.value,
                 "openai_api_key": config.openai_api_key,
                 "deepseek_api_key": config.deepseek_api_key,
+                "qwen_api_key": config.qwen_api_key,
             },
         )
 

@@ -514,6 +514,7 @@ class BacktestStore:
             "api_secret",
             "openai_api_key",
             "deepseek_api_key",
+            "qwen_api_key",
         ):
             config_payload[secret_field] = ""
         config_json = json.dumps(
