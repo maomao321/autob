@@ -14,6 +14,7 @@ from autoquant_backend.runtime import (
     overview_payload,
     snapshot_payload,
 )
+from autoquant_backend.backtest import BacktestTrade
 from autoquant_frontend.client import BackendClient, BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_backend.server import create_server
@@ -477,6 +478,49 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertEqual(2, result["counts"]["1d"])
         self.assertEqual(2, deleted["deleted_bars"])
         self.assertEqual(1, deleted["deleted_downloads"])
+
+    def test_backtest_api_formats_result_metrics_to_two_places(self) -> None:
+        config = self.runtime.config_store.load()
+        run_id = self.runtime.backtest_store.create_run(
+            config.provider,
+            "AAPL",
+            "five_minute_breakout",
+            0,
+            86_400_000,
+            config,
+        )
+        self.runtime.backtest_store.complete_run(
+            run_id,
+            [
+                BacktestTrade(
+                    side="LONG",
+                    entry_time=300_000,
+                    exit_time=600_000,
+                    entry_price=Decimal("12.345"),
+                    exit_price=Decimal("12.523"),
+                    quantity=Decimal("8.123"),
+                    pnl=Decimal("1.4870887"),
+                    exit_reason="TAKE_PROFIT",
+                    signal_reason="五分钟突破",
+                )
+            ],
+            total_pnl=Decimal("1.4870887"),
+            return_percent=Decimal("1.4870887"),
+            max_drawdown_percent=Decimal("34.944173"),
+        )
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        result = client.backtest_runs()[0]
+        details = client.backtest_trade_details(run_id)
+
+        self.assertEqual("1.49", result["total_pnl"])
+        self.assertEqual("1.49", result["return_percent"])
+        self.assertEqual("34.94", result["max_drawdown_percent"])
+        self.assertEqual(1, len(details))
+        self.assertEqual("12.34", details[0]["entry_price"])
+        self.assertEqual("12.52", details[0]["exit_price"])
+        self.assertEqual("8.12", details[0]["quantity"])
+        self.assertEqual("1.49", details[0]["pnl"])
 
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):

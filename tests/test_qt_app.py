@@ -10,10 +10,17 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCharts import QChartView
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTabWidget
 
-from autoquant_frontend.app import AutoQuantApp, COLORS, KeyedTable, TextValue
+from autoquant_frontend.app import (
+    AutoQuantApp,
+    COLORS,
+    InteractiveChartView,
+    KeyedTable,
+    TextValue,
+)
 from autoquant_frontend.client import BackendClientError
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_shared.models import (
@@ -153,8 +160,52 @@ class QtAppWidgetTests(unittest.TestCase):
                         "message": "下载完成",
                     }
                 ],
-                [],
+                [
+                    {
+                        "run_id": "run-1",
+                        "created_at": 1_700_000_000_000,
+                        "completed_at": 1_700_000_100_000,
+                        "symbol": "BTCUSDT",
+                        "provider": "binance_futures",
+                        "strategy": "five_minute_breakout",
+                        "status": "COMPLETED",
+                        "trade_count": 270,
+                        "win_count": 90,
+                        "loss_count": 180,
+                        "total_pnl": "1.4870887",
+                        "return_percent": "1.4870887",
+                        "max_drawdown_percent": "34.944173",
+                        "message": "回测完成",
+                    }
+                ],
                 "",
+            )
+            window._show_backtest_trade_detail_dialog(
+                {
+                    "symbol": "BTCUSDT",
+                    "provider": "binance_futures",
+                    "strategy": "five_minute_breakout",
+                    "trade_count": 1,
+                    "win_count": 1,
+                    "loss_count": 0,
+                    "total_pnl": "1.487",
+                    "return_percent": "1.487",
+                    "max_drawdown_percent": "0",
+                },
+                [
+                    {
+                        "trade_id": 1,
+                        "side": "LONG",
+                        "entry_time": 1_700_000_000_000,
+                        "exit_time": 1_700_000_300_000,
+                        "entry_price": "12.34",
+                        "exit_price": "12.52",
+                        "quantity": "8.12",
+                        "pnl": "1.49",
+                        "exit_reason": "TAKE_PROFIT",
+                        "signal_reason": "五分钟突破",
+                    }
+                ],
             )
 
         self.assertEqual(
@@ -164,6 +215,46 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual(
             "BTCUSDT", window._backtest_downloads["download-1"]["symbol"]
         )
+        self.assertEqual("1.49 USDT", window.backtest_run_tree.item(0, 6).text())
+        self.assertEqual("1.49%", window.backtest_run_tree.item(0, 7).text())
+        self.assertEqual("34.94%", window.backtest_run_tree.item(0, 8).text())
+        detail_link = window.backtest_run_tree.cellWidget(0, 9)
+        self.assertEqual("回测明细", detail_link.text())
+        self.assertTrue(detail_link.isFlat())
+        self.assertTrue(detail_link.icon().isNull())
+        self.assertEqual(
+            Qt.CursorShape.PointingHandCursor, detail_link.cursor().shape()
+        )
+        self.assertIn("background: transparent", detail_link.styleSheet())
+        self.assertIn("border: none", detail_link.styleSheet())
+        self.assertEqual(
+            "回测明细 - BTCUSDT", window._backtest_detail_dialog.windowTitle()
+        )
+        chart_views = window._backtest_detail_dialog.findChildren(QChartView)
+        self.assertEqual(1, len(chart_views))
+        self.assertIsInstance(chart_views[0], InteractiveChartView)
+        self.assertTrue(chart_views[0].hasMouseTracking())
+        self.assertTrue(chart_views[0].viewport().hasMouseTracking())
+        self.assertGreaterEqual(len(chart_views[0].chart().series()), 3)
+        pages = window._backtest_detail_dialog.findChild(QTabWidget)
+        self.assertEqual(2, pages.count())
+        self.assertEqual("收益曲线", pages.tabText(0))
+        self.assertEqual("交易明细 (1)", pages.tabText(1))
+        chart_views[0].chart().series()[0].clicked.emit(QPointF(1, 1.49))
+        self.qt_app.processEvents()
+        chart_detail = window._backtest_detail_dialog.findChild(
+            QLabel, "backtestChartDetail"
+        )
+        self.assertIn("第 1 笔", chart_detail.text())
+        self.assertIn("累计盈亏", chart_detail.text())
+        plot_area = chart_views[0].chart().plotArea()
+        chart_views[0]._dispatch_chart_position(
+            plot_area.center(), clicked=False
+        )
+        self.assertIn("当前悬停", chart_detail.text())
+        detail_tables = window._backtest_detail_dialog.findChildren(KeyedTable)
+        self.assertEqual(1, len(detail_tables))
+        self.assertIn("信号原因", detail_tables[0].item(0, 8).toolTip())
 
     def test_ai_decision_page_displays_result_input_and_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -623,6 +623,33 @@ class BacktestStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def backtest_trades(
+        self, run_id: str, limit: int = 50_000
+    ) -> list[dict[str, Any]]:
+        normalized = run_id.strip()
+        if not normalized:
+            raise ValueError("回测记录 ID 不能为空")
+        with self._lock, closing(self._connect()) as connection:
+            run = connection.execute(
+                "SELECT 1 FROM backtest_runs WHERE run_id = ?",
+                (normalized,),
+            ).fetchone()
+            if run is None:
+                raise ValueError("回测记录不存在")
+            rows = connection.execute(
+                """
+                SELECT trade_id, run_id, side, entry_time, exit_time,
+                       entry_price, exit_price, quantity, pnl,
+                       exit_reason, signal_reason
+                FROM backtest_trades
+                WHERE run_id = ?
+                ORDER BY entry_time, trade_id
+                LIMIT ?
+                """,
+                (normalized, min(max(int(limit), 1), 50_000)),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
 
 class HistoricalArchiveService:
     """Export and import portable, validated per-symbol historical datasets."""

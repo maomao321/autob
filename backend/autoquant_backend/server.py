@@ -238,6 +238,12 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 return HTTPStatus.ACCEPTED, runtime.start_backtest(
                     self._json_body()
                 )
+        if path == "/api/v1/backtest/trades" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.backtest_trade_details(
+                query.get("run_id", [""])[0],
+                limit=int(query.get("limit", ["50000"])[0]),
+            )
 
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) >= 5 and parts[:3] == ["api", "v1", "runners"]:

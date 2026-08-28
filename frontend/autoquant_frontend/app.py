@@ -13,12 +13,30 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QCloseEvent, QFont, QIcon
+from PySide6.QtCore import QPoint, QPointF, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QCursor,
+    QFont,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPen,
+)
+from PySide6.QtCharts import (
+    QChart,
+    QChartView,
+    QLineSeries,
+    QScatterSeries,
+    QValueAxis,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -37,6 +55,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -165,6 +184,40 @@ class TextValue:
     def _set_combo_text(widget: QComboBox, text: str) -> None:
         if widget.currentText() != text:
             widget.setCurrentText(text)
+
+
+class InteractiveChartView(QChartView):
+    """Chart view that resolves any plot-area mouse position to chart values."""
+
+    def __init__(self, chart: QChart) -> None:
+        super().__init__(chart)
+        self._point_callback: Callable[[QPointF, bool], None] | None = None
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+
+    def set_point_callback(
+        self, callback: Callable[[QPointF, bool], None]
+    ) -> None:
+        self._point_callback = callback
+
+    def _dispatch_chart_position(
+        self, position: QPointF, *, clicked: bool
+    ) -> None:
+        if (
+            self._point_callback is None
+            or not self.chart().plotArea().contains(position)
+        ):
+            return
+        self._point_callback(self.chart().mapToValue(position), clicked)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self._dispatch_chart_position(event.position(), clicked=False)
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() is Qt.MouseButton.LeftButton:
+            self._dispatch_chart_position(event.position(), clicked=True)
+        super().mousePressEvent(event)
 
 
 class KeyedTable(QTableWidget):
@@ -542,7 +595,9 @@ class AutoQuantApp(QMainWindow):
         self._ai_decision_inflight = False
         self._backtest_refresh_inflight = False
         self._backtest_action_inflight = False
+        self._backtest_detail_inflight = False
         self._backtest_downloads: dict[str, dict[str, object]] = {}
+        self._backtest_detail_dialog: QDialog | None = None
         self._ai_decisions: dict[str, AiDecisionHistoryItem] = {}
         self._closed = False
 
@@ -2141,7 +2196,9 @@ class AutoQuantApp(QMainWindow):
         note = QLabel(
             "使用当前运行配置中的行情源、MA、开仓金额、每日交易次数及止盈止损参数。"
             "最多回看 180 天，标的历史不足时以行情源实际返回数量为准；"
-            "分页下载目前支持 Binance Futures，数据和回测结果均保存在后端 SQLite。"
+            "收益率 = 总盈亏 ÷ 单笔开仓金额，最大回撤按单笔开仓金额作为初始资金计算；"
+            "金额和百分比统一显示两位小数。分页下载目前支持 Binance Futures，"
+            "数据和回测结果均保存在后端 SQLite。"
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color: {COLORS['muted']};")
@@ -2176,9 +2233,9 @@ class AutoQuantApp(QMainWindow):
         self.backtest_run_tree = KeyedTable(
             [
                 "完成时间", "标的", "策略", "状态", "交易数", "胜/负",
-                "总盈亏", "收益率", "最大回撤", "说明",
+                "总盈亏", "收益率", "最大回撤", "回测明细", "说明",
             ],
-            [150, 100, 170, 80, 65, 70, 90, 85, 90, 220],
+            [150, 100, 170, 80, 65, 70, 105, 85, 90, 90, 220],
             multi_select=False,
         )
         runs_layout.addWidget(self.backtest_run_tree)
@@ -2528,6 +2585,361 @@ class AutoQuantApp(QMainWindow):
             return "—"
         return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
+    @staticmethod
+    def _backtest_metric(value: object, suffix: str = "") -> str:
+        try:
+            number = Decimal(str(value))
+            if not number.is_finite():
+                raise ValueError
+        except (ArithmeticError, ValueError):
+            return "—"
+        return f"{number:.2f}{suffix}"
+
+    def _load_backtest_trade_details(
+        self, run_id: str, summary: dict[str, object]
+    ) -> None:
+        if self._backtest_detail_inflight:
+            return
+        self._backtest_detail_inflight = True
+        self.backtest_status_var.set(
+            f"正在读取 {summary.get('symbol', '')} 的回测明细…"
+        )
+
+        def load() -> None:
+            try:
+                items = self.backend_client.backtest_trade_details(run_id)
+                self._enqueue_event(
+                    ("backtest_details", summary, items, "")
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("backtest_details", summary, [], str(exc))
+                )
+
+        threading.Thread(
+            target=load, name="backtest-trade-details", daemon=True
+        ).start()
+
+    def _apply_backtest_trade_details(
+        self,
+        summary: dict[str, object],
+        items: list[dict[str, object]],
+        error: str,
+    ) -> None:
+        self._backtest_detail_inflight = False
+        if error:
+            self.backtest_status_var.set(f"回测明细读取失败：{error}")
+            show_error("回测明细读取失败", error)
+            return
+        self.backtest_status_var.set(
+            f"已读取 {summary.get('symbol', '')} 的 {len(items)} 笔回测明细。"
+        )
+        self._show_backtest_trade_detail_dialog(summary, items)
+
+    def _build_backtest_pnl_chart(
+        self,
+        items: list[dict[str, object]],
+        currency: str,
+    ) -> tuple[QChartView, QLabel]:
+        cumulative_values: list[tuple[int, float, Decimal]] = []
+        cumulative = Decimal("0")
+        for index, item in enumerate(items, start=1):
+            try:
+                pnl = Decimal(str(item.get("pnl", "0")))
+                if not pnl.is_finite():
+                    pnl = Decimal("0")
+            except ArithmeticError:
+                pnl = Decimal("0")
+            cumulative += pnl
+            cumulative_values.append((index, float(cumulative), pnl))
+
+        max_points = 2000
+        step = max(1, (len(cumulative_values) + max_points - 1) // max_points)
+        sampled_indices = list(range(0, len(cumulative_values), step))
+        if cumulative_values and sampled_indices[-1] != len(cumulative_values) - 1:
+            sampled_indices.append(len(cumulative_values) - 1)
+
+        curve = QLineSeries()
+        curve.setName("累计盈亏")
+        curve_pen = QPen(QColor(COLORS["primary"]), 2.2)
+        curve.setPen(curve_pen)
+        curve.append(0, 0)
+        wins = QScatterSeries()
+        wins.setName("盈利交易")
+        wins.setColor(QColor(COLORS["positive"]))
+        wins.setBorderColor(QColor(COLORS["positive"]))
+        wins.setMarkerSize(6)
+        losses = QScatterSeries()
+        losses.setName("亏损交易")
+        losses.setColor(QColor(COLORS["negative"]))
+        losses.setBorderColor(QColor(COLORS["negative"]))
+        losses.setMarkerSize(6)
+        for sampled_index in sampled_indices:
+            trade_number, equity, pnl = cumulative_values[sampled_index]
+            curve.append(trade_number, equity)
+            if pnl > 0:
+                wins.append(trade_number, equity)
+            elif pnl < 0:
+                losses.append(trade_number, equity)
+
+        count = len(cumulative_values)
+        zero = QLineSeries()
+        zero.setName("盈亏零轴")
+        zero.append(0, 0)
+        zero.append(max(1, count), 0)
+        zero.setPen(
+            QPen(QColor("#98a2b3"), 1, Qt.PenStyle.DashLine)
+        )
+        guide = QLineSeries()
+        guide.setName("当前交易")
+        guide.setPen(
+            QPen(QColor(COLORS["primary"]), 1, Qt.PenStyle.DashLine)
+        )
+        guide.setVisible(False)
+
+        chart = QChart()
+        chart.addSeries(curve)
+        chart.addSeries(wins)
+        chart.addSeries(losses)
+        chart.addSeries(zero)
+        chart.addSeries(guide)
+        sample_note = (
+            f"，抽样显示 {len(sampled_indices)}/{count} 个点"
+            if count > max_points
+            else ""
+        )
+        chart.setTitle(
+            f"累计盈亏曲线（{currency}，共 {count} 笔{sample_note}）"
+        )
+        chart.setBackgroundVisible(False)
+        chart.setPlotAreaBackgroundVisible(True)
+        chart.setPlotAreaBackgroundBrush(QColor("#fbfcfe"))
+        chart.legend().setAlignment(Qt.AlignmentFlag.AlignBottom)
+        for marker in chart.legend().markers(zero):
+            marker.setVisible(False)
+        for marker in chart.legend().markers(guide):
+            marker.setVisible(False)
+
+        axis_x = QValueAxis()
+        axis_x.setTitleText("交易序号")
+        axis_x.setRange(0, max(1, count))
+        axis_x.setLabelFormat("%d")
+        axis_x.setTickCount(min(11, max(2, count + 1)))
+        all_equity = [0.0, *(value for _index, value, _pnl in cumulative_values)]
+        minimum = min(all_equity)
+        maximum = max(all_equity)
+        span = maximum - minimum
+        padding = max(span * 0.12, max(abs(minimum), abs(maximum), 1.0) * 0.05)
+        axis_y = QValueAxis()
+        axis_y.setTitleText(f"累计盈亏（{currency}）")
+        axis_y.setRange(minimum - padding, maximum + padding)
+        axis_y.setLabelFormat("%.2f")
+        axis_y.setTickCount(6)
+        chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+        chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
+        for series in (curve, wins, losses, zero, guide):
+            series.attachAxis(axis_x)
+            series.attachAxis(axis_y)
+
+        view = InteractiveChartView(chart)
+        view.setRenderHint(QPainter.RenderHint.Antialiasing)
+        view.setMinimumHeight(250)
+        view.setToolTip(
+            "蓝线为逐笔累计盈亏；绿点表示盈利交易，红点表示亏损交易。"
+            "将鼠标悬停或点击曲线上的点可查看对应交易。"
+        )
+        detail = QLabel(
+            "将鼠标悬停或点击图表中的曲线、盈利点或亏损点查看对应交易明细。"
+        )
+        detail.setObjectName("backtestChartDetail")
+        detail.setWordWrap(True)
+        detail.setMinimumHeight(68)
+        detail.setStyleSheet(
+            f"""
+            QLabel#backtestChartDetail {{
+                color: {COLORS['text']};
+                background: #f7faff;
+                border: 1px solid #cfe0f7;
+                border-radius: 7px;
+                padding: 8px 11px;
+            }}
+            """
+        )
+        side_text = {"LONG": "多头", "SHORT": "空头"}
+        exit_text = {
+            "STOP_LOSS": "止损",
+            "TAKE_PROFIT": "止盈",
+            "END_OF_DATA": "数据结束",
+        }
+
+        def show_point(point: QPointF, *, clicked: bool) -> None:
+            if not items:
+                return
+            trade_number = min(
+                len(items), max(1, int(point.x() + 0.5))
+            )
+            item = items[trade_number - 1]
+            pnl = Decimal(str(item.get("pnl", "0")))
+            cumulative_pnl = Decimal(
+                str(cumulative_values[trade_number - 1][1])
+            )
+            direction = side_text.get(
+                str(item.get("side", "")), str(item.get("side", ""))
+            )
+            reason = exit_text.get(
+                str(item.get("exit_reason", "")),
+                str(item.get("exit_reason", "")),
+            )
+            color = (
+                COLORS["positive"]
+                if pnl > 0
+                else COLORS["negative"]
+                if pnl < 0
+                else COLORS["text"]
+            )
+            state = "已选择" if clicked else "当前悬停"
+            guide.clear()
+            guide.append(trade_number, axis_y.min())
+            guide.append(trade_number, axis_y.max())
+            guide.setVisible(True)
+            detail.setText(
+                f"<b>{state}：第 {trade_number} 笔 · {direction}</b>　"
+                f"开仓 {self._backtest_datetime(item.get('entry_time'))} "
+                f"@ {self._backtest_metric(item.get('entry_price', '0'))}　"
+                f"平仓 {self._backtest_datetime(item.get('exit_time'))} "
+                f"@ {self._backtest_metric(item.get('exit_price', '0'))}<br>"
+                f"数量 {self._backtest_metric(item.get('quantity', '0'))}　"
+                f"单笔盈亏 <span style='color:{color}; font-weight:600'>"
+                f"{self._backtest_metric(pnl)} {currency}</span>　"
+                f"累计盈亏 {self._backtest_metric(cumulative_pnl)} {currency}　"
+                f"退出原因：{reason}"
+            )
+            QToolTip.showText(
+                QCursor.pos(),
+                f"第 {trade_number} 笔 · {direction}\n"
+                f"单笔盈亏 {self._backtest_metric(pnl)} {currency}\n"
+                f"累计盈亏 {self._backtest_metric(cumulative_pnl)} {currency}\n"
+                f"退出原因：{reason}",
+                view,
+            )
+
+        def hover_point(point: QPointF, hovered: bool) -> None:
+            if hovered:
+                show_point(point, clicked=False)
+            else:
+                QToolTip.hideText()
+
+        for series in (curve, wins, losses):
+            series.hovered.connect(hover_point)
+            series.clicked.connect(
+                lambda point, _series=series: show_point(point, clicked=True)
+            )
+        view.set_point_callback(
+            lambda point, clicked: show_point(point, clicked=clicked)
+        )
+        return view, detail
+
+    def _show_backtest_trade_detail_dialog(
+        self,
+        summary: dict[str, object],
+        items: list[dict[str, object]],
+    ) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(
+            f"回测明细 - {summary.get('symbol', '')}"
+        )
+        dialog.resize(1180, 680)
+        layout = QVBoxLayout(dialog)
+        provider = str(summary.get("provider", ""))
+        currency = "USDT" if provider == "binance_futures" else "USDC"
+        total_pnl = self._backtest_metric(summary.get("total_pnl", "0"))
+        overview = QLabel(
+            f"标的：{summary.get('symbol', '')}    "
+            f"策略：{summary.get('strategy', '')}    "
+            f"交易：{summary.get('trade_count', len(items))} 笔    "
+            f"胜/负：{summary.get('win_count', 0)}/{summary.get('loss_count', 0)}    "
+            f"总盈亏：{total_pnl} {currency}    "
+            f"收益率：{self._backtest_metric(summary.get('return_percent', '0'), '%')}    "
+            f"最大回撤：{self._backtest_metric(summary.get('max_drawdown_percent', '0'), '%')}"
+        )
+        overview.setWordWrap(True)
+        overview.setStyleSheet(f"color: {COLORS['muted']};")
+        layout.addWidget(overview)
+
+        chart_view, chart_detail = self._build_backtest_pnl_chart(
+            items, currency
+        )
+
+        table = KeyedTable(
+            [
+                "开仓时间", "平仓时间", "方向", "开仓价", "平仓价",
+                "数量", "盈亏", "退出原因", "信号原因",
+            ],
+            [165, 165, 65, 85, 85, 80, 90, 95, 330],
+            multi_select=False,
+        )
+        side_text = {"LONG": "多头", "SHORT": "空头"}
+        exit_text = {
+            "STOP_LOSS": "止损",
+            "TAKE_PROFIT": "止盈",
+            "END_OF_DATA": "数据结束",
+        }
+        for index, item in enumerate(items):
+            pnl = Decimal(str(item.get("pnl", "0")))
+            table.insert(
+                "",
+                None,
+                iid=str(item.get("trade_id", index)),
+                text=self._backtest_datetime(item.get("entry_time")),
+                values=(
+                    self._backtest_datetime(item.get("exit_time")),
+                    side_text.get(str(item.get("side", "")), str(item.get("side", ""))),
+                    self._backtest_metric(item.get("entry_price", "0")),
+                    self._backtest_metric(item.get("exit_price", "0")),
+                    self._backtest_metric(item.get("quantity", "0")),
+                    f"{self._backtest_metric(pnl)} {currency}",
+                    exit_text.get(
+                        str(item.get("exit_reason", "")),
+                        str(item.get("exit_reason", "")),
+                    ),
+                    item.get("signal_reason", ""),
+                ),
+                tags=("win",) if pnl > 0 else ("loss",) if pnl < 0 else (),
+            )
+            row = table.rowCount() - 1
+            for column in range(table.columnCount()):
+                cell = table.item(row, column)
+                header = table.horizontalHeaderItem(column)
+                if cell is not None:
+                    title = header.text() if header is not None else "明细"
+                    cell.setToolTip(f"{title}：{cell.text()}")
+        table.setMouseTracking(True)
+        table.viewport().setMouseTracking(True)
+        pages = QTabWidget(dialog)
+        pages.setDocumentMode(True)
+        chart_page = QWidget(pages)
+        chart_layout = QVBoxLayout(chart_page)
+        chart_layout.setContentsMargins(6, 6, 6, 6)
+        chart_layout.addWidget(chart_view, 1)
+        chart_layout.addWidget(chart_detail)
+        table_page = QWidget(pages)
+        table_layout = QVBoxLayout(table_page)
+        table_layout.setContentsMargins(6, 6, 6, 6)
+        table_layout.addWidget(table, 1)
+        if not items:
+            empty = QLabel("该回测没有产生交易明细。")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setStyleSheet(f"color: {COLORS['muted']};")
+            table_layout.addWidget(empty)
+        pages.addTab(chart_page, "收益曲线")
+        pages.addTab(table_page, f"交易明细 ({len(items)})")
+        layout.addWidget(pages, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.close)
+        layout.addWidget(buttons)
+        self._backtest_detail_dialog = dialog
+        dialog.show()
+
     def _apply_backtest_data(
         self,
         downloads: list[dict[str, object]],
@@ -2568,6 +2980,17 @@ class AutoQuantApp(QMainWindow):
         for item in runs:
             key = str(item.get("run_id", ""))
             status = str(item.get("status", ""))
+            provider = str(item.get("provider", ""))
+            currency = (
+                "USDT"
+                if provider == "binance_futures"
+                else "USDC"
+                if provider == "binance_stocks"
+                else ""
+            )
+            total_pnl = self._backtest_metric(item.get("total_pnl", "0"))
+            if currency:
+                total_pnl += f" {currency}"
             self.backtest_run_tree.insert(
                 "", None, iid=key,
                 text=self._backtest_datetime(
@@ -2577,10 +3000,55 @@ class AutoQuantApp(QMainWindow):
                     item.get("symbol", ""), item.get("strategy", ""),
                     status_text.get(status, status), item.get("trade_count", 0),
                     f"{item.get('win_count', 0)}/{item.get('loss_count', 0)}",
-                    item.get("total_pnl", "0"), f"{item.get('return_percent', '0')}%",
-                    f"{item.get('max_drawdown_percent', '0')}%", item.get("message", ""),
+                    total_pnl,
+                    self._backtest_metric(item.get("return_percent", "0"), "%"),
+                    self._backtest_metric(
+                        item.get("max_drawdown_percent", "0"), "%"
+                    ),
+                    "",
+                    item.get("message", ""),
                 ),
                 tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
+            )
+            detail_button = QPushButton("回测明细", self.backtest_run_tree)
+            detail_button.setFlat(True)
+            detail_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            detail_button.setStyleSheet(
+                f"""
+                QPushButton {{
+                    min-height: 24px;
+                    padding: 0;
+                    color: {COLORS['primary']};
+                    background: transparent;
+                    border: none;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    color: {COLORS['primary_hover']};
+                    background: transparent;
+                    border: none;
+                    text-decoration: underline;
+                }}
+                QPushButton:pressed {{
+                    color: {COLORS['primary_hover']};
+                    background: transparent;
+                    border: none;
+                }}
+                QPushButton:disabled {{
+                    color: #98a2b3;
+                    background: transparent;
+                    border: none;
+                }}
+                """
+            )
+            detail_button.setEnabled(status == "COMPLETED")
+            detail_button.setToolTip("查看该回测批次的逐笔开平仓明细")
+            detail_button.clicked.connect(
+                lambda _checked=False, run_id=key, summary=dict(item):
+                self._load_backtest_trade_details(run_id, summary)
+            )
+            self.backtest_run_tree.setCellWidget(
+                self.backtest_run_tree.rowCount() - 1, 9, detail_button
             )
         active_downloads = sum(
             1 for item in downloads if item.get("status") in {"QUEUED", "RUNNING"}
@@ -2647,6 +3115,10 @@ class AutoQuantApp(QMainWindow):
                 )
             elif event[0] == "backtest_delete":
                 self._apply_backtest_delete(event[1], event[2])
+            elif event[0] == "backtest_details":
+                self._apply_backtest_trade_details(
+                    event[1], event[2], event[3]
+                )
         if not self.events.empty():
             QTimer.singleShot(10, self._drain_events)
 

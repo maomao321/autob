@@ -554,6 +554,27 @@ class BackendRuntime:
 
     def backtest_runs(self, limit: int = 100) -> dict[str, Any]:
         items = self.backtest_store.list_runs(limit)
+        for item in items:
+            for field in (
+                "total_pnl",
+                "return_percent",
+                "max_drawdown_percent",
+            ):
+                item[field] = financial_text(Decimal(str(item.get(field, "0"))))
+        return {"items": items, "count": len(items)}
+
+    def backtest_trade_details(
+        self, run_id: str, limit: int = 50_000
+    ) -> dict[str, Any]:
+        items = self.backtest_store.backtest_trades(run_id, limit)
+        for item in items:
+            for field in (
+                "entry_price",
+                "exit_price",
+                "quantity",
+                "pnl",
+            ):
+                item[field] = financial_text(Decimal(str(item.get(field, "0"))))
         return {"items": items, "count": len(items)}
 
     def restore_desired_runners(self) -> list[str]:

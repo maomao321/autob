@@ -208,6 +208,20 @@ class BackendClient:
         payload = self.request("GET", f"/api/v1/backtest/runs?{query}")
         return [item for item in payload.get("items", []) if isinstance(item, dict)]
 
+    def backtest_trade_details(
+        self, run_id: str, limit: int = 50_000
+    ) -> list[dict[str, Any]]:
+        query = urlencode(
+            {
+                "run_id": run_id.strip(),
+                "limit": min(max(int(limit), 1), 50_000),
+            }
+        )
+        payload = self.request("GET", f"/api/v1/backtest/trades?{query}")
+        return [
+            item for item in payload.get("items", []) if isinstance(item, dict)
+        ]
+
 
 class RemoteConfigStore:
     def __init__(self, client: BackendClient) -> None:

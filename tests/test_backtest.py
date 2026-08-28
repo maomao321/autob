@@ -10,6 +10,7 @@ from pathlib import Path
 from autoquant_backend.backtest import (
     BacktestService,
     BacktestStore,
+    BacktestTrade,
     HistoricalArchiveService,
     HistoricalDownloader,
 )
@@ -283,6 +284,47 @@ class BacktestTests(unittest.TestCase):
                     "binance_futures", "BTCUSDT", "1m", 0, MINUTE_MS
                 ),
             )
+
+    def test_backtest_trade_details_are_persisted_by_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            config = AppConfig(
+                symbols=["BTCUSDT"], provider="binance_futures"
+            )
+            run_id = store.create_run(
+                "binance_futures",
+                "BTCUSDT",
+                "five_minute_breakout",
+                0,
+                DAY_MS,
+                config,
+            )
+            trade = BacktestTrade(
+                side="LONG",
+                entry_time=FIVE_MS,
+                exit_time=2 * FIVE_MS,
+                entry_price=Decimal("12.345"),
+                exit_price=Decimal("12.523"),
+                quantity=Decimal("8.1"),
+                pnl=Decimal("1.4418"),
+                exit_reason="TAKE_PROFIT",
+                signal_reason="五分钟突破",
+            )
+            store.complete_run(
+                run_id,
+                [trade],
+                total_pnl=trade.pnl,
+                return_percent=Decimal("1.4418"),
+                max_drawdown_percent=Decimal("0"),
+            )
+
+            details = store.backtest_trades(run_id)
+
+            self.assertEqual(1, len(details))
+            self.assertEqual("LONG", details[0]["side"])
+            self.assertEqual("12.345", details[0]["entry_price"])
+            self.assertEqual("TAKE_PROFIT", details[0]["exit_reason"])
+            self.assertEqual("五分钟突破", details[0]["signal_reason"])
 
 
 if __name__ == "__main__":
