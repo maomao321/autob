@@ -21,6 +21,7 @@ from autoquant_backend.state import OrderLedger
 from autoquant_shared.models import (
     AccountOverview,
     AiDecisionHistoryItem,
+    Bar,
     Direction,
     OrderRequest,
     RuntimeSnapshot,
@@ -418,6 +419,64 @@ class BackendHTTPTests(unittest.TestCase):
         self.assertIn('"direction":"FLAT"', item["output_json"])
         self.assertEqual(7031, item["elapsed_ms"])
         self.assertEqual(6123, item["response_ms"])
+
+    def test_backtest_api_lists_persisted_jobs_and_validates_provider(self) -> None:
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        self.assertEqual([], client.historical_downloads())
+        self.assertEqual([], client.backtest_runs())
+        with self.assertRaisesRegex(
+            BackendClientError, "仅支持 Binance Futures"
+        ):
+            client.start_historical_download("AAPL")
+        with self.assertRaisesRegex(BackendClientError, "请先完成"):
+            client.start_backtest("AAPL", "five_minute_breakout")
+
+    def test_historical_bars_export_and_import_api_round_trip(self) -> None:
+        self.runtime.backtest_store.upsert_bars(
+            "binance_stocks",
+            [
+                Bar(
+                    symbol="AAPL",
+                    interval="1d",
+                    open_time=0,
+                    close_time=86_399_999,
+                    open=Decimal("100"),
+                    high=Decimal("102"),
+                    low=Decimal("99"),
+                    close=Decimal("101"),
+                    volume=Decimal("10"),
+                    closed=True,
+                ),
+                Bar(
+                    symbol="AAPL",
+                    interval="1d",
+                    open_time=86_400_000,
+                    close_time=172_799_999,
+                    open=Decimal("101"),
+                    high=Decimal("103"),
+                    low=Decimal("100"),
+                    close=Decimal("102"),
+                    volume=Decimal("12"),
+                    closed=True,
+                ),
+            ],
+        )
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        archive = client.export_historical_bars("AAPL")
+        result = client.import_historical_bars(
+            archive, expected_symbol="AAPL"
+        )
+        deleted = client.delete_historical_bars(
+            "AAPL", "binance_stocks"
+        )
+
+        self.assertTrue(archive.startswith(b"PK"))
+        self.assertEqual("AAPL", result["symbol"])
+        self.assertEqual(2, result["counts"]["1d"])
+        self.assertEqual(2, deleted["deleted_bars"])
+        self.assertEqual(1, deleted["deleted_downloads"])
 
     def test_non_loopback_bind_requires_token(self) -> None:
         with self.assertRaises(ValueError):

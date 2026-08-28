@@ -525,6 +525,13 @@ class AutoQuantApp(QMainWindow):
         self.ai_decision_stage_var = TextValue("全部")
         self.ai_decision_limit_var = TextValue("100")
         self.ai_decision_status_var = TextValue("点击查询查看持久化 AI 决策")
+        self.backtest_symbol_var = TextValue(
+            self.config.symbols[0] if self.config.symbols else ""
+        )
+        self.backtest_strategy_var = TextValue(self.config.strategy)
+        self.backtest_status_var = TextValue(
+            "下载最近 180 天范围内可用的日线、5 分钟和 1 分钟 K 线，再执行策略回测。"
+        )
 
         self._experiences: list[TradeExperience] = []
         self._experience_extract_inflight = False
@@ -533,6 +540,9 @@ class AutoQuantApp(QMainWindow):
         self._account_refresh_inflight = False
         self._trade_history_inflight = False
         self._ai_decision_inflight = False
+        self._backtest_refresh_inflight = False
+        self._backtest_action_inflight = False
+        self._backtest_downloads: dict[str, dict[str, object]] = {}
         self._ai_decisions: dict[str, AiDecisionHistoryItem] = {}
         self._closed = False
 
@@ -553,6 +563,9 @@ class AutoQuantApp(QMainWindow):
         self.account_timer = QTimer(self)
         self.account_timer.timeout.connect(self._account_refresh_tick)
         self.account_timer.start(ACCOUNT_REFRESH_MS)
+        self.backtest_timer = QTimer(self)
+        self.backtest_timer.timeout.connect(self._refresh_backtest_data)
+        self.backtest_timer.start(5_000)
         QTimer.singleShot(500, self._account_refresh_tick)
 
     def _load_config(self) -> AppConfig:
@@ -573,16 +586,19 @@ class AutoQuantApp(QMainWindow):
         self.trade_history_page = QWidget()
         self.ai_decision_page = QWidget()
         self.experience_page = QWidget()
+        self.backtest_page = QWidget()
         self.notebook.addTab(self.main_page, "交易监控")
         self.notebook.addTab(self.config_page, "运行配置")
         self.notebook.addTab(self.trade_history_page, "交易记录")
         self.notebook.addTab(self.ai_decision_page, "AI 决策")
         self.notebook.addTab(self.experience_page, "交易经验库")
+        self.notebook.addTab(self.backtest_page, "策略回测")
         self._build_main_page()
         self._build_config_page()
         self._build_trade_history_page()
         self._build_ai_decision_page()
         self._build_experience_page()
+        self._build_backtest_page()
 
     @staticmethod
     def _style_sheet() -> str:
@@ -2081,6 +2097,502 @@ class AutoQuantApp(QMainWindow):
             color = COLORS["positive"] if value > 0 else COLORS["negative"] if value < 0 else COLORS["text"]
         label.setStyleSheet(f"color: {color};")
 
+    def _build_backtest_page(self) -> None:
+        layout = QVBoxLayout(self.backtest_page)
+        layout.setContentsMargins(14, 8, 14, 14)
+        layout.setSpacing(8)
+
+        controls = QGroupBox("历史数据与策略回测")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.addWidget(QLabel("标的"))
+        symbol = self._line(self.backtest_symbol_var)
+        symbol.setPlaceholderText("例如 BTCUSDT")
+        symbol.setMaximumWidth(180)
+        controls_layout.addWidget(symbol)
+        controls_layout.addWidget(QLabel("策略"))
+        strategy = self._combo(
+            self.backtest_strategy_var, ["five_minute_breakout"]
+        )
+        strategy.setMaximumWidth(230)
+        controls_layout.addWidget(strategy)
+        self.backtest_download_button = self._button(
+            "下载 180 天 K 线", self._start_backtest_download, primary=True
+        )
+        self.backtest_run_button = self._button(
+            "执行回测", self._start_backtest_run, primary=True
+        )
+        self.backtest_export_button = self._button(
+            "导出 K 线", self._export_historical_bars
+        )
+        self.backtest_import_button = self._button(
+            "导入 K 线", self._import_historical_bars
+        )
+        self.backtest_refresh_button = self._button(
+            "刷新", self._refresh_backtest_data
+        )
+        controls_layout.addWidget(self.backtest_download_button)
+        controls_layout.addWidget(self.backtest_run_button)
+        controls_layout.addWidget(self.backtest_export_button)
+        controls_layout.addWidget(self.backtest_import_button)
+        controls_layout.addWidget(self.backtest_refresh_button)
+        controls_layout.addStretch()
+        layout.addWidget(controls)
+
+        note = QLabel(
+            "使用当前运行配置中的行情源、MA、开仓金额、每日交易次数及止盈止损参数。"
+            "最多回看 180 天，标的历史不足时以行情源实际返回数量为准；"
+            "分页下载目前支持 Binance Futures，数据和回测结果均保存在后端 SQLite。"
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {COLORS['muted']};")
+        layout.addWidget(note)
+
+        status = QLabel()
+        self.backtest_status_var.bind_label(status)
+        status.setWordWrap(True)
+        status.setStyleSheet(f"color: {COLORS['muted']};")
+        layout.addWidget(status)
+
+        downloads_box = QGroupBox("历史 K 线下载记录")
+        downloads_layout = QVBoxLayout(downloads_box)
+        self.backtest_download_tree = KeyedTable(
+            [
+                "创建时间", "标的", "行情源", "状态", "进度",
+                "日线", "5分钟", "1分钟", "说明",
+            ],
+            [150, 100, 125, 80, 70, 65, 75, 80, 260],
+            multi_select=False,
+        )
+        self.backtest_download_tree.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.backtest_download_tree.customContextMenuRequested.connect(
+            self._show_backtest_download_context_menu
+        )
+        downloads_layout.addWidget(self.backtest_download_tree)
+
+        runs_box = QGroupBox("持久化回测结果")
+        runs_layout = QVBoxLayout(runs_box)
+        self.backtest_run_tree = KeyedTable(
+            [
+                "完成时间", "标的", "策略", "状态", "交易数", "胜/负",
+                "总盈亏", "收益率", "最大回撤", "说明",
+            ],
+            [150, 100, 170, 80, 65, 70, 90, 85, 90, 220],
+            multi_select=False,
+        )
+        runs_layout.addWidget(self.backtest_run_tree)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(downloads_box)
+        splitter.addWidget(runs_box)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([310, 310])
+        layout.addWidget(splitter, 1)
+
+    def _backtest_symbol(self) -> str:
+        symbol = self.backtest_symbol_var.get().strip().upper()
+        if not symbol:
+            raise ValueError("请输入回测标的")
+        if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,19}", symbol) is None:
+            raise ValueError("回测标的格式不正确")
+        return symbol
+
+    def _set_backtest_actions_enabled(self, enabled: bool) -> None:
+        self.backtest_download_button.setEnabled(enabled)
+        self.backtest_run_button.setEnabled(enabled)
+        self.backtest_export_button.setEnabled(enabled)
+        self.backtest_import_button.setEnabled(enabled)
+
+    def _start_backtest_download(self) -> None:
+        if self._backtest_action_inflight:
+            return
+        try:
+            symbol = self._backtest_symbol()
+        except ValueError as exc:
+            show_error("无法下载", str(exc))
+            return
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在提交 {symbol} 的 180 天历史 K 线下载任务…")
+
+        def submit() -> None:
+            try:
+                job_id = self.backend_client.start_historical_download(symbol)
+                self._enqueue_event(("backtest_action", "download", job_id, ""))
+            except Exception as exc:
+                self._enqueue_event(("backtest_action", "download", "", str(exc)))
+
+        threading.Thread(
+            target=submit, name="backtest-download-submit", daemon=True
+        ).start()
+
+    def _start_backtest_run(self) -> None:
+        if self._backtest_action_inflight:
+            return
+        try:
+            symbol = self._backtest_symbol()
+            strategy = self.backtest_strategy_var.get().strip()
+            if not strategy:
+                raise ValueError("请选择回测策略")
+        except ValueError as exc:
+            show_error("无法回测", str(exc))
+            return
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在提交 {symbol} 的策略回测任务…")
+
+        def submit() -> None:
+            try:
+                run_id = self.backend_client.start_backtest(symbol, strategy)
+                self._enqueue_event(("backtest_action", "run", run_id, ""))
+            except Exception as exc:
+                self._enqueue_event(("backtest_action", "run", "", str(exc)))
+
+        threading.Thread(
+            target=submit, name="backtest-run-submit", daemon=True
+        ).start()
+
+    def _export_historical_bars(self) -> None:
+        if self._backtest_action_inflight:
+            return
+        try:
+            symbol = self._backtest_symbol()
+        except ValueError as exc:
+            show_error("无法导出", str(exc))
+            return
+        self._begin_historical_export(symbol, "")
+
+    def _show_backtest_download_context_menu(self, position: QPoint) -> None:
+        index = self.backtest_download_tree.indexAt(position)
+        if not index.isValid():
+            return
+        self.backtest_download_tree.selectRow(index.row())
+        selected = self.backtest_download_tree.selection()
+        if not selected:
+            return
+        item = self._backtest_downloads.get(selected[0])
+        if item is None:
+            return
+        symbol = str(item.get("symbol", "")).strip().upper()
+        provider = str(item.get("provider", "")).strip().lower()
+        status = str(item.get("status", ""))
+        menu = QMenu(self.backtest_download_tree)
+        export_action = menu.addAction("导出该标的 K 线")
+        delete_action = menu.addAction("删除该标的 K 线")
+        export_action.setEnabled(
+            sum(
+                int(item.get(field, 0) or 0)
+                for field in (
+                    "daily_count",
+                    "five_minute_count",
+                    "one_minute_count",
+                )
+            )
+            > 0
+        )
+        delete_action.setEnabled(status not in {"QUEUED", "RUNNING"})
+        export_action.triggered.connect(
+            lambda _checked=False: self._begin_historical_export(
+                symbol, provider
+            )
+        )
+        delete_action.triggered.connect(
+            lambda _checked=False: self._delete_historical_bars(
+                symbol, provider, item
+            )
+        )
+        menu.exec(
+            self.backtest_download_tree.viewport().mapToGlobal(position)
+        )
+
+    def _begin_historical_export(
+        self, symbol: str, provider: str
+    ) -> None:
+        if self._backtest_action_inflight:
+            return
+        default_name = (
+            f"{symbol}_{provider}_historical_klines.zip"
+            if provider
+            else f"{symbol}_historical_klines.zip"
+        )
+        selected, _filter = QFileDialog.getSaveFileName(
+            self,
+            "导出历史 K 线",
+            default_name,
+            "AutoQuant K线数据包 (*.zip)",
+        )
+        if not selected:
+            return
+        target = Path(selected)
+        if target.suffix.lower() != ".zip":
+            target = target.with_suffix(".zip")
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在导出 {symbol} 的历史 K 线…")
+
+        def export() -> None:
+            try:
+                archive = self.backend_client.export_historical_bars(
+                    symbol, provider
+                )
+                target.write_bytes(archive)
+                self._enqueue_event(
+                    ("backtest_archive", "export", str(target), {}, "")
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("backtest_archive", "export", str(target), {}, str(exc))
+                )
+
+        threading.Thread(
+            target=export, name="backtest-bars-export", daemon=True
+        ).start()
+
+    def _delete_historical_bars(
+        self,
+        symbol: str,
+        provider: str,
+        item: dict[str, object],
+    ) -> None:
+        if self._backtest_action_inflight:
+            return
+        bar_count = sum(
+            int(item.get(field, 0) or 0)
+            for field in (
+                "daily_count",
+                "five_minute_count",
+                "one_minute_count",
+            )
+        )
+        if not ask_yes_no(
+            "确认删除历史 K 线",
+            f"将删除 {symbol}（{provider}）已持久化的约 {bar_count} 根 K 线，"
+            "并清除该标的的下载/导入记录。\n\n"
+            "已保存的回测结果不会删除。此操作不可撤销，确认继续吗？",
+        ):
+            return
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在删除 {symbol} 的历史 K 线…")
+
+        def delete() -> None:
+            try:
+                result = self.backend_client.delete_historical_bars(
+                    symbol, provider
+                )
+                self._enqueue_event(("backtest_delete", result, ""))
+            except Exception as exc:
+                self._enqueue_event(("backtest_delete", {}, str(exc)))
+
+        threading.Thread(
+            target=delete, name="backtest-bars-delete", daemon=True
+        ).start()
+
+    def _apply_backtest_delete(
+        self, result: dict[str, object], error: str
+    ) -> None:
+        self._backtest_action_inflight = False
+        self._set_backtest_actions_enabled(True)
+        if error:
+            self.backtest_status_var.set(f"历史 K 线删除失败：{error}")
+            show_error("历史 K 线删除失败", error)
+            return
+        message = (
+            f"已删除 {result.get('symbol', '')} 的 "
+            f"{result.get('deleted_bars', 0)} 根历史 K 线和 "
+            f"{result.get('deleted_downloads', 0)} 条下载/导入记录；"
+            "回测结果已保留。"
+        )
+        self.backtest_status_var.set(message)
+        show_info("删除完成", message)
+        self._refresh_backtest_data()
+
+    def _import_historical_bars(self) -> None:
+        if self._backtest_action_inflight:
+            return
+        try:
+            symbol = self._backtest_symbol()
+        except ValueError as exc:
+            show_error("无法导入", str(exc))
+            return
+        selected, _filter = QFileDialog.getOpenFileName(
+            self,
+            "导入历史 K 线",
+            "",
+            "AutoQuant K线数据包 (*.zip)",
+        )
+        if not selected:
+            return
+        source = Path(selected)
+        try:
+            if source.stat().st_size > 128 * 1024 * 1024:
+                raise ValueError("导入文件超过 128 MB 限制")
+        except (OSError, ValueError) as exc:
+            show_error("无法导入", str(exc))
+            return
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在导入 {symbol} 的历史 K 线…")
+
+        def import_bars() -> None:
+            try:
+                result = self.backend_client.import_historical_bars(
+                    source.read_bytes(), expected_symbol=symbol
+                )
+                self._enqueue_event(
+                    ("backtest_archive", "import", str(source), result, "")
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("backtest_archive", "import", str(source), {}, str(exc))
+                )
+
+        threading.Thread(
+            target=import_bars, name="backtest-bars-import", daemon=True
+        ).start()
+
+    def _apply_backtest_archive(
+        self,
+        action: str,
+        path: str,
+        result: dict[str, object],
+        error: str,
+    ) -> None:
+        self._backtest_action_inflight = False
+        self._set_backtest_actions_enabled(True)
+        if error:
+            title = "历史 K 线导出失败" if action == "export" else "历史 K 线导入失败"
+            self.backtest_status_var.set(f"{title}：{error}")
+            show_error(title, error)
+            return
+        if action == "export":
+            message = f"历史 K 线已导出到：\n{path}"
+            self.backtest_status_var.set(message.replace("\n", " "))
+            show_info("导出完成", message)
+        else:
+            counts = result.get("counts", {})
+            if not isinstance(counts, dict):
+                counts = {}
+            message = (
+                f"{result.get('symbol', '')} 导入完成："
+                f"日线 {counts.get('1d', 0)} 根、5分钟 {counts.get('5m', 0)} 根、"
+                f"1分钟 {counts.get('1m', 0)} 根。"
+            )
+            self.backtest_status_var.set(message)
+            show_info("导入完成", message)
+            self._refresh_backtest_data()
+
+    def _apply_backtest_action(
+        self, action: str, identifier: str, error: str
+    ) -> None:
+        self._backtest_action_inflight = False
+        self._set_backtest_actions_enabled(True)
+        if error:
+            title = "历史数据下载失败" if action == "download" else "回测启动失败"
+            self.backtest_status_var.set(f"{title}：{error}")
+            show_error(title, error)
+        else:
+            label = "下载" if action == "download" else "回测"
+            self.backtest_status_var.set(
+                f"{label}任务已提交（{identifier[:8]}），后台执行中。"
+            )
+        self._refresh_backtest_data()
+
+    def _refresh_backtest_data(self) -> None:
+        if self._closed or self._backtest_refresh_inflight:
+            return
+        self._backtest_refresh_inflight = True
+        self.backtest_refresh_button.setEnabled(False)
+
+        def refresh() -> None:
+            try:
+                downloads = self.backend_client.historical_downloads()
+                runs = self.backend_client.backtest_runs()
+                self._enqueue_event(("backtest_data", downloads, runs, ""))
+            except Exception as exc:
+                self._enqueue_event(("backtest_data", [], [], str(exc)))
+
+        threading.Thread(
+            target=refresh, name="backtest-data-refresh", daemon=True
+        ).start()
+
+    @staticmethod
+    def _backtest_datetime(timestamp: object) -> str:
+        try:
+            value = int(timestamp)
+        except (TypeError, ValueError):
+            return "—"
+        if value <= 0:
+            return "—"
+        return datetime.fromtimestamp(value / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _apply_backtest_data(
+        self,
+        downloads: list[dict[str, object]],
+        runs: list[dict[str, object]],
+        error: str,
+    ) -> None:
+        self._backtest_refresh_inflight = False
+        self.backtest_refresh_button.setEnabled(True)
+        if error:
+            self.backtest_status_var.set(f"回测记录刷新失败：{error}")
+            return
+        status_text = {
+            "QUEUED": "排队中",
+            "RUNNING": "进行中",
+            "COMPLETED": "已完成",
+            "FAILED": "失败",
+        }
+        self._backtest_downloads = {
+            str(item.get("download_id", "")): dict(item)
+            for item in downloads
+            if str(item.get("download_id", ""))
+        }
+        self.backtest_download_tree.clear_rows()
+        for item in downloads:
+            key = str(item.get("download_id", ""))
+            status = str(item.get("status", ""))
+            self.backtest_download_tree.insert(
+                "", None, iid=key, text=self._backtest_datetime(item.get("created_at")),
+                values=(
+                    item.get("symbol", ""), item.get("provider", ""),
+                    status_text.get(status, status), f"{item.get('progress', 0)}%",
+                    item.get("daily_count", 0), item.get("five_minute_count", 0),
+                    item.get("one_minute_count", 0), item.get("message", ""),
+                ),
+                tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
+            )
+        self.backtest_run_tree.clear_rows()
+        for item in runs:
+            key = str(item.get("run_id", ""))
+            status = str(item.get("status", ""))
+            self.backtest_run_tree.insert(
+                "", None, iid=key,
+                text=self._backtest_datetime(
+                    item.get("completed_at") or item.get("created_at")
+                ),
+                values=(
+                    item.get("symbol", ""), item.get("strategy", ""),
+                    status_text.get(status, status), item.get("trade_count", 0),
+                    f"{item.get('win_count', 0)}/{item.get('loss_count', 0)}",
+                    item.get("total_pnl", "0"), f"{item.get('return_percent', '0')}%",
+                    f"{item.get('max_drawdown_percent', '0')}%", item.get("message", ""),
+                ),
+                tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
+            )
+        active_downloads = sum(
+            1 for item in downloads if item.get("status") in {"QUEUED", "RUNNING"}
+        )
+        active_runs = sum(
+            1 for item in runs if item.get("status") in {"QUEUED", "RUNNING"}
+        )
+        self.backtest_status_var.set(
+            f"已加载 {len(downloads)} 条下载记录、{len(runs)} 条回测结果；"
+            f"进行中的下载 {active_downloads} 个、回测 {active_runs} 个。"
+        )
+
     def _enqueue_event(self, event: tuple) -> None:
         try:
             self.events.put_nowait(event)
@@ -2125,6 +2637,16 @@ class AutoQuantApp(QMainWindow):
                 self._apply_ai_decisions(event[1])
             elif event[0] == "ai_decisions_error":
                 self._apply_ai_decisions_error(event[1])
+            elif event[0] == "backtest_action":
+                self._apply_backtest_action(event[1], event[2], event[3])
+            elif event[0] == "backtest_data":
+                self._apply_backtest_data(event[1], event[2], event[3])
+            elif event[0] == "backtest_archive":
+                self._apply_backtest_archive(
+                    event[1], event[2], event[3], event[4]
+                )
+            elif event[0] == "backtest_delete":
+                self._apply_backtest_delete(event[1], event[2])
         if not self.events.empty():
             QTimer.singleShot(10, self._drain_events)
 
@@ -2208,6 +2730,7 @@ class AutoQuantApp(QMainWindow):
         self._closed = True
         self.event_timer.stop()
         self.account_timer.stop()
+        self.backtest_timer.stop()
         self.controller.close()
         event.accept()
 

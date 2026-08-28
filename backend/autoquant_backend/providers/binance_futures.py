@@ -317,7 +317,7 @@ class BinanceFuturesProvider(BinanceStocksProvider):
         end_time: int,
         limit: int,
     ) -> list[Bar]:
-        if interval not in {"1d", "5m"}:
+        if interval not in {"1d", "5m", "1m"}:
             raise ProviderError(f"Futures 历史 K 线不支持周期 {interval}")
         if limit <= 0 or end_time < start_time:
             return []

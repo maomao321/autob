@@ -127,6 +127,44 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertEqual("19.00", window.trade_history_tree.item(0, 8).text())
         self.assertIn("平仓收益合计 19.00", window.trade_history_status_var.get())
 
+    def test_backtest_download_table_supports_row_context_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["BTCUSDT"], provider="binance_futures"))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window._apply_backtest_data(
+                [
+                    {
+                        "download_id": "download-1",
+                        "created_at": 1_700_000_000_000,
+                        "symbol": "BTCUSDT",
+                        "provider": "binance_futures",
+                        "status": "COMPLETED",
+                        "progress": 100,
+                        "daily_count": 100,
+                        "five_minute_count": 1000,
+                        "one_minute_count": 5000,
+                        "message": "下载完成",
+                    }
+                ],
+                [],
+                "",
+            )
+
+        self.assertEqual(
+            Qt.ContextMenuPolicy.CustomContextMenu,
+            window.backtest_download_tree.contextMenuPolicy(),
+        )
+        self.assertEqual(
+            "BTCUSDT", window._backtest_downloads["download-1"]["symbol"]
+        )
+
     def test_ai_decision_page_displays_result_input_and_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")

@@ -99,11 +99,114 @@ class BackendClient:
         except json.JSONDecodeError as exc:
             raise BackendClientError("后端返回了无效 JSON") from exc
 
+    def request_binary(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        content_type: str = "application/octet-stream",
+        timeout: float = 120.0,
+    ) -> tuple[bytes, dict[str, str]]:
+        headers = {
+            "Accept": "application/zip, application/json",
+            "User-Agent": "AutoQuant-Frontend/0.5.0",
+        }
+        if self.api_token:
+            headers["Authorization"] = f"Bearer {self.api_token}"
+        if body is not None:
+            headers["Content-Type"] = content_type
+        request = Request(
+            f"{self.base_url}{path}", data=body, method=method, headers=headers
+        )
+        try:
+            with urlopen(request, timeout=max(self.timeout, timeout)) as response:
+                return response.read(), dict(response.headers.items())
+        except HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            try:
+                detail = json.loads(raw).get("error", raw)
+            except json.JSONDecodeError:
+                detail = raw
+            raise BackendClientError(f"后端 HTTP {exc.code}: {detail}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise BackendClientError(f"无法连接后端 {self.base_url}: {exc}") from exc
+
     def load_config(self) -> AppConfig:
         return AppConfig(**self.request("GET", "/api/v1/config"))
 
     def save_config(self, config: AppConfig) -> AppConfig:
         return AppConfig(**self.request("PUT", "/api/v1/config", asdict(config)))
+
+    def start_historical_download(self, symbol: str) -> str:
+        payload = self.request(
+            "POST", "/api/v1/backtest/downloads", {"symbol": symbol.strip().upper()}
+        )
+        return str(payload["download_id"])
+
+    def historical_downloads(self, limit: int = 50) -> list[dict[str, Any]]:
+        query = urlencode({"limit": min(max(int(limit), 1), 200)})
+        payload = self.request("GET", f"/api/v1/backtest/downloads?{query}")
+        return [item for item in payload.get("items", []) if isinstance(item, dict)]
+
+    def export_historical_bars(
+        self, symbol: str, provider: str = ""
+    ) -> bytes:
+        query_values = {"symbol": symbol.strip().upper()}
+        if provider.strip():
+            query_values["provider"] = provider.strip().lower()
+        query = urlencode(query_values)
+        body, _headers = self.request_binary(
+            "GET", f"/api/v1/backtest/bars/export?{query}"
+        )
+        return body
+
+    def import_historical_bars(
+        self, archive: bytes, *, expected_symbol: str = ""
+    ) -> dict[str, Any]:
+        query = urlencode({"symbol": expected_symbol.strip().upper()})
+        body, _headers = self.request_binary(
+            "POST",
+            f"/api/v1/backtest/bars/import?{query}",
+            body=archive,
+            content_type="application/zip",
+        )
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise BackendClientError("后端返回了无效导入结果") from exc
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的导入结果格式不正确")
+        return payload
+
+    def delete_historical_bars(
+        self, symbol: str, provider: str
+    ) -> dict[str, Any]:
+        query = urlencode(
+            {
+                "symbol": symbol.strip().upper(),
+                "provider": provider.strip().lower(),
+            }
+        )
+        payload = self.request(
+            "DELETE", f"/api/v1/backtest/bars?{query}"
+        )
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的删除结果格式不正确")
+        return payload
+
+    def start_backtest(self, symbol: str, strategy: str) -> str:
+        payload = self.request(
+            "POST",
+            "/api/v1/backtest/runs",
+            {"symbol": symbol.strip().upper(), "strategy": strategy.strip()},
+        )
+        return str(payload["run_id"])
+
+    def backtest_runs(self, limit: int = 100) -> list[dict[str, Any]]:
+        query = urlencode({"limit": min(max(int(limit), 1), 500)})
+        payload = self.request("GET", f"/api/v1/backtest/runs?{query}")
+        return [item for item in payload.get("items", []) if isinstance(item, dict)]
 
 
 class RemoteConfigStore:

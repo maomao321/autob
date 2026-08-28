@@ -6,16 +6,25 @@ import json
 import os
 import signal
 import threading
+from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from autoquant_backend.runtime import BackendRuntime
 
 
 DEFAULT_MAX_CONNECTIONS = 32
 DEFAULT_CONNECTION_TIMEOUT = 15.0
+MAX_ARCHIVE_UPLOAD_BYTES = 128 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryPayload:
+    body: bytes
+    content_type: str
+    filename: str
 
 
 class AutoQuantHTTPServer(ThreadingHTTPServer):
@@ -88,6 +97,20 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("请求体必须是 JSON 对象")
         return payload
 
+    def _binary_body(self) -> bytes:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("Content-Length 无效") from exc
+        if length <= 0:
+            raise ValueError("导入文件为空")
+        if length > MAX_ARCHIVE_UPLOAD_BYTES:
+            raise ValueError("导入文件超过 128 MB 限制")
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise ValueError("导入文件上传不完整")
+        return body
+
     def _authorized(self) -> bool:
         token = self.server.api_token
         if not token:
@@ -108,6 +131,18 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_binary(self, status: HTTPStatus, payload: BinaryPayload) -> None:
+        self.send_response(status.value)
+        self.send_header("Content-Type", payload.content_type)
+        self.send_header("Content-Length", str(len(payload.body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header(
+            "Content-Disposition",
+            "attachment; filename*=UTF-8''" + quote(payload.filename, safe=""),
+        )
+        self.end_headers()
+        self.wfile.write(payload.body)
 
     def _dispatch(self) -> tuple[HTTPStatus, Any]:
         parsed = urlparse(self.path)
@@ -159,6 +194,50 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 stage=query.get("stage", ["ALL"])[0],
                 limit=int(query.get("limit", ["100"])[0]),
             )
+        if path == "/api/v1/backtest/downloads":
+            if self.command == "GET":
+                query = parse_qs(parsed.query)
+                return HTTPStatus.OK, runtime.historical_downloads(
+                    limit=int(query.get("limit", ["50"])[0])
+                )
+            if self.command == "POST":
+                payload = self._json_body()
+                return HTTPStatus.ACCEPTED, runtime.start_historical_download(
+                    str(payload.get("symbol", ""))
+                )
+        if path == "/api/v1/backtest/bars/export" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            body, filename = runtime.export_historical_bars(
+                query.get("symbol", [""])[0],
+                query.get("provider", [""])[0],
+            )
+            return HTTPStatus.OK, BinaryPayload(
+                body=body,
+                content_type="application/zip",
+                filename=filename,
+            )
+        if path == "/api/v1/backtest/bars/import" and self.command == "POST":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.import_historical_bars(
+                self._binary_body(),
+                expected_symbol=query.get("symbol", [""])[0],
+            )
+        if path == "/api/v1/backtest/bars" and self.command == "DELETE":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.delete_historical_bars(
+                query.get("symbol", [""])[0],
+                query.get("provider", [""])[0],
+            )
+        if path == "/api/v1/backtest/runs":
+            if self.command == "GET":
+                query = parse_qs(parsed.query)
+                return HTTPStatus.OK, runtime.backtest_runs(
+                    limit=int(query.get("limit", ["100"])[0])
+                )
+            if self.command == "POST":
+                return HTTPStatus.ACCEPTED, runtime.start_backtest(
+                    self._json_body()
+                )
 
         parts = [unquote(part) for part in path.split("/") if part]
         if len(parts) >= 5 and parts[:3] == ["api", "v1", "runners"]:
@@ -197,11 +276,15 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 "error": "服务器处理失败",
                 "detail": str(exc),
             }
-        self._send(status, payload)
+        if isinstance(payload, BinaryPayload):
+            self._send_binary(status, payload)
+        else:
+            self._send(status, payload)
 
     do_GET = _handle
     do_POST = _handle
     do_PUT = _handle
+    do_DELETE = _handle
 
 
 def create_server(

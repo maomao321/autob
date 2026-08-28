@@ -18,6 +18,12 @@ from autoquant_shared.config import (
     default_config_path,
 )
 from autoquant_backend.engine import RunnerConfig, TradingController, create_provider
+from autoquant_backend.backtest import (
+    BacktestService,
+    BacktestStore,
+    HistoricalArchiveService,
+    HistoricalDownloader,
+)
 from autoquant_shared.models import AccountOverview, Direction, RuntimeSnapshot
 from autoquant_backend.state import OrderLedger
 from autoquant_shared.formatting import financial_text
@@ -83,6 +89,11 @@ class BackendRuntime:
     ) -> None:
         self.config_store = config_store or ConfigStore()
         self.ledger = ledger or OrderLedger()
+        self.backtest_store = BacktestStore(self.ledger.path)
+        self.backtest_service = BacktestService(self.backtest_store)
+        self.historical_archive_service = HistoricalArchiveService(
+            self.backtest_store
+        )
         self.desired_state_path = desired_state_path or default_config_path().with_name(
             "running.json"
         )
@@ -488,6 +499,62 @@ class BackendRuntime:
             ],
             "count": len(items),
         }
+
+    def start_historical_download(self, symbol: str) -> dict[str, Any]:
+        runner_config = self._runner_config()
+        provider_name = runner_config.app.provider
+        downloader = HistoricalDownloader(
+            self.backtest_store,
+            lambda: create_provider(runner_config),
+            provider_name,
+        )
+        download_id = downloader.start(symbol)
+        return {"accepted": True, "download_id": download_id}
+
+    def historical_downloads(self, limit: int = 50) -> dict[str, Any]:
+        items = self.backtest_store.list_downloads(limit)
+        return {"items": items, "count": len(items)}
+
+    def export_historical_bars(
+        self, symbol: str, provider: str = ""
+    ) -> tuple[bytes, str]:
+        selected_provider = provider.strip().lower() or self.config_store.load().provider
+        return self.historical_archive_service.export(
+            selected_provider, symbol
+        )
+
+    def import_historical_bars(
+        self, payload: bytes, *, expected_symbol: str = ""
+    ) -> dict[str, Any]:
+        return self.historical_archive_service.import_archive(
+            payload, expected_symbol=expected_symbol
+        )
+
+    def delete_historical_bars(
+        self, symbol: str, provider: str = ""
+    ) -> dict[str, Any]:
+        selected_provider = provider.strip().lower() or self.config_store.load().provider
+        result = self.backtest_store.delete_historical_bars(
+            selected_provider, symbol
+        )
+        return {
+            "provider": selected_provider,
+            "symbol": symbol.strip().upper(),
+            **result,
+        }
+
+    def start_backtest(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self.config_store.load()
+        strategy = str(payload.get("strategy", config.strategy)).strip()
+        symbol = str(payload.get("symbol", "")).strip().upper()
+        run_id = self.backtest_service.start(
+            config.provider, symbol, strategy, config
+        )
+        return {"accepted": True, "run_id": run_id}
+
+    def backtest_runs(self, limit: int = 100) -> dict[str, Any]:
+        items = self.backtest_store.list_runs(limit)
+        return {"items": items, "count": len(items)}
 
     def restore_desired_runners(self) -> list[str]:
         if not self.desired_state_path.exists():
