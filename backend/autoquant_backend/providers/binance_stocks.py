@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import queue
+import random
 import ssl
 import threading
 import time
@@ -53,6 +54,160 @@ class OrderStatusUnknownError(ProviderError):
     """The order may have reached the exchange, so its state is unknown."""
 
 
+class _SharedKlineStream:
+    """Multiplex all symbols for one market endpoint onto one WebSocket."""
+
+    def __init__(self, provider: "BinanceStocksProvider") -> None:
+        self.provider = provider
+        self._lock = threading.RLock()
+        self._subscribers: dict[
+            str, tuple[str, queue.Queue[tuple[str, Any]], StatusCallback | None]
+        ] = {}
+        self._socket: Any = None
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def subscribe(
+        self, symbol: str, status_callback: StatusCallback | None
+    ) -> tuple[str, queue.Queue[tuple[str, Any]]]:
+        token = uuid.uuid4().hex
+        messages: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=512)
+        restart = False
+        with self._lock:
+            self._subscribers[token] = (symbol, messages, status_callback)
+            thread = self._thread
+            if thread is None or not thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name=f"binance-shared-ws-{self.provider.name}",
+                    daemon=True,
+                )
+                self._thread.start()
+            else:
+                restart = True
+        if restart:
+            self._restart_socket()
+        return token, messages
+
+    def unsubscribe(self, token: str) -> None:
+        with self._lock:
+            self._subscribers.pop(token, None)
+        self._restart_socket()
+
+    def _restart_socket(self) -> None:
+        self._wake.set()
+        socket = self._socket
+        if socket is not None:
+            socket.close()
+
+    def _snapshot(
+        self,
+    ) -> list[tuple[str, queue.Queue[tuple[str, Any]], StatusCallback | None]]:
+        with self._lock:
+            return list(self._subscribers.values())
+
+    @staticmethod
+    def _put(
+        messages: queue.Queue[tuple[str, Any]], item: tuple[str, Any]
+    ) -> None:
+        try:
+            messages.put_nowait(item)
+        except queue.Full:
+            try:
+                messages.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                messages.put_nowait(item)
+            except queue.Full:
+                pass
+
+    def _broadcast_status(self, message: str) -> None:
+        for _symbol, messages, _callback in self._snapshot():
+            self._put(messages, ("status", message))
+
+    def _publish_bar(self, bar: Bar) -> None:
+        for symbol, messages, _callback in self._snapshot():
+            if symbol == bar.symbol.upper():
+                self._put(messages, ("bar", bar))
+
+    def _run(self) -> None:
+        try:
+            import websocket
+        except ImportError:
+            message = "缺少 websocket-client，请先执行: python -m pip install -e ."
+            for _symbol, messages, _callback in self._snapshot():
+                self._put(messages, ("error", message))
+            return
+
+        reconnect_delay = 1.0
+        while True:
+            self._wake.clear()
+            subscribers = self._snapshot()
+            if not subscribers:
+                return
+            symbols = sorted({item[0] for item in subscribers})
+
+            def on_open(_ws: Any) -> None:
+                self._broadcast_status("行情 WebSocket 已连接")
+
+            def on_message(_ws: Any, raw_message: str) -> None:
+                nonlocal reconnect_delay
+                reconnect_delay = 1.0
+                try:
+                    self._publish_bar(
+                        self.provider.parse_kline_message(json.loads(raw_message))
+                    )
+                except (TypeError, ValueError, KeyError) as exc:
+                    self._broadcast_status(f"忽略无法解析的行情消息: {exc}")
+
+            def on_error(_ws: Any, error: Any) -> None:
+                self._broadcast_status(f"行情连接错误: {error}")
+
+            def on_close(
+                _ws: Any,
+                status_code: int | None,
+                close_message: str | None,
+            ) -> None:
+                if self._wake.is_set():
+                    return
+                detail = close_message or "连接已关闭"
+                self._broadcast_status(
+                    f"行情连接关闭({status_code}): {detail}"
+                )
+
+            ws = websocket.WebSocketApp(
+                self.provider._combined_stream_url(symbols),
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            with self._lock:
+                self._socket = ws
+            if self._wake.is_set():
+                ws.close()
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+                sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+            )
+            with self._lock:
+                if self._socket is ws:
+                    self._socket = None
+            if not self._snapshot():
+                return
+            if self._wake.is_set():
+                continue
+            jittered_delay = min(
+                30.0, reconnect_delay * random.uniform(0.8, 1.2)
+            )
+            self._broadcast_status(f"{jittered_delay:.1f} 秒后重连行情")
+            if self._wake.wait(jittered_delay):
+                continue
+            reconnect_delay = min(reconnect_delay * 2, 30.0)
+
+
 class BinanceStocksProvider(TradingProvider):
     name = "binance_stocks"
     supports_short = False
@@ -60,6 +215,12 @@ class BinanceStocksProvider(TradingProvider):
     _public_cache_lock = threading.RLock()
     _tokenized_assets_cache: tuple[float, list[dict[str, Any]]] | None = None
     _request_semaphore = threading.BoundedSemaphore(4)
+    _request_spacing_lock = threading.Lock()
+    _next_request_at = 0.0
+    _minimum_request_interval = 0.25
+    _retryable_http_statuses = {418, 429, 500, 502, 503, 504}
+    _shared_streams_lock = threading.RLock()
+    _shared_streams: dict[tuple[str, str, bool], _SharedKlineStream] = {}
     _nasdaq_quote_base_url = "https://api.nasdaq.com/api/quote"
 
     def __init__(
@@ -86,6 +247,7 @@ class BinanceStocksProvider(TradingProvider):
         self._symbol_info_cached_at: dict[str, float] = {}
         self._latest_price_cache: dict[str, tuple[float, Decimal]] = {}
         self._server_time_synced_at = 0.0
+        self._server_time_lock = threading.Lock()
 
     def stream_bars(
         self,
@@ -93,96 +255,28 @@ class BinanceStocksProvider(TradingProvider):
         stop_event: Event,
         status_callback: StatusCallback | None = None,
     ) -> Iterator[Bar]:
-        try:
-            import websocket
-        except ImportError as exc:
-            raise ProviderError(
-                "缺少 websocket-client，请先执行: python -m pip install -e ."
-            ) from exc
-
         symbol = symbol.upper()
-        url = self._stream_url(symbol)
-        reconnect_delay = 1.0
-
-        while not stop_event.is_set():
-            messages: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=512)
-
-            def put_message(item: tuple[str, Any]) -> None:
-                try:
-                    messages.put_nowait(item)
-                except queue.Full:
-                    try:
-                        messages.get_nowait()
-                    except queue.Empty:
-                        pass
-                    try:
-                        messages.put_nowait(item)
-                    except queue.Full:
-                        pass
-
-            def on_open(_ws: Any) -> None:
-                put_message(("status", "行情 WebSocket 已连接"))
-
-            def on_message(_ws: Any, raw_message: str) -> None:
-                nonlocal reconnect_delay
-                reconnect_delay = 1.0
-                try:
-                    payload = json.loads(raw_message)
-                    put_message(("bar", self.parse_kline_message(payload)))
-                except (TypeError, ValueError, KeyError) as exc:
-                    put_message(("status", f"忽略无法解析的行情消息: {exc}"))
-
-            def on_error(_ws: Any, error: Any) -> None:
-                put_message(("status", f"行情连接错误: {error}"))
-
-            def on_close(
-                _ws: Any,
-                status_code: int | None,
-                close_message: str | None,
-            ) -> None:
-                detail = close_message or "连接已关闭"
-                put_message(("status", f"行情连接关闭({status_code}): {detail}"))
-
-            ws = websocket.WebSocketApp(
-                url,
-                on_open=on_open,
-                on_message=on_message,
-                on_error=on_error,
-                on_close=on_close,
-            )
-            socket_thread = threading.Thread(
-                target=ws.run_forever,
-                kwargs={
-                    "ping_interval": 20,
-                    "ping_timeout": 10,
-                    "sslopt": {"cert_reqs": ssl.CERT_REQUIRED},
-                },
-                name=f"binance-ws-{symbol}",
-                daemon=True,
-            )
-            socket_thread.start()
-
-            while (
-                socket_thread.is_alive() or not messages.empty()
-            ) and not stop_event.is_set():
+        key = (self.name, self.websocket_base_url, self.include_daily_stream)
+        with self._shared_streams_lock:
+            stream = self._shared_streams.get(key)
+            if stream is None:
+                stream = _SharedKlineStream(self)
+                self._shared_streams[key] = stream
+        token, messages = stream.subscribe(symbol, status_callback)
+        try:
+            while not stop_event.is_set():
                 try:
                     kind, value = messages.get(timeout=0.5)
                 except queue.Empty:
                     continue
                 if kind == "bar":
                     yield value
+                elif kind == "error":
+                    raise ProviderError(str(value))
                 elif status_callback:
                     status_callback(str(value))
-
-            ws.close()
-            socket_thread.join(timeout=2)
-            if stop_event.is_set():
-                break
-            if status_callback:
-                status_callback(f"{reconnect_delay:.0f} 秒后重连行情")
-            if stop_event.wait(reconnect_delay):
-                break
-            reconnect_delay = min(reconnect_delay * 2, 30.0)
+        finally:
+            stream.unsubscribe(token)
 
     def place_order(self, order: OrderRequest) -> OrderResult:
         if not self.live_trading:
@@ -311,9 +405,18 @@ class BinanceStocksProvider(TradingProvider):
         return payload
 
     def _stream_url(self, symbol: str) -> str:
-        streams = f"{symbol}@kline_5m"
-        if self.include_daily_stream:
-            streams += f"/{symbol}@kline_1d"
+        return self._combined_stream_url([symbol.upper()])
+
+    def _combined_stream_url(self, symbols: list[str]) -> str:
+        streams = "/".join(
+            stream
+            for symbol in symbols
+            for stream in (
+                [f"{symbol.upper()}@kline_5m", f"{symbol.upper()}@kline_1d"]
+                if self.include_daily_stream
+                else [f"{symbol.upper()}@kline_5m"]
+            )
+        )
         return f"{self.websocket_base_url}/stream?streams={streams}"
 
     def get_account_total(self, quote_asset: str = "USDC") -> Decimal:
@@ -453,8 +556,11 @@ class BinanceStocksProvider(TradingProvider):
         ).date().isoformat()
 
     def _ensure_server_time(self) -> None:
-        if time.monotonic() - self._server_time_synced_at >= 60:
-            self.sync_server_time()
+        if time.monotonic() - self._server_time_synced_at < 60:
+            return
+        with self._server_time_lock:
+            if time.monotonic() - self._server_time_synced_at >= 60:
+                self.sync_server_time()
 
     def sync_server_time(self) -> int:
         return self._sync_server_time(
@@ -646,14 +752,24 @@ class BinanceStocksProvider(TradingProvider):
         self, method: str, path: str, params: dict[str, Any]
     ) -> Any:
         self._require_credentials()
-        signed_params = dict(params)
-        signed_params["recvWindow"] = self.recv_window
-        signed_params["timestamp"] = (
-            int(time.time() * 1000) + self._server_time_offset_ms
-        )
-        query = urlencode(signed_params)
-        signed_params["signature"] = self._signature(query)
-        return self._request_json(method, path, signed_params, signed=True)
+        self._ensure_server_time()
+        for attempt in range(2):
+            signed_params = dict(params)
+            signed_params["recvWindow"] = self.recv_window
+            signed_params["timestamp"] = (
+                int(time.time() * 1000) + self._server_time_offset_ms
+            )
+            query = urlencode(signed_params)
+            signed_params["signature"] = self._signature(query)
+            try:
+                return self._request_json(
+                    method, path, signed_params, signed=True
+                )
+            except ProviderHTTPError as exc:
+                if attempt or exc.exchange_code != -1021:
+                    raise
+                self.sync_server_time()
+        raise ProviderError("Binance 签名请求失败")
 
     def _request_json(
         self,
@@ -693,25 +809,49 @@ class BinanceStocksProvider(TradingProvider):
         }
         if headers:
             request_headers.update(headers)
-        request = Request(url, method=method.upper(), headers=request_headers)
-        try:
-            with self._request_semaphore:
-                with urlopen(request, timeout=self.request_timeout) as response:
-                    body = response.read().decode("utf-8")
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            if source_name != "Binance":
-                detail = body[:300] if body.strip() else str(exc.reason)
-                raise ProviderError(
-                    f"{source_name} HTTP {exc.code}: {detail}"
+        normalized_method = method.upper()
+        request = Request(url, method=normalized_method, headers=request_headers)
+        max_attempts = (
+            4
+            if source_name == "Binance" and normalized_method == "GET"
+            else 1
+        )
+        body = ""
+        for attempt in range(max_attempts):
+            try:
+                self._wait_for_request_slot()
+                with self._request_semaphore:
+                    with urlopen(
+                        request, timeout=self.request_timeout
+                    ) as response:
+                        body = response.read().decode("utf-8")
+                break
+            except HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                can_retry = (
+                    attempt + 1 < max_attempts
+                    and exc.code in self._retryable_http_statuses
+                )
+                if can_retry:
+                    time.sleep(self._retry_delay(attempt, exc.headers))
+                    continue
+                if source_name != "Binance":
+                    detail = body[:300] if body.strip() else str(exc.reason)
+                    raise ProviderError(
+                        f"{source_name} HTTP {exc.code}: {detail}"
+                    ) from exc
+                raise ProviderHTTPError(
+                    exc.code,
+                    self._error_message(exc.code, body),
+                    self._exchange_error_code(body),
                 ) from exc
-            raise ProviderHTTPError(
-                exc.code,
-                self._error_message(exc.code, body),
-                self._exchange_error_code(body),
-            ) from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            raise ProviderTransportError(f"{source_name}请求失败: {exc}") from exc
+            except (URLError, TimeoutError, OSError) as exc:
+                if attempt + 1 < max_attempts:
+                    time.sleep(self._retry_delay(attempt, None))
+                    continue
+                raise ProviderTransportError(
+                    f"{source_name}请求失败: {exc}"
+                ) from exc
         if not body.strip():
             return {}
         try:
@@ -719,6 +859,33 @@ class BinanceStocksProvider(TradingProvider):
         except json.JSONDecodeError as exc:
             raise ProviderError(f"{source_name}返回了无效 JSON") from exc
         return payload
+
+    @classmethod
+    def _wait_for_request_slot(cls) -> None:
+        with BinanceStocksProvider._request_spacing_lock:
+            now = time.monotonic()
+            wait_seconds = max(
+                0.0, BinanceStocksProvider._next_request_at - now
+            )
+            BinanceStocksProvider._next_request_at = (
+                max(now, BinanceStocksProvider._next_request_at)
+                + BinanceStocksProvider._minimum_request_interval
+            )
+        if wait_seconds:
+            time.sleep(wait_seconds)
+
+    @staticmethod
+    def _retry_delay(attempt: int, headers: Any) -> float:
+        retry_after = None
+        if headers is not None:
+            try:
+                retry_after = float(headers.get("Retry-After", ""))
+            except (TypeError, ValueError):
+                retry_after = None
+        if retry_after is not None and retry_after >= 0:
+            return min(retry_after, 60.0)
+        base = min(0.5 * (2**attempt), 8.0)
+        return base * random.uniform(0.8, 1.2)
 
     def _signature(self, query: str) -> str:
         return hmac.new(

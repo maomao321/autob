@@ -42,6 +42,16 @@ class BinanceFuturesProviderTests(unittest.TestCase):
             "btcusdt@kline_5m/btcusdt@kline_1d",
             provider._stream_url("BTCUSDT"),
         )
+        self.assertEqual(
+            "wss://fstream.binance.com/market/stream?streams="
+            "btcusdt@kline_5m/btcusdt@kline_1d/"
+            "ethusdt@kline_5m/ethusdt@kline_1d",
+            provider._combined_stream_url(["BTCUSDT", "ETHUSDT"]),
+        )
+        self.assertEqual(
+            "wss://fstream.binance.com/private/ws/listen-key",
+            provider._user_stream_url("listen-key"),
+        )
 
     def test_leverage_is_bounded(self) -> None:
         with self.assertRaisesRegex(ValueError, "1 到 125"):

@@ -359,6 +359,27 @@ class BacktestStore:
             ).fetchone()
         return int(row["count"] if row else 0)
 
+    def latest_bar_open_time(
+        self,
+        provider: str,
+        symbol: str,
+        interval: str,
+        start_time: int,
+        end_time: int,
+    ) -> int | None:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT MAX(open_time) AS open_time FROM market_bars
+                WHERE provider = ? AND symbol = ? AND interval = ?
+                  AND open_time >= ? AND open_time <= ?
+                """,
+                (provider, symbol, interval, start_time, end_time),
+            ).fetchone()
+        if row is None or row["open_time"] is None:
+            return None
+        return int(row["open_time"])
+
     def load_bars(
         self,
         provider: str,
@@ -989,8 +1010,15 @@ class HistoricalDownloader:
         end_time: int,
         interval_index: int,
     ) -> int:
-        cursor = start_time
         step = INTERVAL_MS[interval]
+        latest_open_time = self.store.latest_bar_open_time(
+            self.provider_name, symbol, interval, start_time, end_time
+        )
+        cursor = (
+            start_time
+            if latest_open_time is None
+            else max(start_time, latest_open_time + step)
+        )
         pages = 0
         while cursor <= end_time:
             bars = provider.get_historical_bars(

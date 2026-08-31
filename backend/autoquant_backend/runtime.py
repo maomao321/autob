@@ -18,6 +18,7 @@ from autoquant_shared.config import (
     default_config_path,
 )
 from autoquant_backend.engine import RunnerConfig, TradingController, create_provider
+from autoquant_backend.providers.base import TradingProvider
 from autoquant_backend.providers.binance_futures import BinanceFuturesProvider
 from autoquant_backend.backtest import (
     BacktestService,
@@ -105,6 +106,9 @@ class BackendRuntime:
         self._config_lock = threading.RLock()
         self._futures_market_lock = threading.RLock()
         self._futures_market_cache: tuple[float, dict[str, Any]] | None = None
+        self._account_provider_lock = threading.RLock()
+        self._account_provider_key: tuple[Any, ...] | None = None
+        self._account_provider: TradingProvider | None = None
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._logs: deque[ServiceLog] = deque(maxlen=max(100, log_capacity))
         self._log_sequence = 0
@@ -276,6 +280,9 @@ class BackendRuntime:
             config.validate()
             self.config_store.save(config)
             self._paper_mode = config.trading_mode != "REAL"
+            with self._account_provider_lock:
+                self._account_provider_key = None
+                self._account_provider = None
             self._sync_configured_snapshots(config)
             return self.public_config()
 
@@ -456,7 +463,7 @@ class BackendRuntime:
     def account_overview(self, market_prices: dict[str, Any]) -> dict[str, Any]:
         runner_config = self._runner_config()
         paper = runner_config.app.trading_mode != "REAL"
-        provider = create_provider(runner_config)
+        provider = self._shared_account_provider(runner_config)
         account_currency = provider.quote_asset
         prices: dict[str, Decimal] = {}
         for symbol, value in market_prices.items():
@@ -467,6 +474,27 @@ class BackendRuntime:
             if parsed.is_finite() and parsed > 0:
                 prices[symbol.upper()] = parsed
 
+        open_symbols = self.controller.open_position_symbols(paper=paper)
+        now_ms = int(time.time() * 1000)
+        with self._lock:
+            snapshots = {
+                symbol: dict(self._snapshots.get(symbol, {}))
+                for symbol in open_symbols
+            }
+        for symbol, snapshot in snapshots.items():
+            try:
+                updated_at = int(snapshot.get("updated_at", 0))
+                latest = Decimal(str(snapshot.get("last_price")))
+            except (ArithmeticError, TypeError, ValueError):
+                continue
+            if (
+                updated_at > 0
+                and now_ms - updated_at <= 120_000
+                and latest.is_finite()
+                and latest > 0
+            ):
+                prices[symbol] = latest
+
         total_balance: Decimal | None = None
         errors: list[str] = []
         if runner_config.api_key and runner_config.api_secret:
@@ -474,7 +502,9 @@ class BackendRuntime:
                 total_balance = provider.get_account_total(account_currency)
             except Exception as exc:
                 errors.append(f"账户总金额不可用：{exc}")
-            for symbol in self.controller.open_position_symbols(paper=paper):
+            for symbol in open_symbols:
+                if symbol in prices:
+                    continue
                 try:
                     prices[symbol] = provider.get_latest_price(symbol)
                 except Exception as exc:
@@ -509,6 +539,26 @@ class BackendRuntime:
                 updated_at=int(time.time() * 1000),
             )
         )
+
+    def _shared_account_provider(
+        self, runner_config: RunnerConfig
+    ) -> TradingProvider:
+        app = runner_config.app
+        key = (
+            app.provider,
+            app.trading_mode,
+            app.rest_base_url,
+            app.websocket_base_url,
+            app.recv_window,
+            app.leverage,
+            runner_config.api_key,
+            runner_config.api_secret,
+        )
+        with self._account_provider_lock:
+            if self._account_provider is None or self._account_provider_key != key:
+                self._account_provider = create_provider(runner_config)
+                self._account_provider_key = key
+            return self._account_provider
 
     def trade_history(
         self,

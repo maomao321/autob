@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
+import queue
+import random
+import ssl
+import threading
 import time
 import uuid
+from collections.abc import Iterator
 from decimal import Decimal, ROUND_DOWN
+from threading import Event
 from typing import Any
 
 from autoquant_shared.models import Bar, OrderRequest, OrderResult, Side
@@ -20,6 +27,168 @@ from autoquant_backend.providers.binance_stocks import (
 PERPETUAL_CONTRACT_TYPES = {"PERPETUAL", "TRADIFI_PERPETUAL"}
 
 
+class _SharedFuturesUserStream:
+    """Share one account-wide Futures user stream across symbol runners."""
+
+    def __init__(self, provider: "BinanceFuturesProvider") -> None:
+        self.provider = provider
+        self._lock = threading.RLock()
+        self._subscribers: dict[str, queue.Queue[tuple[str, Any]]] = {}
+        self._socket: Any = None
+        self._thread: threading.Thread | None = None
+
+    def subscribe(self) -> tuple[str, queue.Queue[tuple[str, Any]]]:
+        token = uuid.uuid4().hex
+        messages: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=512)
+        with self._lock:
+            self._subscribers[token] = messages
+            thread = self._thread
+            if thread is None or not thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._run,
+                    name="binance-futures-user-stream",
+                    daemon=True,
+                )
+                self._thread.start()
+        return token, messages
+
+    def unsubscribe(self, token: str) -> None:
+        with self._lock:
+            self._subscribers.pop(token, None)
+            empty = not self._subscribers
+            socket = self._socket
+        if empty and socket is not None:
+            socket.close()
+
+    def _snapshot(self) -> list[queue.Queue[tuple[str, Any]]]:
+        with self._lock:
+            return list(self._subscribers.values())
+
+    @staticmethod
+    def _put(
+        messages: queue.Queue[tuple[str, Any]], item: tuple[str, Any]
+    ) -> None:
+        try:
+            messages.put_nowait(item)
+        except queue.Full:
+            try:
+                messages.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                messages.put_nowait(item)
+            except queue.Full:
+                pass
+
+    def _broadcast(self, kind: str, value: Any) -> None:
+        for messages in self._snapshot():
+            self._put(messages, (kind, value))
+
+    def _run(self) -> None:
+        try:
+            import websocket
+        except ImportError:
+            self._broadcast(
+                "error",
+                "缺少 websocket-client，请先执行: python -m pip install -e .",
+            )
+            return
+
+        reconnect_delay = 1.0
+        while self._snapshot():
+            listen_key = ""
+            try:
+                payload = self.provider._request_json(
+                    "POST", "/fapi/v1/listenKey", {}, signed=False
+                )
+                if isinstance(payload, dict):
+                    listen_key = str(payload.get("listenKey", "")).strip()
+                if not listen_key:
+                    raise ProviderError("Futures 用户数据流未返回 listenKey")
+            except Exception as exc:
+                self._broadcast("status", f"订单事件流连接失败: {exc}")
+                if not self._wait_before_reconnect(reconnect_delay):
+                    return
+                reconnect_delay = min(reconnect_delay * 2, 30.0)
+                continue
+
+            keepalive_stop = threading.Event()
+
+            def on_open(_ws: Any) -> None:
+                nonlocal reconnect_delay
+                reconnect_delay = 1.0
+                self._broadcast("status", "订单事件流已连接")
+
+            def on_message(_ws: Any, raw_message: str) -> None:
+                try:
+                    payload = json.loads(raw_message)
+                except (TypeError, json.JSONDecodeError):
+                    return
+                if isinstance(payload, dict):
+                    self._broadcast("event", payload)
+
+            def on_error(_ws: Any, error: Any) -> None:
+                self._broadcast("status", f"订单事件流错误: {error}")
+
+            ws = websocket.WebSocketApp(
+                self.provider._user_stream_url(listen_key),
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+            )
+            with self._lock:
+                self._socket = ws
+            keepalive_thread = threading.Thread(
+                target=self._keepalive,
+                args=(listen_key, keepalive_stop, ws),
+                name="binance-futures-user-stream-keepalive",
+                daemon=True,
+            )
+            keepalive_thread.start()
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+                sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+            )
+            keepalive_stop.set()
+            keepalive_thread.join(timeout=1)
+            with self._lock:
+                if self._socket is ws:
+                    self._socket = None
+            if not self._snapshot():
+                try:
+                    self.provider._request_json(
+                        "DELETE", "/fapi/v1/listenKey", {}, signed=False
+                    )
+                except Exception:
+                    pass
+                return
+            if not self._wait_before_reconnect(reconnect_delay):
+                return
+            reconnect_delay = min(reconnect_delay * 2, 30.0)
+
+    def _keepalive(
+        self, listen_key: str, stop_event: Event, socket: Any
+    ) -> None:
+        while not stop_event.wait(30 * 60):
+            try:
+                self.provider._request_json(
+                    "PUT", "/fapi/v1/listenKey", {}, signed=False
+                )
+            except Exception as exc:
+                self._broadcast("status", f"订单事件流续期失败: {exc}")
+                socket.close()
+                return
+
+    def _wait_before_reconnect(self, base_delay: float) -> bool:
+        delay = min(30.0, base_delay * random.uniform(0.8, 1.2))
+        self._broadcast("status", f"订单事件流将在 {delay:.1f} 秒后重连")
+        deadline = time.monotonic() + delay
+        while self._snapshot() and time.monotonic() < deadline:
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        return bool(self._snapshot())
+
+
 class BinanceFuturesProvider(BinanceStocksProvider):
     """Binance USDⓈ-M Futures provider using one-way net positions."""
 
@@ -27,6 +196,8 @@ class BinanceFuturesProvider(BinanceStocksProvider):
     supports_short = True
     quote_asset = "USDT"
     _futures_exchange_info_cache: tuple[float, dict[str, Any]] | None = None
+    _user_streams_lock = threading.RLock()
+    _user_streams: dict[tuple[str, str, str], _SharedFuturesUserStream] = {}
 
     def __init__(
         self,
@@ -56,11 +227,50 @@ class BinanceFuturesProvider(BinanceStocksProvider):
         self._prepared_symbols: set[str] = set()
 
     def _stream_url(self, symbol: str) -> str:
-        normalized = symbol.lower()
-        streams = f"{normalized}@kline_5m"
-        if self.include_daily_stream:
-            streams += f"/{normalized}@kline_1d"
+        return self._combined_stream_url([symbol])
+
+    def _combined_stream_url(self, symbols: list[str]) -> str:
+        streams = "/".join(
+            stream
+            for symbol in symbols
+            for stream in (
+                [f"{symbol.lower()}@kline_5m", f"{symbol.lower()}@kline_1d"]
+                if self.include_daily_stream
+                else [f"{symbol.lower()}@kline_5m"]
+            )
+        )
         return f"{self.websocket_base_url}/market/stream?streams={streams}"
+
+    def stream_order_updates(
+        self,
+        stop_event: Event,
+        status_callback: Any = None,
+    ) -> Iterator[dict[str, Any]]:
+        self._require_credentials()
+        key = (self.api_key, self.rest_base_url, self.websocket_base_url)
+        with self._user_streams_lock:
+            stream = self._user_streams.get(key)
+            if stream is None:
+                stream = _SharedFuturesUserStream(self)
+                self._user_streams[key] = stream
+        token, messages = stream.subscribe()
+        try:
+            while not stop_event.is_set():
+                try:
+                    kind, value = messages.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if kind == "event" and isinstance(value, dict):
+                    yield value
+                elif kind == "error":
+                    raise ProviderError(str(value))
+                elif status_callback:
+                    status_callback(str(value))
+        finally:
+            stream.unsubscribe(token)
+
+    def _user_stream_url(self, listen_key: str) -> str:
+        return f"{self.websocket_base_url}/private/ws/{listen_key}"
 
     def check_symbol(self, symbol: str) -> dict:
         symbol = symbol.strip().upper()

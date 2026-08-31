@@ -246,6 +246,55 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("123.45", payload["total_balance"])
         self.assertIn("Binance Futures USDT", payload["message"])
 
+    def test_account_overview_reuses_provider_instance(self) -> None:
+        with patch(
+            "autoquant_backend.runtime.create_provider"
+        ) as create_provider_mock:
+            provider = create_provider_mock.return_value
+            provider.quote_asset = "USDC"
+            provider.get_account_total.return_value = Decimal("100")
+
+            self.runtime.account_overview({})
+            self.runtime.account_overview({})
+
+        create_provider_mock.assert_called_once()
+        self.assertEqual(2, provider.get_account_total.call_count)
+
+    def test_account_overview_uses_recent_runner_price_before_rest_quote(self) -> None:
+        opening = OrderRequest(
+            symbol="AAPL",
+            side=Side.BUY,
+            reference_price=Decimal("100"),
+            buy_notional=Decimal("200"),
+            sell_quantity=Decimal("2"),
+            client_order_id="overview-open",
+        )
+        self.runtime.ledger.record_submitting(opening, 123, paper=True)
+        self.runtime.ledger.mark_lifecycle(
+            opening.client_order_id,
+            "FILLED",
+            filled_quantity=Decimal("2"),
+            average_price=Decimal("100"),
+        )
+        self.runtime._on_snapshot(
+            RuntimeSnapshot(
+                symbol="AAPL",
+                last_price=Decimal("110"),
+                updated_at=int(time.time() * 1000),
+            )
+        )
+
+        with patch(
+            "autoquant_backend.runtime.create_provider"
+        ) as create_provider_mock:
+            provider = create_provider_mock.return_value
+            provider.quote_asset = "USDC"
+            provider.get_account_total.return_value = Decimal("1000")
+            payload = self.runtime.account_overview({})
+
+        provider.get_latest_price.assert_not_called()
+        self.assertEqual("20.00", payload["unrealized_pnl"])
+
     def test_financial_api_values_have_exactly_two_decimal_places(self) -> None:
         snapshot = snapshot_payload(
             RuntimeSnapshot(

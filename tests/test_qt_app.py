@@ -189,7 +189,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertFalse(hasattr(window, "contract_pool_add_button"))
             with patch.object(window, "_refresh_futures_rankings") as refresh:
                 window.notebook.setCurrentWidget(window.contract_pool_page)
-                self.assertTrue(window.contract_pool_timer.isActive())
+                self.assertFalse(window.contract_pool_timer.isActive())
                 refresh.assert_called_once()
                 window.notebook.setCurrentWidget(window.main_page)
                 self.assertFalse(window.contract_pool_timer.isActive())
@@ -583,6 +583,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(
                 "+6.25%", window.futures_gainers_tree.item(0, 1).text()
             )
+
             self.assertEqual(
                 "+1.2%", window.contract_pool_tree.item(0, 1).text()
             )
@@ -624,6 +625,34 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(
                 ["ETHUSDT", "SOLUSDT"], store.load().contract_pool
             )
+
+    def test_contract_pool_timer_tracks_visible_nonempty_pool(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"], contract_pool=[]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=MagicMock())
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            with patch.object(window, "_refresh_futures_rankings"):
+                window.notebook.setCurrentWidget(window.contract_pool_page)
+            self.assertFalse(window.contract_pool_timer.isActive())
+
+            window.futures_gainers_tree.insert(
+                "", None, iid="ETHUSDT", text="ETHUSDT", values=("+1%",)
+            )
+            window.futures_gainers_tree.selectRow(0)
+            window._add_selected_gainers_to_pool()
+            self.assertTrue(window.contract_pool_timer.isActive())
+
+            window.contract_pool_tree.selectRow(0)
+            window._remove_selected_pool_contracts()
+            self.assertFalse(window.contract_pool_timer.isActive())
 
     def test_removing_last_symbol_persists_without_saving_other_ui_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

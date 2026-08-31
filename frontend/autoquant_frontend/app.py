@@ -914,8 +914,20 @@ class AutoQuantApp(QMainWindow):
 
     def _on_page_changed(self, _index: int) -> None:
         if self.notebook.currentWidget() is self.contract_pool_page:
-            self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
+            self._sync_contract_pool_refresh_timer()
             self._refresh_futures_rankings()
+        else:
+            self.contract_pool_timer.stop()
+
+    def _sync_contract_pool_refresh_timer(self) -> None:
+        should_run = (
+            not self._closed
+            and self.notebook.currentWidget() is self.contract_pool_page
+            and bool(self.config.contract_pool)
+        )
+        if should_run:
+            if not self.contract_pool_timer.isActive():
+                self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
         else:
             self.contract_pool_timer.stop()
 
@@ -1112,8 +1124,7 @@ class AutoQuantApp(QMainWindow):
         except (TypeError, ValueError, OSError, OverflowError):
             refreshed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._futures_rankings_loaded = True
-        if self.notebook.currentWidget() is self.contract_pool_page:
-            self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
+        self._sync_contract_pool_refresh_timer()
         self._sync_contract_pool_table()
         self.contract_pool_status_var.set(
             f"更新于 {refreshed_at}；涨幅榜 {self.futures_gainers_tree.rowCount()} 个，"
@@ -1167,6 +1178,7 @@ class AutoQuantApp(QMainWindow):
             self.store.save(updated)
             self.config = updated
             self._sync_contract_pool_table()
+            self._sync_contract_pool_refresh_timer()
             self.contract_pool_status_var.set(
                 f"已添加 {', '.join(added)}；当前合约池共 {len(updated.contract_pool)} 个。"
             )
@@ -1191,6 +1203,7 @@ class AutoQuantApp(QMainWindow):
             self.store.save(updated)
             self.config = updated
             self._sync_contract_pool_table()
+            self._sync_contract_pool_refresh_timer()
             self.contract_pool_status_var.set(
                 f"已移除 {', '.join(selected)}；当前合约池共 {len(updated.contract_pool)} 个。"
             )

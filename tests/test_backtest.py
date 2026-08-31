@@ -234,6 +234,48 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual(1, result["five_minute_count"])
             self.assertEqual(1, result["one_minute_count"])
 
+    def test_historical_download_resumes_after_last_persisted_bar(self) -> None:
+        class CapturingProvider:
+            def __init__(self) -> None:
+                self.start_times: list[int] = []
+
+            def get_historical_bars(
+                self,
+                symbol: str,
+                interval: str,
+                start_time: int,
+                end_time: int,
+                limit: int,
+            ) -> list[Bar]:
+                self.start_times.append(start_time)
+                return []
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            store.upsert_bars(
+                "binance_futures", [make_bar("1m", 0, "10")]
+            )
+            download_id = store.create_download(
+                "binance_futures", "BTCUSDT", 0, MINUTE_MS * 2 - 1
+            )
+            provider = CapturingProvider()
+            downloader = HistoricalDownloader(
+                store, lambda: provider, "binance_futures"
+            )
+
+            count = downloader._download_interval(
+                download_id,
+                provider,
+                "BTCUSDT",
+                "1m",
+                0,
+                MINUTE_MS * 2 - 1,
+                2,
+            )
+
+            self.assertEqual([MINUTE_MS], provider.start_times)
+            self.assertEqual(1, count)
+
     def test_backtest_with_too_few_samples_completes_with_zero_trades(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = BacktestStore(Path(directory) / "orders.sqlite3")

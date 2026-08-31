@@ -241,11 +241,15 @@ class SymbolRunner:
         self._pending_orders = 0
         self._session_open_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
+        self._order_reconcile_thread: threading.Thread | None = None
+        self._order_event_thread: threading.Thread | None = None
+        self._background_order_error = ""
         self._ai_decision_day_key: int | None = None
         self._daily_backfill_day_key: int | None = None
         self._warmup_backfill_day_key: int | None = None
         self._close_position_on_stop = False
         self._lifecycle_lock = threading.Lock()
+        self._order_sync_lock = threading.RLock()
 
     @property
     def is_alive(self) -> bool:
@@ -260,6 +264,7 @@ class SymbolRunner:
             with self._snapshot_lock:
                 self._snapshot.session_open_notional = Decimal("0")
             self.stop_event.clear()
+            self._background_order_error = ""
             self.thread = threading.Thread(
                 target=self._run,
                 name=f"autoquant-{self.symbol}",
@@ -328,6 +333,8 @@ class SymbolRunner:
                     )
             if self.config.app.trading_mode == "REAL":
                 self._reconcile_orders()
+                self._start_order_event_loop()
+                self._start_order_reconcile_loop()
             is_paper = self.config.app.trading_mode != "REAL"
             unknown_count = self.ledger.unknown_count(
                 self.symbol, paper=is_paper
@@ -350,18 +357,8 @@ class SymbolRunner:
             ):
                 if self.stop_event.is_set():
                     break
-                if (
-                    not is_paper
-                    and time.monotonic() - self._last_order_reconcile_at >= 5
-                    and self._pending_orders > 0
-                ):
-                    self._reconcile_orders()
-                    self._update_risk_cache(paper=False)
-                    self._last_order_reconcile_at = time.monotonic()
-                    if self.ledger.unknown_count(self.symbol, paper=False):
-                        raise RuntimeError(
-                            "实盘订单状态变为未知，已锁定并停止策略"
-                        )
+                if self._background_order_error:
+                    raise RuntimeError(self._background_order_error)
                 if bar.interval == "5m" and bar.closed:
                     self._sync_trade_count()
                     self._update_risk_cache(paper=is_paper)
@@ -392,11 +389,18 @@ class SymbolRunner:
                     continue
                 if self._handle_signal(signal, bar, is_paper=is_paper):
                     break
+            if self._background_order_error:
+                raise RuntimeError(self._background_order_error)
         except Exception as exc:
-            if not self.stop_event.is_set():
-                message = str(exc) or exc.__class__.__name__
+            if self._background_order_error or not self.stop_event.is_set():
+                message = (
+                    self._background_order_error
+                    or str(exc)
+                    or exc.__class__.__name__
+                )
                 self._log("ERROR", message)
                 self._update(RunState.ERROR, message)
+                self.stop_event.set()
                 return
         if self._close_position_on_stop and not self._force_close_position():
             return
@@ -1225,6 +1229,94 @@ class SymbolRunner:
             self._reconcile_record(record)
         self._last_order_reconcile_at = time.monotonic()
 
+    def _start_order_reconcile_loop(self) -> None:
+        thread = self._order_reconcile_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._order_reconcile_thread = threading.Thread(
+            target=self._order_reconcile_loop,
+            name=f"autoquant-orders-{self.symbol}",
+            daemon=True,
+        )
+        self._order_reconcile_thread.start()
+
+    def _start_order_event_loop(self) -> None:
+        streamer = getattr(self.provider, "stream_order_updates", None)
+        if not callable(streamer):
+            return
+        thread = self._order_event_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._order_event_thread = threading.Thread(
+            target=self._order_event_loop,
+            name=f"autoquant-order-events-{self.symbol}",
+            daemon=True,
+        )
+        self._order_event_thread.start()
+
+    def _order_event_loop(self) -> None:
+        streamer = getattr(self.provider, "stream_order_updates", None)
+        if not callable(streamer):
+            return
+        try:
+            for event in streamer(self.stop_event, self._on_provider_status):
+                if self.stop_event.is_set():
+                    return
+                if str(event.get("e", "")).upper() != "ORDER_TRADE_UPDATE":
+                    continue
+                order = event.get("o")
+                if not isinstance(order, dict):
+                    continue
+                if str(order.get("s", "")).upper() != self.symbol:
+                    continue
+                client_order_id = str(order.get("c", "")).strip()
+                record = self.ledger.get_record(client_order_id)
+                if (
+                    record is None
+                    or not record.order_id
+                    or record.status
+                    in {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}
+                ):
+                    continue
+                self._reconcile_record(record)
+                self._update_risk_cache(paper=False)
+        except Exception as exc:
+            if not self.stop_event.is_set():
+                self._log(
+                    "ERROR",
+                    "订单事件流不可用，继续使用 REST 轮询："
+                    f"{str(exc) or exc.__class__.__name__}",
+                )
+
+    def _order_reconcile_loop(self) -> None:
+        fallback_interval = (
+            30.0
+            if callable(getattr(self.provider, "stream_order_updates", None))
+            else 5.0
+        )
+        while not self.stop_event.wait(fallback_interval):
+            try:
+                if self.ledger.pending_count(self.symbol, paper=False) <= 0:
+                    continue
+                self._reconcile_orders()
+                self._update_risk_cache(paper=False)
+                became_unknown = bool(
+                    self.ledger.unknown_count(self.symbol, paper=False)
+                )
+            except Exception as exc:
+                self._background_order_error = (
+                    "实盘订单状态核对失败，已锁定并停止策略："
+                    f"{str(exc) or exc.__class__.__name__}"
+                )
+                self.stop_event.set()
+                return
+            if became_unknown:
+                self._background_order_error = (
+                    "实盘订单状态变为未知，已锁定并停止策略"
+                )
+                self.stop_event.set()
+                return
+
     def _reconcile_single_order(
         self,
         client_order_id: str,
@@ -1238,6 +1330,18 @@ class SymbolRunner:
         self._last_order_reconcile_at = time.monotonic()
 
     def _reconcile_record(self, record: OrderRecord) -> None:
+        with self._order_sync_lock:
+            current = self.ledger.get_record(record.client_order_id)
+            if current is None or current.status not in {
+                "ACKNOWLEDGED",
+                "NEW",
+                "ACCEPTED",
+                "PARTIALLY_FILLED",
+            }:
+                return
+            self._reconcile_record_unlocked(current)
+
+    def _reconcile_record_unlocked(self, record: OrderRecord) -> None:
         try:
             payload = self.provider.get_order_detail(
                 record.order_id, record.symbol

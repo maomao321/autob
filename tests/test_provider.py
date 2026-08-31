@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
 import unittest
 from decimal import Decimal
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from autoquant_shared.models import OrderRequest, Side
 from autoquant_backend.providers.binance_stocks import (
@@ -158,6 +161,62 @@ class BinanceStocksProviderTests(unittest.TestCase):
             "07dfcaff4deb862620f6ac3b94cf35682832e0ed9abffc5ebe6a52a00d0fb6bc",
             provider._signature("symbol=AAPL&timestamp=1"),
         )
+
+    def test_signed_request_refreshes_server_time_at_common_entrypoint(self) -> None:
+        class SignedProvider(BinanceStocksProvider):
+            def __init__(self) -> None:
+                super().__init__(api_key="key", api_secret="secret")
+                self.ensure_calls = 0
+
+            def _ensure_server_time(self) -> None:
+                self.ensure_calls += 1
+
+            def _request_json(self, method, path, params, signed):
+                self.request = (method, path, params, signed)
+                return {"ok": True}
+
+        provider = SignedProvider()
+
+        self.assertEqual(
+            {"ok": True}, provider._signed_request("GET", "/signed", {})
+        )
+        self.assertEqual(1, provider.ensure_calls)
+        self.assertTrue(provider.request[3])
+
+    def test_binance_get_retries_rate_limit_using_retry_after(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"ok": true}'
+
+        error = HTTPError(
+            "https://api.binance.com/test",
+            429,
+            "rate limited",
+            {"Retry-After": "0"},
+            BytesIO(b'{"code": -1003, "msg": "too many requests"}'),
+        )
+        provider = BinanceStocksProvider()
+        with (
+            patch(
+                "autoquant_backend.providers.binance_stocks.urlopen",
+                side_effect=[error, Response()],
+            ) as urlopen_mock,
+            patch.object(provider, "_wait_for_request_slot"),
+            patch("autoquant_backend.providers.binance_stocks.time.sleep"),
+        ):
+            payload = provider._request_public_json(
+                "https://api.binance.com/test", source_name="Binance"
+            )
+
+        self.assertEqual({"ok": True}, payload)
+        self.assertEqual(2, urlopen_mock.call_count)
 
     def test_paper_order_never_requires_credentials(self) -> None:
         provider = BinanceStocksProvider(live_trading=False)
