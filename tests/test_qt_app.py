@@ -12,7 +12,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtCharts import QChartView
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTabWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QLabel,
+    QLineEdit,
+    QTabWidget,
+)
 
 from autoquant_frontend.app import (
     AutoQuantApp,
@@ -184,6 +190,12 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual("股票跌幅榜", window.futures_ranking_tabs.tabText(1))
             self.assertEqual("加密涨幅榜", window.futures_ranking_tabs.tabText(2))
             self.assertEqual("加密跌幅榜", window.futures_ranking_tabs.tabText(3))
+            self.assertFalse(
+                any(
+                    group.title() == "合约池"
+                    for group in window.contract_pool_page.findChildren(QGroupBox)
+                )
+            )
             for table in (
                 window.stock_gainers_tree,
                 window.stock_losers_tree,

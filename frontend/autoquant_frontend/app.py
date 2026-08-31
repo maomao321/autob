@@ -853,8 +853,6 @@ class AutoQuantApp(QMainWindow):
         layout.addLayout(controls)
 
         content_splitter = QSplitter(Qt.Orientation.Horizontal)
-        pool_group = QGroupBox("合约池")
-        pool_layout = QVBoxLayout(pool_group)
         self.contract_pool_tree = KeyedTable(
             ["合约", "24h 涨跌幅"], [150, 120], multi_select=True
         )
@@ -865,8 +863,7 @@ class AutoQuantApp(QMainWindow):
         self.contract_pool_tree.customContextMenuRequested.connect(
             self._show_contract_pool_context_menu
         )
-        pool_layout.addWidget(self.contract_pool_tree)
-        content_splitter.addWidget(pool_group)
+        content_splitter.addWidget(self.contract_pool_tree)
 
         self.futures_ranking_tabs = QTabWidget()
         self.futures_ranking_tabs.setDocumentMode(True)
