@@ -332,13 +332,18 @@ class BinanceFuturesProvider(BinanceStocksProvider):
             return payload
 
     def get_24h_rankings(self, limit: int = 20) -> dict[str, Any]:
-        """Return active USDT perpetual gainers and losers for the rolling 24h."""
+        """Return separate crypto and stock USDT perpetual 24h rankings."""
         if not 1 <= int(limit) <= 100:
             raise ValueError("涨跌榜数量必须在 1 到 100 之间")
 
         exchange_info = self._cached_exchange_info()
-        active_symbols = {
-            str(item.get("symbol", "")).upper()
+        symbol_markets = {
+            str(item.get("symbol", "")).upper(): (
+                "stock"
+                if str(item.get("contractType", "")).upper()
+                == "TRADIFI_PERPETUAL"
+                else "crypto"
+            )
             for item in exchange_info.get("symbols", [])
             if isinstance(item, dict)
             and str(item.get("status", "")).upper() == "TRADING"
@@ -357,7 +362,8 @@ class BinanceFuturesProvider(BinanceStocksProvider):
             if not isinstance(item, dict):
                 continue
             symbol = str(item.get("symbol", "")).upper()
-            if symbol not in active_symbols:
+            market = symbol_markets.get(symbol)
+            if market is None:
                 continue
             try:
                 change = Decimal(str(item.get("priceChangePercent", "")))
@@ -378,6 +384,7 @@ class BinanceFuturesProvider(BinanceStocksProvider):
                     change,
                     {
                         "symbol": symbol,
+                        "market": market,
                         "price_change_percent": format(change, "f"),
                         "last_price": format(last_price, "f"),
                         "quote_volume": format(quote_volume, "f"),
@@ -385,15 +392,24 @@ class BinanceFuturesProvider(BinanceStocksProvider):
                 )
             )
 
-        gainers = [row for change, row in rows if change > 0]
-        losers = [row for change, row in rows if change < 0]
-        gainers.sort(
-            key=lambda row: Decimal(row["price_change_percent"]), reverse=True
-        )
-        losers.sort(key=lambda row: Decimal(row["price_change_percent"]))
+        def ranked(market: str, *, gaining: bool) -> list[dict[str, str]]:
+            selected = [
+                row
+                for change, row in rows
+                if row["market"] == market
+                and (change > 0 if gaining else change < 0)
+            ]
+            selected.sort(
+                key=lambda row: Decimal(row["price_change_percent"]),
+                reverse=gaining,
+            )
+            return selected[: int(limit)]
+
         return {
-            "gainers": gainers[: int(limit)],
-            "losers": losers[: int(limit)],
+            "stock_gainers": ranked("stock", gaining=True),
+            "stock_losers": ranked("stock", gaining=False),
+            "crypto_gainers": ranked("crypto", gaining=True),
+            "crypto_losers": ranked("crypto", gaining=False),
             "tickers": {row["symbol"]: row for _change, row in rows},
             "updated_at": int(time.time() * 1000),
             "window": "24h",

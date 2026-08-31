@@ -62,14 +62,16 @@ class BackendRuntimeTests(unittest.TestCase):
 
     def test_futures_rankings_reuses_server_cache_and_slices_limit(self) -> None:
         market = {
-            "gainers": [
+            "crypto_gainers": [
                 {"symbol": "BTCUSDT"},
                 {"symbol": "ETHUSDT"},
             ],
-            "losers": [
+            "crypto_losers": [
                 {"symbol": "SOLUSDT"},
                 {"symbol": "XRPUSDT"},
             ],
+            "stock_gainers": [{"symbol": "SOXLUSDT"}],
+            "stock_losers": [{"symbol": "MSTRUSDT"}],
             "tickers": {
                 "BTCUSDT": {"symbol": "BTCUSDT"},
                 "ETHUSDT": {"symbol": "ETHUSDT"},
@@ -87,8 +89,9 @@ class BackendRuntimeTests(unittest.TestCase):
 
         provider_class.assert_called_once_with(include_daily_stream=False)
         provider_class.return_value.get_24h_rankings.assert_called_once_with(100)
-        self.assertEqual([{"symbol": "BTCUSDT"}], first["gainers"])
-        self.assertEqual(2, len(second["gainers"]))
+        self.assertEqual([{"symbol": "BTCUSDT"}], first["crypto_gainers"])
+        self.assertEqual(2, len(second["crypto_gainers"]))
+        self.assertEqual([{"symbol": "SOXLUSDT"}], second["stock_gainers"])
         self.assertEqual(market["tickers"], second["tickers"])
 
     def test_public_config_redacts_persisted_model_credentials(self) -> None:
@@ -450,8 +453,10 @@ class BackendHTTPTests(unittest.TestCase):
 
     def test_futures_rankings_api_returns_runtime_payload(self) -> None:
         expected = {
-            "gainers": [{"symbol": "BTCUSDT"}],
-            "losers": [{"symbol": "ETHUSDT"}],
+            "stock_gainers": [{"symbol": "SOXLUSDT"}],
+            "stock_losers": [{"symbol": "MSTRUSDT"}],
+            "crypto_gainers": [{"symbol": "BTCUSDT"}],
+            "crypto_losers": [{"symbol": "ETHUSDT"}],
             "updated_at": 1_700_000_000_000,
             "window": "24h",
         }

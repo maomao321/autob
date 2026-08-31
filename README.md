@@ -61,7 +61,7 @@ curl http://127.0.0.1:8765/health
 - `POST /api/v1/stop-targets`：查询运行中、持仓中或存在阻塞订单的目标。
 - `POST /api/v1/connection/check`：由服务器检查 Binance API 和股票代码。
 - `POST /api/v1/account/overview`：由服务器查询钱包并计算程序账本盈亏。
-- `GET /api/v1/futures/rankings?limit=20`：读取 Binance USDT 永续合约滚动 24 小时涨幅榜和跌幅榜。
+- `GET /api/v1/futures/rankings?limit=20`：读取 Binance USDT 永续合约滚动 24 小时股票涨/跌幅榜与加密涨/跌幅榜。
 - `GET /api/v1/runners/{symbol}/unknown-orders`、`POST /api/v1/runners/{symbol}/resolve-unknown`：查询或人工确认后解除未知实盘订单锁。
 - `POST /api/v1/backtest/downloads`、`GET /api/v1/backtest/downloads`：提交 180 天多周期历史行情下载并查询持久化进度。
 - `POST /api/v1/backtest/runs`、`GET /api/v1/backtest/runs`：提交策略回测并查询持久化结果。
@@ -97,7 +97,7 @@ chmod +x packaging/build_macos.sh run.command
 1. 首次运行保留 `PAPER` 模式。
 2. 打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API、交易模式、MA 周期、金额与风控。Futures 杠杆默认为 `1x`。
 3. 需要大模型时，在“运行配置”勾选“启用大模型决策”，选择 `CHATGPT`、`DEEPSEEK`、`QWEN` 或 `DUAL`，并填写对应 Key 和模型名。
-4. 打开“合约池”页查看 USDT 永续合约的滚动 24 小时涨幅榜和跌幅榜；仅在该页面打开期间，左侧候选合约池每分钟同步涨跌幅，右侧涨跌榜每 30 分钟自动刷新，也可手动刷新。后端会优先复用 60 秒行情缓存，避免多个前端或相邻刷新重复请求 Binance。在任一榜单右键可加入合约池，在合约池右键可移除。合约池最多保存 100 个标的，不会自动启动量化或发出订单。
+4. 打开“合约池”页查看 USDT 永续合约的滚动 24 小时股票涨幅榜、股票跌幅榜、加密涨幅榜和加密跌幅榜；仅在该页面打开期间，左侧候选合约池每分钟同步涨跌幅，右侧四个榜单每 30 分钟自动刷新，也可手动刷新。后端会优先复用 60 秒行情缓存，避免多个前端或相邻刷新重复请求 Binance。在任一榜单右键可加入合约池，在合约池右键可移除。合约池最多保存 100 个标的，不会自动启动量化或发出订单。
 5. 返回“交易监控”页，添加一个或多个标的代码（例如 Stocks 的 `AAPL`；Futures 输入 `BTC` 会自动保存为 `BTCUSDT`）。大模型开关关闭时，为每个标的选择 `LONG`、`SHORT` 或 `FLAT`；开关开启时该手动值被忽略。
 6. 选择标的后点击“启动所选”。每个标的有独立运行器，可分别停止。
 7. 查看状态、程序持仓、持仓均价、未决订单、本次量化开仓金额和日志。大模型模式会记录今日方向、时机 `ENTER/WAIT`、置信度、决策耗时与风险。

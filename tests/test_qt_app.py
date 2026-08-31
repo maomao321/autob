@@ -179,13 +179,21 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual(30 * 60 * 1000, window.futures_rankings_timer.interval())
             self.assertEqual(60 * 1000, window.contract_pool_timer.interval())
             self.assertFalse(window.contract_pool_timer.isActive())
-            self.assertEqual(2, window.futures_ranking_tabs.count())
-            self.assertEqual("涨幅榜", window.futures_ranking_tabs.tabText(0))
-            self.assertEqual("跌幅榜", window.futures_ranking_tabs.tabText(1))
-            self.assertEqual(
-                Qt.ContextMenuPolicy.CustomContextMenu,
-                window.futures_gainers_tree.contextMenuPolicy(),
-            )
+            self.assertEqual(4, window.futures_ranking_tabs.count())
+            self.assertEqual("股票涨幅榜", window.futures_ranking_tabs.tabText(0))
+            self.assertEqual("股票跌幅榜", window.futures_ranking_tabs.tabText(1))
+            self.assertEqual("加密涨幅榜", window.futures_ranking_tabs.tabText(2))
+            self.assertEqual("加密跌幅榜", window.futures_ranking_tabs.tabText(3))
+            for table in (
+                window.stock_gainers_tree,
+                window.stock_losers_tree,
+                window.crypto_gainers_tree,
+                window.crypto_losers_tree,
+            ):
+                self.assertEqual(
+                    Qt.ContextMenuPolicy.CustomContextMenu,
+                    table.contextMenuPolicy(),
+                )
             self.assertFalse(hasattr(window, "contract_pool_add_button"))
             with patch.object(window, "_refresh_futures_rankings") as refresh:
                 window.notebook.setCurrentWidget(window.contract_pool_page)
@@ -530,7 +538,9 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window._apply_futures_rankings(
                 {
-                    "gainers": [
+                    "stock_gainers": [],
+                    "stock_losers": [],
+                    "crypto_gainers": [
                         {
                             "symbol": "ETHUSDT",
                             "price_change_percent": "6.25",
@@ -538,7 +548,7 @@ class QtAppWidgetTests(unittest.TestCase):
                             "quote_volume": "1250000",
                         }
                     ],
-                    "losers": [
+                    "crypto_losers": [
                         {
                             "symbol": "SOLUSDT",
                             "price_change_percent": "-4.5",
@@ -570,8 +580,8 @@ class QtAppWidgetTests(unittest.TestCase):
                 },
                 "",
             )
-            window.futures_gainers_tree.selectRow(0)
-            window._add_selected_gainers_to_pool()
+            window.crypto_gainers_tree.selectRow(0)
+            window._add_selected_rankings_to_pool(window.crypto_gainers_tree)
 
             self.assertEqual(
                 ["BTCUSDT", "ETHUSDT"], store.load().contract_pool
@@ -581,7 +591,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window.contract_pool_tree.get_children(),
             )
             self.assertEqual(
-                "+6.25%", window.futures_gainers_tree.item(0, 1).text()
+                "+6.25%", window.crypto_gainers_tree.item(0, 1).text()
             )
 
             self.assertEqual(
@@ -606,15 +616,15 @@ class QtAppWidgetTests(unittest.TestCase):
             )
             self.assertEqual(
                 Qt.ContextMenuPolicy.CustomContextMenu,
-                window.futures_losers_tree.contextMenuPolicy(),
+                window.crypto_losers_tree.contextMenuPolicy(),
             )
             self.assertEqual(
                 Qt.ContextMenuPolicy.CustomContextMenu,
                 window.contract_pool_tree.contextMenuPolicy(),
             )
 
-            window.futures_losers_tree.selectRow(0)
-            window._add_selected_rankings_to_pool(window.futures_losers_tree)
+            window.crypto_losers_tree.selectRow(0)
+            window._add_selected_rankings_to_pool(window.crypto_losers_tree)
             self.assertEqual(
                 ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
                 store.load().contract_pool,
@@ -643,11 +653,11 @@ class QtAppWidgetTests(unittest.TestCase):
                 window.notebook.setCurrentWidget(window.contract_pool_page)
             self.assertFalse(window.contract_pool_timer.isActive())
 
-            window.futures_gainers_tree.insert(
+            window.crypto_gainers_tree.insert(
                 "", None, iid="ETHUSDT", text="ETHUSDT", values=("+1%",)
             )
-            window.futures_gainers_tree.selectRow(0)
-            window._add_selected_gainers_to_pool()
+            window.crypto_gainers_tree.selectRow(0)
+            window._add_selected_rankings_to_pool(window.crypto_gainers_tree)
             self.assertTrue(window.contract_pool_timer.isActive())
 
             window.contract_pool_tree.selectRow(0)

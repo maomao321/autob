@@ -602,7 +602,7 @@ class AutoQuantApp(QMainWindow):
             "下载最近 180 天范围内可用的日线、5 分钟和 1 分钟 K 线，再执行策略回测。"
         )
         self.contract_pool_status_var = TextValue(
-            "打开页面后获取 Binance USDT 永续合约 24 小时涨跌榜，之后每 30 分钟自动刷新。"
+            "打开页面后获取 Binance 股票与加密 USDT 永续合约 24 小时涨跌榜，之后每 30 分钟自动刷新。"
         )
 
         self._experiences: list[TradeExperience] = []
@@ -870,47 +870,36 @@ class AutoQuantApp(QMainWindow):
 
         self.futures_ranking_tabs = QTabWidget()
         self.futures_ranking_tabs.setDocumentMode(True)
-        gainers_page = QWidget()
-        gainers_layout = QVBoxLayout(gainers_page)
-        gainers_layout.setContentsMargins(8, 8, 8, 8)
-        self.futures_gainers_tree = KeyedTable(
-            ["合约", "24h 涨跌幅", "最新价", "24h 成交额(USDT)"],
-            [110, 110, 120, 160],
-            multi_select=True,
-        )
-        self.futures_gainers_tree.verticalHeader().setDefaultSectionSize(34)
-        self.futures_gainers_tree.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.futures_gainers_tree.customContextMenuRequested.connect(
-            self._show_gainers_context_menu
-        )
-        gainers_layout.addWidget(self.futures_gainers_tree)
-        self.futures_ranking_tabs.addTab(gainers_page, "涨幅榜")
-
-        losers_page = QWidget()
-        losers_layout = QVBoxLayout(losers_page)
-        losers_layout.setContentsMargins(8, 8, 8, 8)
-        self.futures_losers_tree = KeyedTable(
-            ["合约", "24h 涨跌幅", "最新价", "24h 成交额(USDT)"],
-            [110, 110, 120, 160],
-            multi_select=True,
-        )
-        self.futures_losers_tree.verticalHeader().setDefaultSectionSize(34)
-        self.futures_losers_tree.setContextMenuPolicy(
-            Qt.ContextMenuPolicy.CustomContextMenu
-        )
-        self.futures_losers_tree.customContextMenuRequested.connect(
-            self._show_losers_context_menu
-        )
-        losers_layout.addWidget(self.futures_losers_tree)
-        self.futures_ranking_tabs.addTab(losers_page, "跌幅榜")
+        self.stock_gainers_tree = self._add_ranking_tab("股票涨幅榜")
+        self.stock_losers_tree = self._add_ranking_tab("股票跌幅榜")
+        self.crypto_gainers_tree = self._add_ranking_tab("加密涨幅榜")
+        self.crypto_losers_tree = self._add_ranking_tab("加密跌幅榜")
         content_splitter.addWidget(self.futures_ranking_tabs)
         content_splitter.setStretchFactor(0, 1)
         content_splitter.setStretchFactor(1, 3)
         content_splitter.setSizes([300, 900])
         layout.addWidget(content_splitter, 1)
         self._sync_contract_pool_table()
+
+    def _add_ranking_tab(self, title: str) -> KeyedTable:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(8, 8, 8, 8)
+        table = KeyedTable(
+            ["合约", "24h 涨跌幅", "最新价", "24h 成交额(USDT)"],
+            [110, 110, 120, 160],
+            multi_select=True,
+        )
+        table.verticalHeader().setDefaultSectionSize(34)
+        table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        table.customContextMenuRequested.connect(
+            lambda position, target=table: self._show_rankings_context_menu(
+                target, position
+            )
+        )
+        page_layout.addWidget(table)
+        self.futures_ranking_tabs.addTab(page, title)
+        return table
 
     def _on_page_changed(self, _index: int) -> None:
         if self.notebook.currentWidget() is self.contract_pool_page:
@@ -987,12 +976,6 @@ class AutoQuantApp(QMainWindow):
             }
         )
         self._sync_contract_pool_table()
-
-    def _show_gainers_context_menu(self, position: QPoint) -> None:
-        self._show_rankings_context_menu(self.futures_gainers_tree, position)
-
-    def _show_losers_context_menu(self, position: QPoint) -> None:
-        self._show_rankings_context_menu(self.futures_losers_tree, position)
 
     def _show_rankings_context_menu(
         self, table: KeyedTable, position: QPoint
@@ -1075,10 +1058,14 @@ class AutoQuantApp(QMainWindow):
             self.contract_pool_status_var.set(f"涨跌榜刷新失败：{error}")
             return
 
-        gainers = payload.get("gainers", [])
-        losers = payload.get("losers", [])
+        ranking_rows = (
+            (self.stock_gainers_tree, payload.get("stock_gainers", []), "win"),
+            (self.stock_losers_tree, payload.get("stock_losers", []), "loss"),
+            (self.crypto_gainers_tree, payload.get("crypto_gainers", []), "win"),
+            (self.crypto_losers_tree, payload.get("crypto_losers", []), "loss"),
+        )
         tickers = payload.get("tickers", {})
-        if not isinstance(gainers, list) or not isinstance(losers, list):
+        if any(not isinstance(rows, list) for _table, rows, _tag in ranking_rows):
             self.contract_pool_status_var.set("涨跌榜刷新失败：后端返回格式不正确")
             return
         if isinstance(tickers, dict):
@@ -1087,12 +1074,8 @@ class AutoQuantApp(QMainWindow):
                 for symbol, item in tickers.items()
                 if str(symbol).strip() and isinstance(item, dict)
             }
-        self.futures_gainers_tree.clear_rows()
-        self.futures_losers_tree.clear_rows()
-        for table, rows, tag in (
-            (self.futures_gainers_tree, gainers, "win"),
-            (self.futures_losers_tree, losers, "loss"),
-        ):
+        for table, rows, tag in ranking_rows:
+            table.clear_rows()
             for item in rows:
                 if not isinstance(item, dict):
                     continue
@@ -1127,8 +1110,10 @@ class AutoQuantApp(QMainWindow):
         self._sync_contract_pool_refresh_timer()
         self._sync_contract_pool_table()
         self.contract_pool_status_var.set(
-            f"更新于 {refreshed_at}；涨幅榜 {self.futures_gainers_tree.rowCount()} 个，"
-            f"跌幅榜 {self.futures_losers_tree.rowCount()} 个。涨跌幅为滚动 24 小时数据，"
+            f"更新于 {refreshed_at}；股票涨/跌 "
+            f"{self.stock_gainers_tree.rowCount()}/{self.stock_losers_tree.rowCount()} 个，"
+            f"加密涨/跌 {self.crypto_gainers_tree.rowCount()}/"
+            f"{self.crypto_losers_tree.rowCount()} 个。涨跌幅为滚动 24 小时数据，"
             "每 30 分钟自动刷新。"
         )
 
@@ -1151,9 +1136,6 @@ class AutoQuantApp(QMainWindow):
                     if change.startswith("-")
                     else COLORS["positive"],
                 )
-
-    def _add_selected_gainers_to_pool(self) -> None:
-        self._add_selected_rankings_to_pool(self.futures_gainers_tree)
 
     def _add_selected_rankings_to_pool(self, table: KeyedTable) -> None:
         selected = list(table.selection())

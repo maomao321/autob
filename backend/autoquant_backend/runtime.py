@@ -230,24 +230,29 @@ class BackendRuntime:
             else:
                 payload = cached[1]
 
-            gainers = payload.get("gainers", [])
-            losers = payload.get("losers", [])
+            ranking_names = (
+                "stock_gainers",
+                "stock_losers",
+                "crypto_gainers",
+                "crypto_losers",
+            )
+            rankings = {
+                name: payload.get(name, []) for name in ranking_names
+            }
             tickers = payload.get("tickers", {})
-            if not isinstance(gainers, list) or not isinstance(losers, list):
+            if any(not isinstance(items, list) for items in rankings.values()):
                 raise RuntimeError("Futures 行情缓存格式不正确")
             if not isinstance(tickers, dict):
                 raise RuntimeError("Futures 行情缓存格式不正确")
             return {
-                "gainers": [
-                    dict(item)
-                    for item in gainers[:requested_limit]
-                    if isinstance(item, dict)
-                ],
-                "losers": [
-                    dict(item)
-                    for item in losers[:requested_limit]
-                    if isinstance(item, dict)
-                ],
+                **{
+                    name: [
+                        dict(item)
+                        for item in items[:requested_limit]
+                        if isinstance(item, dict)
+                    ]
+                    for name, items in rankings.items()
+                },
                 "tickers": {
                     str(symbol): dict(item)
                     for symbol, item in tickers.items()

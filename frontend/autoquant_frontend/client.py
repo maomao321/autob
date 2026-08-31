@@ -143,7 +143,7 @@ class BackendClient:
         query = urlencode({"limit": min(max(int(limit), 1), 100)})
         payload = self.request("GET", f"/api/v1/futures/rankings?{query}")
         if not isinstance(payload, dict):
-            raise BackendClientError("后端返回的合约涨跌榜格式不正确")
+            raise BackendClientError("后端返回的股票/加密合约涨跌榜格式不正确")
         return payload
 
     def start_historical_download(self, symbol: str) -> str:

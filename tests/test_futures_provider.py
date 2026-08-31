@@ -107,6 +107,8 @@ class BinanceFuturesProviderTests(unittest.TestCase):
                             futures_info("BTCUSDT"),
                             futures_info("ETHUSDT"),
                             futures_info("SOLUSDT"),
+                            futures_info("SOXLUSDT", "TRADIFI_PERPETUAL"),
+                            futures_info("MSTRUSDT", "TRADIFI_PERPETUAL"),
                             futures_info("BTCUSDT_260925", "CURRENT_QUARTER"),
                             inactive,
                             usdc,
@@ -137,16 +139,42 @@ class BinanceFuturesProviderTests(unittest.TestCase):
                         "lastPrice": "66000",
                         "quoteVolume": "1",
                     },
+                    {
+                        "symbol": "SOXLUSDT",
+                        "priceChangePercent": "12.5",
+                        "lastPrice": "42",
+                        "quoteVolume": "800000",
+                    },
+                    {
+                        "symbol": "MSTRUSDT",
+                        "priceChangePercent": "-3.2",
+                        "lastPrice": "350",
+                        "quoteVolume": "700000",
+                    },
                 ]
 
         result = RankingProvider().get_24h_rankings(limit=10)
 
         self.assertEqual(
             ["BTCUSDT", "ETHUSDT"],
-            [item["symbol"] for item in result["gainers"]],
+            [item["symbol"] for item in result["crypto_gainers"]],
         )
-        self.assertEqual(["SOLUSDT"], [item["symbol"] for item in result["losers"]])
-        self.assertEqual("7.1", result["gainers"][0]["price_change_percent"])
+        self.assertEqual(
+            ["SOLUSDT"],
+            [item["symbol"] for item in result["crypto_losers"]],
+        )
+        self.assertEqual(
+            ["SOXLUSDT"],
+            [item["symbol"] for item in result["stock_gainers"]],
+        )
+        self.assertEqual(
+            ["MSTRUSDT"],
+            [item["symbol"] for item in result["stock_losers"]],
+        )
+        self.assertEqual(
+            "7.1", result["crypto_gainers"][0]["price_change_percent"]
+        )
+        self.assertEqual("stock", result["tickers"]["SOXLUSDT"]["market"])
         self.assertEqual("-8.2", result["tickers"]["SOLUSDT"]["price_change_percent"])
         self.assertNotIn("BTCUSDT_260925", result["tickers"])
 
