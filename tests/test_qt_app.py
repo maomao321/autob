@@ -54,6 +54,57 @@ class QtAppWidgetTests(unittest.TestCase):
         value.set("from-model")
         self.assertEqual("from-model", field.text())
 
+    def test_strategy_configuration_has_its_own_page_and_description(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            tab_titles = [
+                window.notebook.tabText(index)
+                for index in range(window.notebook.count())
+            ]
+            self.assertIn("策略配置", tab_titles)
+            self.assertIsNot(window.strategy_config_page, window.config_page)
+            self.assertEqual(1, window.strategy_config_tabs.count())
+            self.assertEqual(
+                "五分钟突破", window.strategy_config_tabs.tabText(0)
+            )
+            self.assertEqual(
+                {"five_minute_breakout"},
+                set(window.strategy_config_pages),
+            )
+            description = window.five_minute_breakout_description.text()
+            self.assertIn("做多信号", description)
+            self.assertIn("做空信号", description)
+            self.assertIn("30 根", description)
+            self.assertIsNotNone(
+                window.strategy_config_page.findChild(
+                    QGroupBox, "fiveMinuteBreakoutSettings"
+                )
+            )
+            strategy_labels = {
+                label.text()
+                for label in window.strategy_config_page.findChildren(QLabel)
+            }
+            runtime_labels = {
+                label.text()
+                for label in window.config_page.findChildren(QLabel)
+            }
+            for title in (
+                "开仓金额(USDC/USDT)",
+                "单笔上限(USDC/USDT)",
+                "每日开仓上限",
+            ):
+                self.assertIn(title, strategy_labels)
+                self.assertNotIn(title, runtime_labels)
+            self.assertNotIn("策略均线", runtime_labels)
+            self.assertNotIn("持仓加仓次数", runtime_labels)
+
     def test_ai_switch_controls_runner_direction_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
@@ -491,14 +542,14 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.account_timer.stop)
             self.addCleanup(window.deleteLater)
 
-            window.ma_var.set("12")
+            window.buy_notional_var.set("12")
             window.symbol_var.set(" nvda ")
             with patch("autoquant_frontend.app.show_error") as show_error_mock:
                 window._add_symbols()
 
             persisted = store.load()
             self.assertEqual(["AAPL", "NVDA"], persisted.symbols)
-            self.assertEqual(5, persisted.ma_period)
+            self.assertEqual("100.00", persisted.buy_notional)
             self.assertEqual(("AAPL", "NVDA"), window.tree.get_children())
             show_error_mock.assert_not_called()
 
@@ -722,7 +773,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.deleteLater)
             window.controller.stop_targets.return_value = []
 
-            window.ma_var.set("12")
+            window.buy_notional_var.set("12")
             window.tree.selectRow(0)
             with (
                 patch("autoquant_frontend.app.ask_yes_no", return_value=True),
@@ -733,7 +784,7 @@ class QtAppWidgetTests(unittest.TestCase):
             persisted = store.load()
             self.assertEqual([], persisted.symbols)
             self.assertEqual({}, persisted.manual_directions)
-            self.assertEqual(5, persisted.ma_period)
+            self.assertEqual("100.00", persisted.buy_notional)
             self.assertEqual((), window.tree.get_children())
             show_error_mock.assert_not_called()
 
