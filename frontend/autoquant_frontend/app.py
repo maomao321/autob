@@ -1001,11 +1001,39 @@ class AutoQuantApp(QMainWindow):
             self.contract_pool_tree.clearSelection()
             self.contract_pool_tree.selectRow(index.row())
         menu = QMenu(self.contract_pool_tree)
+        backtest_action = menu.addAction("回测")
+        quant_action = menu.addAction("启动量化")
+        menu.addSeparator()
         remove_action = menu.addAction("移除")
+        backtest_action.triggered.connect(
+            lambda _checked=False, symbol=clicked_symbol:
+            self._open_contract_backtest(symbol)
+        )
+        quant_action.triggered.connect(
+            lambda _checked=False, symbol=clicked_symbol:
+            self._open_contract_quant(symbol)
+        )
         remove_action.triggered.connect(
             lambda _checked=False: self._remove_selected_pool_contracts()
         )
         menu.exec(self.contract_pool_tree.viewport().mapToGlobal(position))
+
+    def _open_contract_backtest(self, symbol: str) -> None:
+        self.backtest_symbol_var.set(symbol)
+        self.notebook.setCurrentWidget(self.backtest_page)
+
+    def _open_contract_quant(self, symbol: str) -> None:
+        self.notebook.setCurrentWidget(self.main_page)
+        self.symbol_var.set(symbol)
+        self._add_symbols()
+        if not self.tree.exists(symbol):
+            return
+        self.tree.clearSelection()
+        row = self.tree.get_children().index(symbol)
+        self.tree.selectRow(row)
+        item = self.tree.item(row, 0)
+        if item is not None:
+            self.tree.scrollToItem(item)
 
     def _refresh_futures_rankings(self) -> None:
         if self._closed or self._futures_rankings_inflight:

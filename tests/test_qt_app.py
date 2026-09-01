@@ -648,6 +648,34 @@ class QtAppWidgetTests(unittest.TestCase):
                 ["ETHUSDT", "SOLUSDT"], store.load().contract_pool
             )
 
+    def test_contract_pool_shortcuts_open_symbol_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(symbols=["AAPL"], contract_pool=["BTCUSDT"])
+            )
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=MagicMock())
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            window._open_contract_backtest("BTCUSDT")
+
+            self.assertIs(window.backtest_page, window.notebook.currentWidget())
+            self.assertEqual("BTCUSDT", window.backtest_symbol_var.get())
+
+            window._open_contract_quant("BTCUSDT")
+
+            self.assertIs(window.main_page, window.notebook.currentWidget())
+            self.assertEqual(("AAPL", "BTCUSDT"), window.tree.get_children())
+            self.assertEqual(("BTCUSDT",), window.tree.selection())
+            self.assertEqual(["AAPL", "BTCUSDT"], store.load().symbols)
+            window.controller.start.assert_not_called()
+
     def test_contract_pool_timer_tracks_visible_nonempty_pool(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
