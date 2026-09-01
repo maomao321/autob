@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
@@ -48,6 +49,45 @@ def make_bar(
 
 
 class BacktestTests(unittest.TestCase):
+    def test_existing_backtest_database_adds_strategy_snapshot_column(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orders.sqlite3"
+            with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute(
+                    """
+                    CREATE TABLE backtest_runs (
+                        run_id TEXT PRIMARY KEY,
+                        provider TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        strategy TEXT NOT NULL,
+                        start_time INTEGER NOT NULL,
+                        end_time INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        config_json TEXT NOT NULL,
+                        trade_count INTEGER NOT NULL DEFAULT 0,
+                        win_count INTEGER NOT NULL DEFAULT 0,
+                        loss_count INTEGER NOT NULL DEFAULT 0,
+                        total_pnl TEXT NOT NULL DEFAULT '0',
+                        return_percent TEXT NOT NULL DEFAULT '0',
+                        max_drawdown_percent TEXT NOT NULL DEFAULT '0',
+                        message TEXT NOT NULL DEFAULT '',
+                        created_at INTEGER NOT NULL,
+                        completed_at INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+
+            store = BacktestStore(path)
+
+            with closing(store._connect()) as connection:
+                columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(backtest_runs)"
+                    ).fetchall()
+                }
+            self.assertIn("strategy_config_json", columns)
+
     def test_store_upserts_candles_and_persists_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = BacktestStore(Path(directory) / "orders.sqlite3")
@@ -173,15 +213,61 @@ class BacktestTests(unittest.TestCase):
 
             with closing(store._connect()) as connection:
                 row = connection.execute(
-                    "SELECT config_json FROM backtest_runs WHERE run_id = ?",
+                    "SELECT config_json, strategy_config_json "
+                    "FROM backtest_runs WHERE run_id = ?",
                     (run_id,),
                 ).fetchone()
             payload = json.loads(row["config_json"])
+            strategy_payload = json.loads(row["strategy_config_json"])
             self.assertEqual("", payload["api_key"])
             self.assertEqual("", payload["api_secret"])
             self.assertEqual("", payload["openai_api_key"])
             self.assertEqual("", payload["deepseek_api_key"])
             self.assertEqual("", payload["qwen_api_key"])
+            self.assertNotIn("api_key", strategy_payload)
+            self.assertNotIn("api_secret", strategy_payload)
+            self.assertEqual("five_minute_breakout", strategy_payload["strategy"])
+
+    def test_run_keeps_an_immutable_strategy_configuration_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            config = AppConfig(
+                symbols=["BTCUSDT"],
+                provider="binance_futures",
+                buy_notional="125",
+                max_order_notional="200",
+                max_daily_buy_notional="500",
+                max_additions_per_position=3,
+                stop_loss_percent="1.5",
+                take_profit_percent="6",
+                max_signal_age_seconds=45,
+                ai_entry_timing_bars=80,
+            )
+            config.validate()
+            store.create_run(
+                "binance_futures",
+                "BTCUSDT",
+                "five_minute_breakout",
+                0,
+                DAY_MS,
+                config,
+            )
+
+            config.buy_notional = "999"
+            snapshot = store.list_runs()[0]["strategy_config"]
+
+            self.assertEqual("五分钟突破", snapshot["strategy_name"])
+            self.assertEqual("5m", snapshot["kline_interval"])
+            self.assertEqual(7, snapshot["fast_ma_period"])
+            self.assertEqual(25, snapshot["slow_ma_period"])
+            self.assertEqual("125", snapshot["buy_notional"])
+            self.assertEqual("200", snapshot["max_order_notional"])
+            self.assertEqual("500", snapshot["max_daily_buy_notional"])
+            self.assertEqual(3, snapshot["max_additions_per_position"])
+            self.assertEqual("1.5", snapshot["stop_loss_percent"])
+            self.assertEqual("6", snapshot["take_profit_percent"])
+            self.assertEqual(45, snapshot["max_signal_age_seconds"])
+            self.assertEqual(80, snapshot["ai_entry_timing_bars"])
 
     def test_historical_archive_round_trip_is_scoped_to_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

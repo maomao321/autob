@@ -20,7 +20,7 @@ from autoquant_backend.providers.base import TradingProvider
 from autoquant_backend.strategies.five_minute_breakout import (
     FiveMinuteBreakoutStrategy,
 )
-from autoquant_shared.config import AppConfig
+from autoquant_shared.config import AppConfig, strategy_config_snapshot
 from autoquant_shared.models import Bar, Side
 
 
@@ -139,6 +139,7 @@ class BacktestStore:
                     end_time INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     config_json TEXT NOT NULL,
+                    strategy_config_json TEXT NOT NULL DEFAULT '{}',
                     trade_count INTEGER NOT NULL DEFAULT 0,
                     win_count INTEGER NOT NULL DEFAULT 0,
                     loss_count INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +152,17 @@ class BacktestStore:
                 )
                 """
             )
+            run_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(backtest_runs)"
+                ).fetchall()
+            }
+            if "strategy_config_json" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE backtest_runs ADD COLUMN "
+                    "strategy_config_json TEXT NOT NULL DEFAULT '{}'"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_backtest_runs_time
@@ -541,13 +553,18 @@ class BacktestStore:
         config_json = json.dumps(
             config_payload, ensure_ascii=False, sort_keys=True
         )
+        strategy_config_json = json.dumps(
+            strategy_config_snapshot(config, strategy),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 INSERT INTO backtest_runs (
                     run_id, provider, symbol, strategy, start_time, end_time,
-                    status, config_json, message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, '等待回测', ?)
+                    status, config_json, strategy_config_json, message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?, '等待回测', ?)
                 """,
                 (
                     run_id,
@@ -557,6 +574,7 @@ class BacktestStore:
                     start_time,
                     end_time,
                     config_json,
+                    strategy_config_json,
                     now,
                 ),
             )
@@ -638,12 +656,24 @@ class BacktestStore:
                 SELECT run_id, provider, symbol, strategy, start_time, end_time,
                        status, trade_count, win_count, loss_count, total_pnl,
                        return_percent, max_drawdown_percent, message,
-                       created_at, completed_at
+                       created_at, completed_at, strategy_config_json
                 FROM backtest_runs ORDER BY created_at DESC LIMIT ?
                 """,
                 (min(max(int(limit), 1), 500),),
             ).fetchall()
-        return [dict(row) for row in rows]
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            raw_snapshot = item.pop("strategy_config_json", "{}")
+            try:
+                snapshot = json.loads(str(raw_snapshot))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                snapshot = {}
+            item["strategy_config"] = (
+                snapshot if isinstance(snapshot, dict) else {}
+            )
+            results.append(item)
+        return results
 
     def backtest_trades(
         self, run_id: str, limit: int = 50_000

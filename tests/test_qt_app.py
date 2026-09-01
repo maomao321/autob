@@ -105,6 +105,37 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertNotIn("策略均线", runtime_labels)
             self.assertNotIn("持仓加仓次数", runtime_labels)
 
+    def test_backtest_submits_current_strategy_configuration_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["BTCUSDT"]))
+            backend_client = MagicMock()
+            backend_client.start_backtest.return_value = "run-1"
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=backend_client)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+            window.backtest_symbol_var.set("BTCUSDT")
+            window.buy_notional_var.set("125")
+            window.max_order_notional_var.set("200")
+            window.max_daily_buy_notional_var.set("500")
+            window.max_additions_var.set("3")
+
+            with patch("autoquant_frontend.app.threading.Thread") as thread:
+                window._start_backtest_run()
+                thread.call_args.kwargs["target"]()
+
+            snapshot = backend_client.start_backtest.call_args.args[2]
+            self.assertEqual("125", snapshot["buy_notional"])
+            self.assertEqual("200", snapshot["max_order_notional"])
+            self.assertEqual("500", snapshot["max_daily_buy_notional"])
+            self.assertEqual(3, snapshot["max_additions_per_position"])
+            self.assertNotIn("api_key", snapshot)
+
     def test_ai_switch_controls_runner_direction_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
@@ -295,6 +326,21 @@ class QtAppWidgetTests(unittest.TestCase):
                         "total_pnl": "1.4870887",
                         "return_percent": "1.4870887",
                         "max_drawdown_percent": "34.944173",
+                        "strategy_config": {
+                            "strategy": "five_minute_breakout",
+                            "strategy_name": "五分钟突破",
+                            "kline_interval": "5m",
+                            "fast_ma_period": 7,
+                            "slow_ma_period": 25,
+                            "buy_notional": "125",
+                            "max_order_notional": "200",
+                            "max_daily_buy_notional": "500",
+                            "max_additions_per_position": 3,
+                            "stop_loss_percent": "1.5",
+                            "take_profit_percent": "5",
+                            "max_signal_age_seconds": 45,
+                            "ai_entry_timing_bars": 80,
+                        },
                         "message": "回测完成",
                     }
                 ],
@@ -311,6 +357,21 @@ class QtAppWidgetTests(unittest.TestCase):
                     "total_pnl": "1.487",
                     "return_percent": "1.487",
                     "max_drawdown_percent": "0",
+                    "strategy_config": {
+                        "strategy": "five_minute_breakout",
+                        "strategy_name": "五分钟突破",
+                        "kline_interval": "5m",
+                        "fast_ma_period": 7,
+                        "slow_ma_period": 25,
+                        "buy_notional": "125",
+                        "max_order_notional": "200",
+                        "max_daily_buy_notional": "500",
+                        "max_additions_per_position": 3,
+                        "stop_loss_percent": "1.5",
+                        "take_profit_percent": "5",
+                        "max_signal_age_seconds": 45,
+                        "ai_entry_timing_bars": 80,
+                    },
                 },
                 [
                     {
@@ -357,9 +418,15 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertTrue(chart_views[0].viewport().hasMouseTracking())
         self.assertGreaterEqual(len(chart_views[0].chart().series()), 3)
         pages = window._backtest_detail_dialog.findChild(QTabWidget)
-        self.assertEqual(2, pages.count())
+        self.assertEqual(3, pages.count())
         self.assertEqual("收益曲线", pages.tabText(0))
         self.assertEqual("交易明细 (1)", pages.tabText(1))
+        self.assertEqual("策略配置副本", pages.tabText(2))
+        snapshot_note = window._backtest_detail_dialog.findChild(
+            QLabel, "backtestStrategyConfigNote"
+        )
+        self.assertIsNotNone(snapshot_note)
+        self.assertIn("不会改变", snapshot_note.text())
         chart_views[0].chart().series()[0].clicked.emit(QPointF(1, 1.49))
         self.qt_app.processEvents()
         chart_detail = window._backtest_detail_dialog.findChild(

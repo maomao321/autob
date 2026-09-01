@@ -39,6 +39,26 @@ MAX_CONTRACT_POOL_SYMBOLS = 100
 MANUAL_DIRECTION_VALUES = {"AUTO", "LONG", "SHORT", "FLAT"}
 AI_DIRECTION_DAILY_BARS = 30
 SECRET_SENTINEL = "••••••••"
+STRATEGY_CONFIG_FIELDS = {
+    "five_minute_breakout": (
+        "buy_notional",
+        "max_order_notional",
+        "max_daily_buy_notional",
+        "max_additions_per_position",
+        "stop_loss_percent",
+        "take_profit_percent",
+        "max_signal_age_seconds",
+        "ai_entry_timing_bars",
+    ),
+}
+STRATEGY_FIXED_SETTINGS = {
+    "five_minute_breakout": {
+        "strategy_name": "五分钟突破",
+        "kline_interval": "5m",
+        "fast_ma_period": 7,
+        "slow_ma_period": 25,
+    },
+}
 
 
 @dataclass(slots=True)
@@ -313,6 +333,21 @@ class AppConfig:
             or websocket_url.hostname not in ALLOWED_WS_HOSTS
         ):
             raise ValueError("WebSocket 地址必须是 Binance 官方 WSS 地址")
+
+
+def strategy_config_snapshot(
+    config: AppConfig, strategy: str | None = None
+) -> dict[str, Any]:
+    """Return the immutable, credential-free settings used by one strategy."""
+    selected = str(strategy or config.strategy).strip()
+    fields = STRATEGY_CONFIG_FIELDS.get(selected)
+    if fields is None:
+        raise ValueError(f"暂不支持策略: {selected}")
+    return {
+        "strategy": selected,
+        **STRATEGY_FIXED_SETTINGS.get(selected, {}),
+        **{field_name: getattr(config, field_name) for field_name in fields},
+    }
 
 
 def normalize_symbols(symbols: list[str]) -> list[str]:

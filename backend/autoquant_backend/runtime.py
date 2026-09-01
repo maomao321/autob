@@ -14,6 +14,7 @@ from autoquant_shared.config import (
     AppConfig,
     ConfigStore,
     SECRET_SENTINEL,
+    STRATEGY_CONFIG_FIELDS,
     credential_or_environment,
     default_config_path,
 )
@@ -690,8 +691,28 @@ class BackendRuntime:
         config = self.config_store.load()
         strategy = str(payload.get("strategy", config.strategy)).strip()
         symbol = str(payload.get("symbol", "")).strip().upper()
+        strategy_payload = payload.get("strategy_config", {})
+        if not isinstance(strategy_payload, dict):
+            raise ValueError("策略配置副本格式不正确")
+        allowed_fields = set(STRATEGY_CONFIG_FIELDS.get(strategy, ()))
+        unknown_fields = sorted(set(strategy_payload) - allowed_fields)
+        if unknown_fields:
+            raise ValueError(
+                "未知策略配置字段: " + ", ".join(unknown_fields)
+            )
+        merged = asdict(config)
+        merged.update(
+            {
+                field_name: strategy_payload[field_name]
+                for field_name in allowed_fields
+                if field_name in strategy_payload
+            }
+        )
+        merged["strategy"] = strategy
+        run_config = AppConfig(**merged)
+        run_config.validate()
         run_id = self.backtest_service.start(
-            config.provider, symbol, strategy, config
+            run_config.provider, symbol, strategy, run_config
         )
         return {"accepted": True, "run_id": run_id}
 

@@ -68,6 +68,7 @@ from autoquant_shared.config import (
     ConfigStore,
     credential_or_environment,
     normalize_symbols,
+    strategy_config_snapshot,
 )
 from autoquant_frontend.client import (
     BackendClient,
@@ -3030,6 +3031,9 @@ class AutoQuantApp(QMainWindow):
             strategy = self.backtest_strategy_var.get().strip()
             if not strategy:
                 raise ValueError("请选择回测策略")
+            current_strategy_config = strategy_config_snapshot(
+                self._current_config(), strategy
+            )
         except ValueError as exc:
             show_error("无法回测", str(exc))
             return
@@ -3039,7 +3043,22 @@ class AutoQuantApp(QMainWindow):
 
         def submit() -> None:
             try:
-                run_id = self.backend_client.start_backtest(symbol, strategy)
+                run_id = self.backend_client.start_backtest(
+                    symbol,
+                    strategy,
+                    {
+                        key: value
+                        for key, value in current_strategy_config.items()
+                        if key
+                        not in {
+                            "strategy",
+                            "strategy_name",
+                            "kline_interval",
+                            "fast_ma_period",
+                            "slow_ma_period",
+                        }
+                    },
+                )
                 self._enqueue_event(("backtest_action", "run", run_id, ""))
             except Exception as exc:
                 self._enqueue_event(("backtest_action", "run", "", str(exc)))
@@ -3668,8 +3687,86 @@ class AutoQuantApp(QMainWindow):
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty.setStyleSheet(f"color: {COLORS['muted']};")
             table_layout.addWidget(empty)
+        config_page = QWidget(pages)
+        config_layout = QGridLayout(config_page)
+        config_layout.setContentsMargins(18, 18, 18, 18)
+        config_layout.setHorizontalSpacing(18)
+        config_layout.setVerticalSpacing(12)
+        config_layout.setColumnStretch(1, 1)
+        raw_strategy_config = summary.get("strategy_config", {})
+        strategy_config = (
+            raw_strategy_config
+            if isinstance(raw_strategy_config, dict)
+            else {}
+        )
+        if strategy_config:
+            strategy_name = str(
+                strategy_config.get("strategy_name")
+                or strategy_config.get("strategy")
+                or summary.get("strategy", "")
+            )
+            fast_ma = strategy_config.get("fast_ma_period", "—")
+            slow_ma = strategy_config.get("slow_ma_period", "—")
+            config_rows = (
+                ("策略", strategy_name),
+                ("K线周期", strategy_config.get("kline_interval", "—")),
+                ("策略均线", f"MA{fast_ma} / MA{slow_ma}"),
+                (
+                    f"开仓金额({currency})",
+                    strategy_config.get("buy_notional", "—"),
+                ),
+                (
+                    f"单笔上限({currency})",
+                    strategy_config.get("max_order_notional", "—"),
+                ),
+                (
+                    f"每日开仓上限({currency})",
+                    strategy_config.get("max_daily_buy_notional", "—"),
+                ),
+                (
+                    "持仓加仓次数",
+                    strategy_config.get("max_additions_per_position", "—"),
+                ),
+                (
+                    "止损/止盈(%)",
+                    f"{strategy_config.get('stop_loss_percent', '—')} / "
+                    f"{strategy_config.get('take_profit_percent', '—')}",
+                ),
+                (
+                    "信号有效期(秒)",
+                    strategy_config.get("max_signal_age_seconds", "—"),
+                ),
+                (
+                    "AI时机K线数量",
+                    strategy_config.get("ai_entry_timing_bars", "—"),
+                ),
+            )
+            for row, (title, value) in enumerate(config_rows):
+                title_label = QLabel(str(title))
+                title_label.setStyleSheet("font-weight: 600;")
+                value_label = QLabel(str(value))
+                value_label.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse
+                )
+                config_layout.addWidget(title_label, row, 0)
+                config_layout.addWidget(value_label, row, 1)
+            snapshot_note = QLabel(
+                "这是提交本次回测时保存的策略配置副本；后续修改策略配置不会改变这里的值。"
+            )
+            snapshot_note.setObjectName("backtestStrategyConfigNote")
+            snapshot_note.setWordWrap(True)
+            snapshot_note.setStyleSheet(f"color: {COLORS['muted']};")
+            config_layout.addWidget(snapshot_note, len(config_rows), 0, 1, 2)
+            config_layout.setRowStretch(len(config_rows) + 1, 1)
+        else:
+            empty_config = QLabel("该历史回测没有保存策略配置副本。")
+            empty_config.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty_config.setStyleSheet(f"color: {COLORS['muted']};")
+            config_layout.addWidget(empty_config, 0, 0, 1, 2)
+            config_layout.setRowStretch(1, 1)
         pages.addTab(chart_page, "收益曲线")
         pages.addTab(table_page, f"交易明细 ({len(items)})")
+        pages.addTab(config_page, "策略配置副本")
         layout.addWidget(pages, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.close)

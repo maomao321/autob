@@ -203,11 +203,22 @@ class BackendClient:
             raise BackendClientError("后端返回的删除结果格式不正确")
         return payload
 
-    def start_backtest(self, symbol: str, strategy: str) -> str:
+    def start_backtest(
+        self,
+        symbol: str,
+        strategy: str,
+        strategy_config: dict[str, Any] | None = None,
+    ) -> str:
+        body: dict[str, Any] = {
+            "symbol": symbol.strip().upper(),
+            "strategy": strategy.strip(),
+        }
+        if strategy_config is not None:
+            body["strategy_config"] = dict(strategy_config)
         payload = self.request(
             "POST",
             "/api/v1/backtest/runs",
-            {"symbol": symbol.strip().upper(), "strategy": strategy.strip()},
+            body,
         )
         return str(payload["run_id"])
 

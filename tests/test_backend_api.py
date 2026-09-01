@@ -60,6 +60,40 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertNotIn("server-key", str(payload))
         self.assertNotIn("server-secret", str(payload))
 
+    def test_backtest_uses_submitted_strategy_configuration_snapshot(self) -> None:
+        submitted = {
+            "buy_notional": "125",
+            "max_order_notional": "200",
+            "max_daily_buy_notional": "500",
+            "max_additions_per_position": 2,
+            "stop_loss_percent": "1.5",
+            "take_profit_percent": "5",
+            "max_signal_age_seconds": 45,
+            "ai_entry_timing_bars": 80,
+        }
+        with patch.object(
+            self.runtime.backtest_service, "start", return_value="run-1"
+        ) as start:
+            result = self.runtime.start_backtest(
+                {
+                    "symbol": "AAPL",
+                    "strategy": "five_minute_breakout",
+                    "strategy_config": submitted,
+                }
+            )
+
+        run_config = start.call_args.args[3]
+        self.assertEqual({"accepted": True, "run_id": "run-1"}, result)
+        self.assertEqual("125", run_config.buy_notional)
+        self.assertEqual("200", run_config.max_order_notional)
+        self.assertEqual("500", run_config.max_daily_buy_notional)
+        self.assertEqual(2, run_config.max_additions_per_position)
+        self.assertEqual("1.5", run_config.stop_loss_percent)
+        self.assertEqual("5", run_config.take_profit_percent)
+        self.assertEqual(45, run_config.max_signal_age_seconds)
+        self.assertEqual(80, run_config.ai_entry_timing_bars)
+        self.assertEqual("100.00", self.store.load().buy_notional)
+
     def test_futures_rankings_reuses_server_cache_and_slices_limit(self) -> None:
         market = {
             "crypto_gainers": [
