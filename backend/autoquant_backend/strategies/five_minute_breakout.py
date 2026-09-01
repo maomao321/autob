@@ -22,7 +22,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self,
         symbol: str,
         ma_period: int | None = None,
-        max_trades_per_day: int = 1,
         manual_direction: Direction | None = None,
         entry_context_bars: int = AI_ENTRY_CONTEXT_BARS,
     ) -> None:
@@ -43,7 +42,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self.ma_period = SLOW_MA_PERIOD
         self.fast_ma_period = FAST_MA_PERIOD
         self.slow_ma_period = SLOW_MA_PERIOD
-        self.max_trades_per_day = max_trades_per_day
         self._bars: deque[Bar] = deque(maxlen=self.slow_ma_period)
         self.entry_context_bars = int(entry_context_bars)
         self._recent_bars: deque[Bar] = deque(maxlen=self.entry_context_bars)
@@ -53,7 +51,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._direction_daily_bars: tuple[Bar, Bar] | None = None
         self._last_evaluated_open_time: int | None = None
         self._last_signaled_open_time: int | None = None
-        self._trades_by_day: dict[int, int] = {}
         self._opening_direction: Direction | None = None
         self._opening_direction_reason = ""
         self._fallback_direction: Direction | None = None
@@ -165,23 +162,12 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._recent_bars.extend(eligible[-self.entry_context_bars :])
 
     @property
-    def trades_today(self) -> int:
-        day_key = self.current_day_key
-        if day_key is None:
-            return 0
-        return self._trades_by_day.get(day_key, 0)
-
-    @property
     def current_day_key(self) -> int | None:
         if self._manual_direction is not None:
             return self._manual_day_key
         if self._daily_bar is None:
             return None
         return self._daily_bar.open_time
-
-    def restore_trade_count(self, day_key: int, count: int) -> None:
-        self._trades_by_day[day_key] = max(0, int(count))
-        self._remove_old_trade_counters(day_key)
 
     def on_bar(self, bar: Bar) -> Signal | None:
         if bar.symbol.upper() != self.symbol:
@@ -203,7 +189,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 self.fast_ma_value = None
                 self.slow_ma_value = None
             self._daily_bar = bar
-            self._remove_old_trade_counters(bar.open_time)
             return None
         if bar.interval != "5m":
             return None
@@ -212,7 +197,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
             if self._manual_day_key is None or day_key > self._manual_day_key:
                 self._reset_intraday_state()
                 self._manual_day_key = day_key
-                self._remove_old_trade_counters(day_key)
             elif day_key < self._manual_day_key:
                 return None
         else:
@@ -319,10 +303,9 @@ class FiveMinuteBreakoutStrategy(Strategy):
         return f"今日方向{bias}"
 
     def mark_executed(self, signal: Signal) -> None:
-        day_key = self.current_day_key
-        if day_key is None or signal.symbol != self.symbol:
-            return
-        self._trades_by_day[day_key] = self._trades_by_day.get(day_key, 0) + 1
+        # Position-cycle limits are derived atomically from the persistent
+        # order ledger, so this strategy does not keep an in-memory counter.
+        return None
 
     def _reset_intraday_state(self) -> None:
         self._bars.clear()
@@ -341,13 +324,6 @@ class FiveMinuteBreakoutStrategy(Strategy):
             self._recent_bars[-1] = bar
         elif not self._recent_bars or self._recent_bars[-1].open_time < bar.open_time:
             self._recent_bars.append(bar)
-
-    def _remove_old_trade_counters(self, current_day: int) -> None:
-        self._trades_by_day = {
-            day: count
-            for day, count in self._trades_by_day.items()
-            if day == current_day
-        }
 
     @staticmethod
     def _mean_close(bars: list[Bar]) -> Decimal:

@@ -522,8 +522,9 @@ class AutoQuantApp(QMainWindow):
         )
         self.ma_var = TextValue(str(self.config.ma_period))
         self.buy_notional_var = TextValue(self.config.buy_notional)
-        self.sell_quantity_var = TextValue(self.config.sell_quantity)
-        self.max_trades_var = TextValue(str(self.config.max_trades_per_day))
+        self.max_additions_var = TextValue(
+            str(self.config.max_additions_per_position)
+        )
         self.max_order_notional_var = TextValue(self.config.max_order_notional)
         self.max_daily_buy_notional_var = TextValue(
             self.config.max_daily_buy_notional
@@ -1257,8 +1258,13 @@ class AutoQuantApp(QMainWindow):
         ma_description.setToolTip("五分钟突破策略固定使用 MA7 和 MA25")
         self._grid_field(grid, 2, 0, "策略均线", ma_description)
         self._grid_field(grid, 2, 2, "开仓金额(USDC/USDT)", self._line(self.buy_notional_var))
-        self._grid_field(grid, 2, 4, "卖出数量", self._line(self.sell_quantity_var))
-        self._grid_field(grid, 2, 6, "每日最多交易", self._line(self.max_trades_var))
+        self._grid_field(
+            grid,
+            2,
+            4,
+            "加仓次数",
+            self._line(self.max_additions_var),
+        )
         self._grid_field(grid, 3, 0, "单笔上限(USDC/USDT)", self._line(self.max_order_notional_var))
         self._grid_field(grid, 3, 2, "每日开仓上限", self._line(self.max_daily_buy_notional_var))
         risk = QWidget()
@@ -2299,8 +2305,7 @@ class AutoQuantApp(QMainWindow):
             api_secret=self.api_secret_var.get().strip(),
             strategy=self.strategy_var.get(), trading_mode=self.mode_var.get(),
             ma_period=int(self.ma_var.get()), buy_notional=self.buy_notional_var.get().strip(),
-            sell_quantity=self.sell_quantity_var.get().strip(),
-            max_trades_per_day=int(self.max_trades_var.get()),
+            max_additions_per_position=int(self.max_additions_var.get()),
             max_order_notional=self.max_order_notional_var.get().strip(),
             max_daily_buy_notional=self.max_daily_buy_notional_var.get().strip(),
             stop_loss_percent=self.stop_loss_var.get().strip(),
@@ -2786,7 +2791,7 @@ class AutoQuantApp(QMainWindow):
         layout.addWidget(controls)
 
         note = QLabel(
-            "使用当前运行配置中的行情源、开仓金额、每日交易次数及止盈止损参数，"
+            "使用当前运行配置中的行情源、开仓金额、持仓加仓次数及止盈止损参数，"
             "策略均线固定为 MA7/MA25。"
             "最多回看 180 天，标的历史不足时以行情源实际返回数量为准；"
             "收益率 = 总盈亏 ÷ 单笔开仓金额，最大回撤按单笔开仓金额作为初始资金计算；"

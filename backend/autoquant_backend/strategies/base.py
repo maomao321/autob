@@ -14,4 +14,4 @@ class Strategy(ABC):
 
     @abstractmethod
     def mark_executed(self, signal: Signal) -> None:
-        """Record an accepted paper/live order for daily risk limits."""
+        """Observe an accepted order when a strategy needs execution state."""

@@ -22,6 +22,33 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual([], store.load().symbols)
 
+    def test_legacy_daily_trade_limit_migrates_to_position_additions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                '{"symbols": ["AAPL"], "max_trades_per_day": 2}',
+                encoding="utf-8",
+            )
+
+            loaded = ConfigStore(path).load()
+
+            self.assertEqual(2, loaded.max_additions_per_position)
+
+    def test_legacy_sell_quantity_is_ignored_and_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            path.write_text(
+                '{"symbols": ["AAPL"], "sell_quantity": "2"}',
+                encoding="utf-8",
+            )
+            store = ConfigStore(path)
+
+            loaded = store.load()
+            store.save(loaded)
+
+            self.assertFalse(hasattr(loaded, "sell_quantity"))
+            self.assertNotIn("sell_quantity", path.read_text(encoding="utf-8"))
+
     def test_contract_pool_is_normalized_and_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")

@@ -107,7 +107,6 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
     if config.app.strategy == "five_minute_breakout":
         return FiveMinuteBreakoutStrategy(
             symbol=symbol,
-            max_trades_per_day=config.app.max_trades_per_day,
             entry_context_bars=config.app.ai_entry_timing_bars,
             manual_direction=(
                 None
@@ -237,6 +236,7 @@ class SymbolRunner:
         self._snapshot_lock = threading.Lock()
         self._position_quantity = Decimal("0")
         self._average_entry_price = Decimal("0")
+        self._position_additions = 0
         self._pending_orders = 0
         self._session_open_notional = Decimal("0")
         self._last_order_reconcile_at = 0.0
@@ -359,7 +359,6 @@ class SymbolRunner:
                 if self._background_order_error:
                     raise RuntimeError(self._background_order_error)
                 if bar.interval == "5m" and bar.closed:
-                    self._sync_trade_count()
                     self._update_risk_cache(paper=is_paper)
                 if (
                     self.config.manual_direction is Direction.UNKNOWN
@@ -381,8 +380,6 @@ class SymbolRunner:
                 risk_signal = self._risk_exit_signal(bar)
                 if risk_signal is not None:
                     signal = risk_signal
-                if bar.interval == "1d":
-                    self._sync_trade_count()
                 self._refresh_market_snapshot()
                 if signal is None:
                     continue
@@ -421,9 +418,11 @@ class SymbolRunner:
         ) or (
             signal.side is Side.BUY and position.quantity < 0
         )
+        is_addition = position.quantity != 0 and not is_exit
         signal_message = self._signal_message(
             signal,
             is_exit=is_exit,
+            is_addition=is_addition,
             position_quantity=position.quantity,
             paper=is_paper,
         )
@@ -442,19 +441,15 @@ class SymbolRunner:
             return False
 
         supports_short = bool(getattr(self.provider, "supports_short", False))
-        if position.quantity != 0 and not is_exit:
-            direction = "多头" if position.quantity > 0 else "空头"
-            self._skip_order(
-                f"未下单：当前已有程序管理的{direction}持仓，"
-                "禁止双向或重复开仓"
-            )
-            return False
         if (
-            not is_exit
-            and self.strategy.trades_today
-            >= self.config.app.max_trades_per_day
+            is_addition
+            and position.additions
+            >= self.config.app.max_additions_per_position
         ):
-            self._skip_order("未下单：已达到当日入场次数上限", level="INFO")
+            self._skip_order(
+                "未下单：本次持仓已达加仓次数上限",
+                level="INFO",
+            )
             return False
         if not self._signal_is_fresh(bar):
             self._skip_order("未下单：信号已超过配置的有效期")
@@ -513,6 +508,9 @@ class SymbolRunner:
                 max_daily_buy_notional=Decimal(
                     self.config.app.max_daily_buy_notional
                 ),
+                max_position_additions=(
+                    self.config.app.max_additions_per_position
+                ),
             )
         except RiskLimitError as exc:
             message = str(exc)
@@ -520,11 +518,9 @@ class SymbolRunner:
             self._refresh_market_snapshot(message)
             return False
 
-        self._sync_trade_count()
         if self.stop_event.is_set():
             message = "停止请求在订单发送前到达，订单未提交"
             self.ledger.mark_rejected(order.client_order_id, message)
-            self._sync_trade_count()
             self._log("INFO", message)
             return True
         self._submit_order(order, is_paper=is_paper)
@@ -550,7 +546,7 @@ class SymbolRunner:
             sell_quantity=(
                 abs(position_quantity)
                 if is_exit
-                else Decimal(self.config.app.sell_quantity)
+                else Decimal("0")
             ),
             client_order_id=f"aq{uuid.uuid4().hex}",
             reduce_only=is_exit,
@@ -558,19 +554,26 @@ class SymbolRunner:
         )
 
     def _submit_order(self, order: OrderRequest, *, is_paper: bool) -> None:
+        is_addition = (
+            not order.reduce_only
+            and self.ledger.position_summary(
+                order.symbol,
+                paper=is_paper,
+                exclude_client_order_id=order.client_order_id,
+            ).quantity
+            != 0
+        )
         try:
             result = self.provider.place_order(order)
         except (OrderValidationError, OrderRejectedError) as exc:
             message = str(exc) or exc.__class__.__name__
             self.ledger.mark_rejected(order.client_order_id, message)
-            self._sync_trade_count()
             self._log("ERROR", f"订单未发送或已明确拒绝：{message}")
             self._refresh_market_snapshot(message)
             return
         except Exception as exc:
             message = str(exc) or exc.__class__.__name__
             self.ledger.mark_unknown(order.client_order_id, message)
-            self._sync_trade_count()
             self._log(
                 "ERROR",
                 f"订单提交结果未知，已停止自动交易且不会重试：{message}",
@@ -585,7 +588,13 @@ class SymbolRunner:
             )
             if not order.reduce_only:
                 self._session_open_notional += order.buy_notional
-            action = "平仓" if order.reduce_only else "开仓"
+            action = (
+                "平仓"
+                if order.reduce_only
+                else "加仓"
+                if is_addition
+                else "开仓"
+            )
             mode = "模拟" if result.paper else "实盘"
             message = f"{mode}{action}订单已提交"
             if result.paper:
@@ -611,7 +620,6 @@ class SymbolRunner:
             message = f"订单被拒绝: {result.message}"
             self.ledger.mark_rejected(order.client_order_id, result.message)
             self._log("ERROR", message)
-        self._sync_trade_count()
         self._update_risk_cache(paper=is_paper)
         self._refresh_market_snapshot(message)
 
@@ -622,8 +630,15 @@ class SymbolRunner:
         is_exit: bool,
         position_quantity: Decimal,
         paper: bool,
+        is_addition: bool = False,
     ) -> str:
-        action = "平仓信号" if is_exit else "开仓信号"
+        action = (
+            "平仓信号"
+            if is_exit
+            else "加仓信号"
+            if is_addition
+            else "开仓信号"
+        )
         if is_exit:
             opening_direction = "多头" if position_quantity > 0 else "空头"
         else:
@@ -1208,17 +1223,14 @@ class SymbolRunner:
             f"{failure_message}",
         )
 
-    def _sync_trade_count(self) -> None:
-        day_key = getattr(self.strategy, "current_day_key", None)
-        restore = getattr(self.strategy, "restore_trade_count", None)
-        if day_key is None or not callable(restore):
-            return
-        restore(day_key, self.ledger.count_consumed(self.symbol, day_key))
-
     def _update_risk_cache(self, *, paper: bool) -> None:
+        previous_quantity = self._position_quantity
         position = self.ledger.position_summary(self.symbol, paper=paper)
         self._position_quantity = position.quantity
         self._average_entry_price = position.average_price
+        self._position_additions = position.additions
+        if previous_quantity != 0 and position.quantity == 0:
+            self._session_open_notional = Decimal("0")
         self._pending_orders = self.ledger.pending_count(
             self.symbol, paper=paper
         )
@@ -1475,7 +1487,13 @@ class SymbolRunner:
             fee=fee,
             realized_pnl=profit,
         )
-        action = "平仓" if record.reduce_only else "开仓"
+        action = (
+            "平仓"
+            if record.reduce_only
+            else "加仓"
+            if position.quantity != 0
+            else "开仓"
+        )
         amount = filled_quantity * average_price
         self._log(
             "ORDER",
@@ -1580,7 +1598,6 @@ class SymbolRunner:
         direction = getattr(self.strategy, "direction", self._snapshot.direction)
         last_price = getattr(self.strategy, "last_price", None)
         ma_value = getattr(self.strategy, "ma_value", None)
-        trades_today = getattr(self.strategy, "trades_today", 0)
         market_prices = (
             {self.symbol: last_price}
             if last_price is not None and last_price.is_finite() and last_price > 0
@@ -1630,7 +1647,7 @@ class SymbolRunner:
             self._snapshot.ma_value = ma_value
             self._snapshot.warmup_bars = warmup_bars
             self._snapshot.warmup_required = warmup_required
-            self._snapshot.trades_today = trades_today
+            self._snapshot.position_additions = self._position_additions
             self._snapshot.position_quantity = self._position_quantity
             self._snapshot.average_entry_price = self._average_entry_price
             self._snapshot.pending_orders = self._pending_orders

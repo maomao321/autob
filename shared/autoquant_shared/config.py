@@ -54,8 +54,7 @@ class AppConfig:
     trading_mode: str = "PAPER"
     ma_period: int = 5
     buy_notional: str = "100.00"
-    sell_quantity: str = "1"
-    max_trades_per_day: int = 1
+    max_additions_per_position: int = 1
     max_order_notional: str = "100.00"
     max_daily_buy_notional: str = "300.00"
     stop_loss_percent: str = "2.0"
@@ -233,7 +232,9 @@ class AppConfig:
         try:
             self.ma_period = int(self.ma_period)
             self.leverage = int(self.leverage)
-            self.max_trades_per_day = int(self.max_trades_per_day)
+            self.max_additions_per_position = int(
+                self.max_additions_per_position
+            )
             self.recv_window = int(self.recv_window)
             self.max_signal_age_seconds = int(self.max_signal_age_seconds)
             self.ai_history_days = int(self.ai_history_days)
@@ -243,15 +244,15 @@ class AppConfig:
             self.ai_timeout_seconds = int(self.ai_timeout_seconds)
         except (TypeError, ValueError):
             raise ValueError(
-                "MA、杠杆倍数、每日交易次数、信号有效期、AI 数据周期、超时和 "
+                "MA、杠杆倍数、持仓加仓次数、信号有效期、AI 数据周期、超时和 "
                 "recvWindow 必须是整数"
             ) from None
         if not 1 <= self.leverage <= 125:
             raise ValueError("杠杆倍数必须在 1 到 125 之间")
         if not 2 <= self.ma_period <= 200:
             raise ValueError("MA 周期必须在 2 到 200 之间")
-        if not 1 <= self.max_trades_per_day <= 100:
-            raise ValueError("每日最多交易次数必须在 1 到 100 之间")
+        if not 0 <= self.max_additions_per_position <= 100:
+            raise ValueError("持仓期间加仓次数必须在 0 到 100 之间")
         if not 1 <= self.recv_window <= 5000:
             raise ValueError("为避免过期订单，recvWindow 必须在 1 到 5000 毫秒之间")
         if not 1 <= self.max_signal_age_seconds <= 300:
@@ -268,7 +269,6 @@ class AppConfig:
         if not 5 <= self.ai_timeout_seconds <= 600:
             raise ValueError("AI 请求超时必须在 5 到 600 秒之间")
         self.buy_notional = str(self.buy_notional)
-        self.sell_quantity = str(self.sell_quantity)
         self.max_order_notional = str(self.max_order_notional)
         self.max_daily_buy_notional = str(self.max_daily_buy_notional)
         self.stop_loss_percent = str(self.stop_loss_percent)
@@ -277,7 +277,6 @@ class AppConfig:
         parsed_decimals: dict[str, Decimal] = {}
         for label, value in (
             ("开仓金额", self.buy_notional),
-            ("卖出数量", self.sell_quantity),
             ("单笔金额上限", self.max_order_notional),
             ("账户每日开仓上限", self.max_daily_buy_notional),
             ("止损比例", self.stop_loss_percent),
@@ -365,6 +364,14 @@ class ConfigStore:
                 self.path.read_text(encoding="utf-8")
             )
             payload.pop("contract_multiplier", None)
+            payload.pop("sell_quantity", None)
+            if (
+                "max_trades_per_day" in payload
+                and "max_additions_per_position" not in payload
+            ):
+                payload["max_additions_per_position"] = payload.pop(
+                    "max_trades_per_day"
+                )
             if "buy_notional" in payload and "max_order_notional" not in payload:
                 legacy_buy = Decimal(str(payload["buy_notional"]))
                 payload["max_order_notional"] = str(max(legacy_buy, Decimal("100")))

@@ -279,7 +279,7 @@ class OrderLedgerTests(unittest.TestCase):
                     paper=False,
                 )
 
-    def test_live_reservation_rechecks_position_inside_transaction(self) -> None:
+    def test_position_addition_limit_is_atomic_and_resets_after_close(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
             ledger.record_submitting(order("aq-buy"), 123, paper=False)
@@ -290,22 +290,67 @@ class OrderLedgerTests(unittest.TestCase):
                 average_price=Decimal("180"),
             )
 
-            with self.assertRaisesRegex(RiskLimitError, "禁止双向或重复开仓"):
+            self.assertEqual(
+                0, ledger.position_summary("AAPL", paper=False).additions
+            )
+            ledger.record_submitting(
+                order("aq-add"),
+                123,
+                paper=False,
+                max_position_additions=1,
+            )
+            ledger.mark_lifecycle(
+                "aq-add",
+                "FILLED",
+                filled_quantity=Decimal("1"),
+                average_price=Decimal("200"),
+            )
+            self.assertEqual(
+                1, ledger.position_summary("AAPL", paper=False).additions
+            )
+            with self.assertRaisesRegex(RiskLimitError, "已达上限 1 次"):
                 ledger.record_submitting(
-                    order("aq-buy-again"),
+                    order("aq-add-again"),
                     123,
                     paper=False,
+                    max_position_additions=1,
                 )
             with self.assertRaisesRegex(RiskLimitError, "超过程序持仓"):
                 ledger.record_submitting(
                     order(
                         "aq-oversell",
                         side=Side.SELL,
-                        sell_quantity="1.1",
+                        sell_quantity="2.1",
                     ),
                     123,
                     paper=False,
                 )
+
+            ledger.record_submitting(
+                order(
+                    "aq-close-cycle",
+                    side=Side.SELL,
+                    sell_quantity="2",
+                    reduce_only=True,
+                ),
+                123,
+                paper=False,
+            )
+            ledger.mark_lifecycle(
+                "aq-close-cycle",
+                "FILLED",
+                filled_quantity=Decimal("2"),
+                average_price=Decimal("210"),
+            )
+            self.assertEqual(
+                0, ledger.position_summary("AAPL", paper=False).additions
+            )
+            ledger.record_submitting(
+                order("aq-new-cycle"),
+                123,
+                paper=False,
+                max_position_additions=1,
+            )
 
     def test_position_summary_tracks_filled_buy_and_sell(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -462,7 +507,7 @@ class OrderLedgerTests(unittest.TestCase):
             self.assertEqual(Decimal("-2"), position.quantity)
             self.assertEqual(Decimal("100"), position.average_price)
 
-            with self.assertRaisesRegex(RiskLimitError, "禁止双向或重复开仓"):
+            with self.assertRaisesRegex(RiskLimitError, "只允许同方向加仓"):
                 ledger.record_submitting(
                     order("aq-opposite", side=Side.BUY, reduce_only=False),
                     123,

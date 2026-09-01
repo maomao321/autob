@@ -83,7 +83,7 @@ class RuntimeSnapshot:
     ma_value: Decimal | None = None
     warmup_bars: int = 0
     warmup_required: int = 0
-    trades_today: int = 0
+    position_additions: int = 0
     position_quantity: Decimal = Decimal("0")
     average_entry_price: Decimal = Decimal("0")
     pending_orders: int = 0

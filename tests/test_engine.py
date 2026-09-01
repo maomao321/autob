@@ -21,6 +21,7 @@ from autoquant_shared.models import (
     OrderResult,
     RunState,
     Side,
+    Signal,
 )
 from autoquant_backend.state import OrderLedger
 
@@ -297,6 +298,63 @@ class EntryGateDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_addition_limit_resets_after_position_is_fully_closed(self) -> None:
+        logs = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        max_additions_per_position=1,
+                    ),
+                    manual_direction=Direction.LONG,
+                ),
+                lambda _snapshot: None,
+                lambda level, symbol, message: logs.append(
+                    (level, symbol, message)
+                ),
+                ledger,
+            )
+            provider = FakeProvider()
+            runner.provider = provider
+            current_bar = make_bar("100", 0, closed=False)
+            runner.strategy.on_bar(current_bar)
+
+            def signal(side: Side, price: str = "100") -> Signal:
+                return Signal(
+                    symbol="AAPL",
+                    side=side,
+                    price=Decimal(price),
+                    ma_value=Decimal("99"),
+                    bar_open_time=current_bar.open_time,
+                    reason="test",
+                )
+
+            runner._handle_signal(signal(Side.BUY), current_bar, is_paper=True)
+            runner._handle_signal(signal(Side.BUY), current_bar, is_paper=True)
+
+            position = ledger.position_summary("AAPL", paper=True)
+            self.assertEqual(Decimal("2"), position.quantity)
+            self.assertEqual(1, position.additions)
+
+            runner._handle_signal(signal(Side.BUY), current_bar, is_paper=True)
+            self.assertEqual(2, len(provider.orders))
+            self.assertTrue(any("已达加仓次数上限" in item[2] for item in logs))
+
+            runner._handle_signal(signal(Side.SELL), current_bar, is_paper=True)
+            self.assertEqual(
+                Decimal("0"),
+                ledger.position_summary("AAPL", paper=True).quantity,
+            )
+            runner._handle_signal(signal(Side.BUY), current_bar, is_paper=True)
+
+            position = ledger.position_summary("AAPL", paper=True)
+            self.assertEqual(Decimal("1"), position.quantity)
+            self.assertEqual(0, position.additions)
+            self.assertEqual(4, len(provider.orders))
+
     def test_qwen_mode_builds_qwen_decision_client(self) -> None:
         decider = create_opening_decider(
             RunnerConfig(
@@ -739,7 +797,6 @@ class SymbolRunnerTests(unittest.TestCase):
                         symbols=["AAPL"],
                         ma_period=3,
                         buy_notional="100",
-                        sell_quantity="1",
                     ),
                     manual_direction=Direction.LONG,
                 ),
@@ -767,7 +824,9 @@ class SymbolRunnerTests(unittest.TestCase):
             )
             self.assertIn("｜金额 100.00｜收益 0.00", order_messages[-1])
             self.assertNotIn("paper-test", order_messages[-1])
-            self.assertEqual(1, max(snapshot.trades_today for snapshot in snapshots))
+            self.assertEqual(
+                0, max(snapshot.position_additions for snapshot in snapshots)
+            )
             self.assertEqual(
                 Decimal("100"),
                 max(snapshot.session_open_notional for snapshot in snapshots),
@@ -957,7 +1016,6 @@ class SymbolRunnerTests(unittest.TestCase):
                         symbols=["AAPL"],
                         ma_period=3,
                         buy_notional="75",
-                        sell_quantity="0.5",
                         max_order_notional="150",
                     ),
                     manual_direction=Direction.LONG,
@@ -974,7 +1032,7 @@ class SymbolRunnerTests(unittest.TestCase):
 
             self.assertEqual(1, len(provider.orders))
             self.assertEqual(Decimal("75"), provider.orders[0].buy_notional)
-            self.assertEqual(Decimal("0.5"), provider.orders[0].sell_quantity)
+            self.assertEqual(Decimal("0"), provider.orders[0].sell_quantity)
 
     def test_unknown_submission_is_persisted_and_stops_runner(self) -> None:
         snapshots = []

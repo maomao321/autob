@@ -67,6 +67,7 @@ class PositionSummary:
     quantity: Decimal = Decimal("0")
     average_price: Decimal = Decimal("0")
     open_fee: Decimal = Decimal("0")
+    additions: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +401,7 @@ class OrderLedger:
         *,
         paper: bool,
         max_daily_buy_notional: Decimal | None = None,
+        max_position_additions: int | None = None,
     ) -> None:
         if not order.client_order_id:
             raise ValueError("client_order_id 不能为空")
@@ -459,10 +461,22 @@ class OrderLedger:
                     )
             else:
                 if quantity != 0:
-                    raise RiskLimitError(
-                        f"{order.symbol} 已有程序"
-                        f"{'多头' if quantity > 0 else '空头'}持仓，禁止双向或重复开仓"
-                    )
+                    expected_side = Side.BUY if quantity > 0 else Side.SELL
+                    if order.side is not expected_side:
+                        raise RiskLimitError(
+                            f"{order.symbol} 已有程序"
+                            f"{'多头' if quantity > 0 else '空头'}持仓，"
+                            "只允许同方向加仓"
+                        )
+                    if (
+                        max_position_additions is not None
+                        and position.additions >= max_position_additions
+                    ):
+                        raise RiskLimitError(
+                            f"{order.symbol} 本次持仓已加仓 "
+                            f"{position.additions} 次，已达上限 "
+                            f"{max_position_additions} 次"
+                        )
                 if order.side is Side.SELL and not order.allow_short:
                     raise RiskLimitError(
                         f"{order.symbol} 当前供应商不允许建立空头"
@@ -983,6 +997,7 @@ class OrderLedger:
         quantity = Decimal("0")
         basis = Decimal("0")
         open_fee = Decimal("0")
+        entry_count = 0
         for row in rows:
             filled = Decimal(row["filled_quantity"])
             price = Decimal(row["average_price"])
@@ -993,11 +1008,13 @@ class OrderLedger:
                 quantity = delta
                 basis = filled * price
                 open_fee = fee
+                entry_count = 1
                 continue
             if not reduce_only and quantity * delta > 0:
                 quantity += delta
                 basis += filled * price
                 open_fee += fee
+                entry_count += 1
                 continue
             if not reduce_only or quantity * delta >= 0:
                 continue
@@ -1013,6 +1030,7 @@ class OrderLedger:
             if quantity == 0:
                 basis = Decimal("0")
                 open_fee = Decimal("0")
+                entry_count = 0
         average_price = (
             basis / abs(quantity) if quantity != 0 else Decimal("0")
         )
@@ -1020,6 +1038,7 @@ class OrderLedger:
             quantity=quantity,
             average_price=average_price,
             open_fee=open_fee,
+            additions=max(0, entry_count - 1) if quantity != 0 else 0,
         )
 
     @staticmethod

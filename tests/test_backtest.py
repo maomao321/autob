@@ -70,7 +70,7 @@ class BacktestTests(unittest.TestCase):
             buy_notional="100",
             stop_loss_percent="2",
             take_profit_percent="4",
-            max_trades_per_day=1,
+            max_additions_per_position=1,
         )
         config.validate()
         daily = [
@@ -101,6 +101,53 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual("LONG", trades[0].side)
         self.assertEqual("TAKE_PROFIT", trades[0].exit_reason)
         self.assertEqual(Decimal("4"), trades[0].pnl)
+
+    def test_backtest_adds_once_then_reopens_after_full_exit(self) -> None:
+        config = AppConfig(
+            symbols=["BTCUSDT"],
+            provider="binance_futures",
+            buy_notional="100",
+            max_additions_per_position=1,
+            stop_loss_percent="2",
+            take_profit_percent="4",
+        )
+        config.validate()
+        daily = [
+            make_bar("1d", 0, "99"),
+            make_bar("1d", DAY_MS, "100"),
+            make_bar("1d", 2 * DAY_MS, "101"),
+        ]
+        closes = ["10"] * 18 + ["11"] * 6 + [
+            "12", "13", "14", "15", "16"
+        ]
+        five = [
+            make_bar("5m", 2 * DAY_MS + index * FIVE_MS, close)
+            for index, close in enumerate(closes)
+        ]
+        minute = [
+            make_bar(
+                "1m",
+                2 * DAY_MS + 141 * MINUTE_MS,
+                "15",
+                high="15",
+                low="13.5",
+            ),
+            make_bar(
+                "1m",
+                2 * DAY_MS + 146 * MINUTE_MS,
+                "16",
+            ),
+        ]
+
+        trades = BacktestService._simulate(
+            "BTCUSDT", daily, five, minute, config
+        )
+
+        self.assertEqual(2, len(trades))
+        self.assertEqual("TAKE_PROFIT", trades[0].exit_reason)
+        self.assertGreater(trades[0].quantity, Decimal("100") / Decimal("12"))
+        self.assertEqual("END_OF_DATA", trades[1].exit_reason)
+        self.assertGreater(trades[1].entry_time, trades[0].exit_time)
 
     def test_run_configuration_does_not_persist_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

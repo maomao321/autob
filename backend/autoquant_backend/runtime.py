@@ -264,6 +264,14 @@ class BackendRuntime:
 
     def save_config(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._config_lock:
+            payload = dict(payload)
+            if (
+                "max_trades_per_day" in payload
+                and "max_additions_per_position" not in payload
+            ):
+                payload["max_additions_per_position"] = payload.pop(
+                    "max_trades_per_day"
+                )
             current = self.config_store.load()
             allowed = set(asdict(current))
             unknown = sorted(set(payload) - allowed)

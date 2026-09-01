@@ -256,7 +256,9 @@ def _snapshot(payload: dict[str, Any]) -> RuntimeSnapshot:
         ma_value=_optional_decimal(payload.get("ma_value")),
         warmup_bars=int(payload.get("warmup_bars", 0)),
         warmup_required=int(payload.get("warmup_required", 0)),
-        trades_today=int(payload.get("trades_today", 0)),
+        position_additions=int(
+            payload.get("position_additions", payload.get("trades_today", 0))
+        ),
         position_quantity=Decimal(str(payload.get("position_quantity", "0"))),
         average_entry_price=Decimal(str(payload.get("average_entry_price", "0"))),
         pending_orders=int(payload.get("pending_orders", 0)),

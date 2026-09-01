@@ -1158,7 +1158,6 @@ class BacktestService:
     ) -> list[BacktestTrade]:
         strategy = FiveMinuteBreakoutStrategy(
             symbol=symbol,
-            max_trades_per_day=config.max_trades_per_day,
             manual_direction=None,
             entry_context_bars=config.ai_entry_timing_bars,
         )
@@ -1226,20 +1225,33 @@ class BacktestService:
             ):
                 continue
             signal = strategy.on_bar(five_bar)
+            if signal is None:
+                continue
+            signal_side = "LONG" if signal.side is Side.BUY else "SHORT"
+            added_quantity = notional / signal.price
+            if position is None:
+                position = {
+                    "side": signal_side,
+                    "entry_time": five_bar.close_time,
+                    "entry_price": signal.price,
+                    "quantity": added_quantity,
+                    "additions": 0,
+                    "signal_reason": signal.reason,
+                }
+                continue
             if (
-                signal is None
-                or position is not None
-                or strategy.trades_today >= config.max_trades_per_day
+                position["side"] != signal_side
+                or position["additions"]
+                >= config.max_additions_per_position
             ):
                 continue
-            position = {
-                "side": "LONG" if signal.side is Side.BUY else "SHORT",
-                "entry_time": five_bar.close_time,
-                "entry_price": signal.price,
-                "quantity": notional / signal.price,
-                "signal_reason": signal.reason,
-            }
-            strategy.mark_executed(signal)
+            previous_cost = position["entry_price"] * position["quantity"]
+            position["quantity"] += added_quantity
+            position["entry_price"] = (
+                previous_cost + signal.price * added_quantity
+            ) / position["quantity"]
+            position["additions"] += 1
+            position["signal_reason"] += f"；第 {position['additions']} 次加仓：{signal.reason}"
 
         if position is not None:
             final_bar = minute[-1] if minute else five[-1]

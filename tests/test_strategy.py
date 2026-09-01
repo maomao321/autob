@@ -193,17 +193,13 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertIsNone(strategy.on_bar(bar("13", 25)))
         self.assertIsNone(strategy.on_bar(bar("14", 25)))
 
-    def test_execution_count_is_exposed_for_engine_risk_checks(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", max_trades_per_day=1
-        )
+    def test_later_bar_can_emit_a_new_signal(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         seed_direction(strategy, Direction.LONG)
         seed_long_setup(strategy)
         signal = strategy.on_bar(bar("12", 25))
-        assert signal is not None
-        strategy.mark_executed(signal)
-        self.assertEqual(1, strategy.trades_today)
+        self.assertIsNotNone(signal)
 
         strategy.on_bar(bar("13", 26))
         self.assertIsNotNone(strategy.on_bar(bar("14", 27, closed=False)))
@@ -254,18 +250,6 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         strategy.on_bar(bar("12", 1))
 
         self.assertEqual(2, strategy.warmup_bars)
-
-    def test_restored_daily_count_does_not_hide_exit_signals(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", max_trades_per_day=1
-        )
-        strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
-        seed_direction(strategy, Direction.LONG)
-        strategy.restore_trade_count(0, 1)
-        seed_long_setup(strategy)
-
-        self.assertIsNotNone(strategy.on_bar(bar("12", 25, closed=False)))
-        self.assertEqual(1, strategy.trades_today)
 
     def test_direction_requires_two_previous_trading_days(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL")
