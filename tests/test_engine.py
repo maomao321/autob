@@ -31,6 +31,10 @@ def make_bar(
     interval: str = "5m",
     open_price: str | None = None,
     symbol: str = "AAPL",
+    *,
+    high: str | None = None,
+    low: str | None = None,
+    closed: bool = True,
 ) -> Bar:
     price = Decimal(close)
     if interval == "1d":
@@ -45,11 +49,15 @@ def make_bar(
         open_time=open_time,
         close_time=close_time,
         open=Decimal(open_price or close),
-        high=price + Decimal("0.5"),
-        low=price - Decimal("0.5"),
+        high=Decimal(high) if high is not None else price + Decimal("0.5"),
+        low=Decimal(low) if low is not None else price - Decimal("0.5"),
         close=price,
-        closed=True,
+        closed=closed,
     )
+
+
+LONG_SETUP_CLOSES = ["10"] * 18 + ["11"] * 6 + ["12"]
+SHORT_SETUP_CLOSES = ["10"] * 18 + ["9"] * 6 + ["8"]
 
 
 class FakeProvider:
@@ -71,9 +79,9 @@ class FakeProvider:
 
     def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
         yield make_bar("101", 0, interval="1d", open_price="100")
-        for index in range(3):
-            yield make_bar("10", index)
-        yield make_bar("12", 3)
+        for index, close in enumerate(LONG_SETUP_CLOSES):
+            yield make_bar(close, index)
+        yield make_bar("12", 25, closed=False)
 
     def place_order(self, order):
         self.orders.append(order)
@@ -85,9 +93,9 @@ class ShortSignalProvider(FakeProvider):
 
     def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
         yield make_bar("99", 0, interval="1d", open_price="100")
-        for index in range(3):
-            yield make_bar("10", index)
-        yield make_bar("8", 3)
+        for index, close in enumerate(SHORT_SETUP_CLOSES):
+            yield make_bar(close, index)
+        yield make_bar("8", 25, closed=False)
 
     def get_historical_bars(
         self, symbol, interval, start_time, end_time, limit
@@ -497,7 +505,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.history_requests)
             self.assertEqual([], provider.orders)
 
-    def test_futures_preloads_six_closed_bars_before_realtime(self) -> None:
+    def test_futures_preloads_thirty_closed_bars_before_realtime(self) -> None:
         snapshots = []
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
@@ -518,8 +526,10 @@ class SymbolRunnerTests(unittest.TestCase):
             history = [
                 make_bar("10", index, symbol="BTCUSDT")
                 for index in range(5)
+            ] + [
+                make_bar(close, index + 5, symbol="BTCUSDT")
+                for index, close in enumerate(LONG_SETUP_CLOSES)
             ]
-            history.append(make_bar("12", 5, symbol="BTCUSDT"))
             provider = HistoricalWarmupProvider(history)
             runner.provider = provider
 
@@ -531,11 +541,11 @@ class SymbolRunnerTests(unittest.TestCase):
                 provider.history_requests[0]
             )
             self.assertEqual("5m", interval)
-            self.assertEqual(6, limit)
-            self.assertEqual(6 * 300_000 - 1, end_time - start_time)
+            self.assertEqual(30, limit)
+            self.assertEqual(30 * 300_000 - 1, end_time - start_time)
             self.assertEqual([], provider.orders)
-            self.assertEqual(6, snapshots[-1].warmup_bars)
-            self.assertEqual(6, snapshots[-1].warmup_required)
+            self.assertEqual(25, snapshots[-1].warmup_bars)
+            self.assertEqual(25, snapshots[-1].warmup_required)
 
     def test_signal_found_only_in_history_is_not_submitted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -773,7 +783,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertTrue(signal_messages)
             self.assertIn(
                 "开仓信号｜标的 AAPL｜交易模式 模拟｜开仓方向 多头｜"
-                "价格 12.00｜MA 10.67｜原因 ",
+                "价格 12.00｜MA 11.14｜原因 ",
                 signal_messages[-1],
             )
 

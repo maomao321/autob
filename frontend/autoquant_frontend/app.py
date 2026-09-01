@@ -1252,7 +1252,10 @@ class AutoQuantApp(QMainWindow):
         self._grid_field(grid, 1, 3, "API Secret", self._line(self.api_secret_var, secret=True), span=2)
         grid.addWidget(self._button("检查 API 与标的", self._check_connection), 1, 6, 1, 2)
 
-        self._grid_field(grid, 2, 0, "MA 周期", self._line(self.ma_var))
+        ma_description = QLineEdit("MA7 / MA25")
+        ma_description.setReadOnly(True)
+        ma_description.setToolTip("五分钟突破策略固定使用 MA7 和 MA25")
+        self._grid_field(grid, 2, 0, "策略均线", ma_description)
         self._grid_field(grid, 2, 2, "开仓金额(USDC/USDT)", self._line(self.buy_notional_var))
         self._grid_field(grid, 2, 4, "卖出数量", self._line(self.sell_quantity_var))
         self._grid_field(grid, 2, 6, "每日最多交易", self._line(self.max_trades_var))
@@ -2783,7 +2786,8 @@ class AutoQuantApp(QMainWindow):
         layout.addWidget(controls)
 
         note = QLabel(
-            "使用当前运行配置中的行情源、MA、开仓金额、每日交易次数及止盈止损参数。"
+            "使用当前运行配置中的行情源、开仓金额、每日交易次数及止盈止损参数，"
+            "策略均线固定为 MA7/MA25。"
             "最多回看 180 天，标的历史不足时以行情源实际返回数量为准；"
             "收益率 = 总盈亏 ÷ 单笔开仓金额，最大回撤按单笔开仓金额作为初始资金计算；"
             "金额和百分比统一显示两位小数。分页下载目前支持 Binance Futures，"

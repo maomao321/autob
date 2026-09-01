@@ -49,7 +49,7 @@ from autoquant_backend.strategies.five_minute_breakout import FiveMinuteBreakout
 
 SnapshotCallback = Callable[[RuntimeSnapshot], None]
 LogCallback = Callable[[str, str, str], None]
-FUTURES_WARMUP_BARS = 6
+FUTURES_WARMUP_BARS = 30
 FIVE_MINUTE_MS = 5 * 60 * 1000
 
 
@@ -107,7 +107,6 @@ def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
     if config.app.strategy == "five_minute_breakout":
         return FiveMinuteBreakoutStrategy(
             symbol=symbol,
-            ma_period=config.app.ma_period,
             max_trades_per_day=config.app.max_trades_per_day,
             entry_context_bars=config.app.ai_entry_timing_bars,
             manual_direction=(

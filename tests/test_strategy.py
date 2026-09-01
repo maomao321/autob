@@ -54,6 +54,18 @@ def seed_direction(
     )
 
 
+def seed_long_setup(strategy: FiveMinuteBreakoutStrategy) -> None:
+    closes = ["10"] * 18 + ["11"] * 6 + ["12"]
+    for index, close in enumerate(closes):
+        assert strategy.on_bar(bar(close, index)) is None
+
+
+def seed_short_setup(strategy: FiveMinuteBreakoutStrategy) -> None:
+    closes = ["10"] * 18 + ["9"] * 6 + ["8"]
+    for index, close in enumerate(closes):
+        assert strategy.on_bar(bar(close, index)) is None
+
+
 class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
     def test_manual_mode_rejects_unknown_direction(self) -> None:
         with self.assertRaisesRegex(ValueError, "manual direction"):
@@ -63,12 +75,11 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
 
     def test_manual_mode_uses_live_five_minute_bars_without_daily_bar(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", ma_period=3, manual_direction=Direction.LONG
+            "AAPL", manual_direction=Direction.LONG
         )
-        for index in range(3):
-            self.assertIsNone(strategy.on_bar(bar("10", index)))
+        seed_long_setup(strategy)
 
-        signal = strategy.on_bar(bar("12", 3))
+        signal = strategy.on_bar(bar("12", 25, closed=False))
 
         self.assertIsNotNone(signal)
         assert signal is not None
@@ -77,48 +88,67 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual(0, strategy.current_day_key)
         self.assertIn("手动开仓方向偏多", signal.reason)
 
-    def test_long_signal_requires_daily_bias_ma_cross_and_previous_high(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+    def test_long_signal_requires_ma7_above_ma25_and_two_bar_breakout(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(
             bar("101", 0, interval="1d", open_price="100", high="102", low="99")
         )
         seed_direction(strategy, Direction.LONG)
         self.assertEqual(Direction.LONG, strategy.direction)
-        for index in range(3):
-            self.assertIsNone(strategy.on_bar(bar("10", index)))
+        seed_long_setup(strategy)
 
-        signal = strategy.on_bar(bar("12", 3, high="12.2", low="9.8"))
+        signal = strategy.on_bar(bar("12", 25, closed=False))
 
         self.assertIsNotNone(signal)
         assert signal is not None
         self.assertEqual(Side.BUY, signal.side)
-        self.assertEqual(Decimal("10.66666666666666666666666667"), signal.ma_value)
+        self.assertEqual(Decimal("78") / Decimal("7"), signal.ma_value)
+        self.assertIn("MA7", signal.reason)
+        self.assertIn("MA25", signal.reason)
+        self.assertIn("第二根最高价", signal.reason)
+
+    def test_long_signal_requires_every_configured_condition(self) -> None:
+        cases = (
+            (["10"] * 23 + ["9", "10"], "11"),
+            (["10"] * 18 + ["11"] * 7, "12"),
+            (["10"] * 18 + ["11"] * 6 + ["12"], "11.5"),
+        )
+        for closes, latest_price in cases:
+            with self.subTest(closes=closes[-2:], latest_price=latest_price):
+                strategy = FiveMinuteBreakoutStrategy(
+                    "AAPL", manual_direction=Direction.LONG
+                )
+                for index, close in enumerate(closes):
+                    self.assertIsNone(strategy.on_bar(bar(close, index)))
+
+                self.assertIsNone(
+                    strategy.on_bar(bar(latest_price, 25, closed=False))
+                )
 
     def test_short_signal_is_symmetric(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(
             bar("99", 0, interval="1d", open_price="100", high="101", low="98")
         )
         seed_direction(strategy, Direction.SHORT)
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
+        seed_short_setup(strategy)
 
-        signal = strategy.on_bar(bar("8", 3, high="10.2", low="7.8"))
+        signal = strategy.on_bar(bar("8", 25, closed=False))
 
         self.assertIsNotNone(signal)
         assert signal is not None
         self.assertEqual(Side.SELL, signal.side)
+        self.assertIn("第二根最低价", signal.reason)
 
     def test_ai_direction_overrides_the_intraday_daily_candle(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.set_opening_direction(Direction.SHORT, "新闻与大盘偏空")
         strategy.on_bar(
             bar("101", 0, interval="1d", open_price="100")
         )
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
+        seed_short_setup(strategy)
 
-        signal = strategy.on_bar(bar("8", 3, high="10.2", low="7.8"))
+        signal = strategy.on_bar(bar("8", 25, closed=False))
 
         self.assertEqual(Direction.SHORT, strategy.direction)
         self.assertIsNotNone(signal)
@@ -127,7 +157,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertIn("大模型今日偏空", signal.reason)
 
     def test_manual_fallback_is_used_only_without_daily_direction(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         strategy.set_fallback_direction(Direction.SHORT, "日线请求失败")
 
@@ -140,48 +170,46 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual("DAILY", strategy.direction_source)
 
     def test_manual_fallback_is_identified_in_signal_reason(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         strategy.set_fallback_direction(Direction.LONG, "日线不足两根")
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
+        seed_long_setup(strategy)
 
-        signal = strategy.on_bar(bar("12", 3))
+        signal = strategy.on_bar(bar("12", 25, closed=False))
 
         self.assertIsNotNone(signal)
         assert signal is not None
         self.assertIn("采用手动方向偏多", signal.reason)
 
-    def test_open_bar_and_duplicate_closed_bar_do_not_repeat_signal(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+    def test_live_bar_can_trigger_once_and_closed_update_is_not_repeated(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         seed_direction(strategy, Direction.LONG)
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
-        self.assertIsNone(strategy.on_bar(bar("12", 3, closed=False)))
-        signal = strategy.on_bar(bar("12", 3))
+        seed_long_setup(strategy)
+        self.assertIsNone(strategy.on_bar(bar("11.4", 25, closed=False)))
+        signal = strategy.on_bar(bar("12", 25, closed=False))
         self.assertIsNotNone(signal)
-        self.assertIsNone(strategy.on_bar(bar("13", 3)))
+        self.assertIsNone(strategy.on_bar(bar("13", 25, closed=False)))
+        self.assertIsNone(strategy.on_bar(bar("13", 25)))
+        self.assertIsNone(strategy.on_bar(bar("14", 25)))
 
     def test_execution_count_is_exposed_for_engine_risk_checks(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", ma_period=3, max_trades_per_day=1
+            "AAPL", max_trades_per_day=1
         )
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         seed_direction(strategy, Direction.LONG)
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
-        signal = strategy.on_bar(bar("12", 3))
+        seed_long_setup(strategy)
+        signal = strategy.on_bar(bar("12", 25))
         assert signal is not None
         strategy.mark_executed(signal)
         self.assertEqual(1, strategy.trades_today)
 
-        strategy.on_bar(bar("10", 4))
-        strategy.on_bar(bar("9", 5))
-        self.assertIsNotNone(strategy.on_bar(bar("13", 6)))
+        strategy.on_bar(bar("13", 26))
+        self.assertIsNotNone(strategy.on_bar(bar("14", 27, closed=False)))
 
     def test_new_daily_bar_clears_intraday_warmup(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         for index in range(3):
             strategy.on_bar(bar("10", index))
@@ -197,7 +225,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual(1, strategy.warmup_bars)
 
     def test_recent_model_context_keeps_latest_60_five_minute_bars(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         history = [bar(str(100 + index), index) for index in range(65)]
 
         strategy.seed_recent_bars(history)
@@ -208,7 +236,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
 
     def test_recent_model_context_capacity_is_configurable(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", ma_period=3, entry_context_bars=20
+            "AAPL", entry_context_bars=20
         )
         history = [bar(str(100 + index), index) for index in range(25)]
 
@@ -218,7 +246,7 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertEqual(history[5].open_time, strategy.recent_bars[0].open_time)
 
     def test_out_of_order_five_minute_bar_is_ignored(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         strategy.on_bar(bar("10", 1))
         strategy.on_bar(bar("11", 2))
@@ -229,19 +257,18 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
 
     def test_restored_daily_count_does_not_hide_exit_signals(self) -> None:
         strategy = FiveMinuteBreakoutStrategy(
-            "AAPL", ma_period=3, max_trades_per_day=1
+            "AAPL", max_trades_per_day=1
         )
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
         seed_direction(strategy, Direction.LONG)
         strategy.restore_trade_count(0, 1)
-        for index in range(3):
-            strategy.on_bar(bar("10", index))
+        seed_long_setup(strategy)
 
-        self.assertIsNotNone(strategy.on_bar(bar("12", 3)))
+        self.assertIsNotNone(strategy.on_bar(bar("12", 25, closed=False)))
         self.assertEqual(1, strategy.trades_today)
 
     def test_direction_requires_two_previous_trading_days(self) -> None:
-        strategy = FiveMinuteBreakoutStrategy("AAPL", ma_period=3)
+        strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("120", 0, interval="1d", open_price="100"))
 
         self.assertEqual(Direction.UNKNOWN, strategy.direction)

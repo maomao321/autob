@@ -78,14 +78,15 @@ class BacktestTests(unittest.TestCase):
             make_bar("1d", DAY_MS, "100"),
             make_bar("1d", 2 * DAY_MS, "101"),
         ]
+        setup_closes = ["10"] * 18 + ["11"] * 6 + ["12", "12", "12"]
         five = [
             make_bar("5m", 2 * DAY_MS + index * FIVE_MS, close)
-            for index, close in enumerate(("10", "10", "10", "12", "12"))
+            for index, close in enumerate(setup_closes)
         ]
         minute = [
             make_bar(
                 "1m",
-                2 * DAY_MS + 20 * MINUTE_MS,
+                2 * DAY_MS + 131 * MINUTE_MS,
                 "12.6",
                 high="12.6",
                 low="12",

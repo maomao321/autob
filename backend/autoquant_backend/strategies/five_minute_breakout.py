@@ -9,22 +9,26 @@ from autoquant_backend.strategies.base import Strategy
 
 DAY_MS = 86_400_000
 AI_ENTRY_CONTEXT_BARS = 60
+FAST_MA_PERIOD = 7
+SLOW_MA_PERIOD = 25
 
 
 class FiveMinuteBreakoutStrategy(Strategy):
-    """Daily direction filter plus five-minute MA and prior-bar breakout."""
+    """Daily direction filter plus MA7/MA25 two-bar breakout."""
 
     name = "five_minute_breakout"
 
     def __init__(
         self,
         symbol: str,
-        ma_period: int = 5,
+        ma_period: int | None = None,
         max_trades_per_day: int = 1,
         manual_direction: Direction | None = None,
         entry_context_bars: int = AI_ENTRY_CONTEXT_BARS,
     ) -> None:
-        if ma_period < 2:
+        # Keep accepting the legacy argument so older integrations continue to
+        # load, but this strategy now always uses the fixed MA7/MA25 pair.
+        if ma_period is not None and int(ma_period) < 2:
             raise ValueError("ma_period must be at least 2")
         if manual_direction not in {
             None,
@@ -36,9 +40,11 @@ class FiveMinuteBreakoutStrategy(Strategy):
         if not 10 <= int(entry_context_bars) <= 300:
             raise ValueError("entry_context_bars must be between 10 and 300")
         self.symbol = symbol.upper()
-        self.ma_period = ma_period
+        self.ma_period = SLOW_MA_PERIOD
+        self.fast_ma_period = FAST_MA_PERIOD
+        self.slow_ma_period = SLOW_MA_PERIOD
         self.max_trades_per_day = max_trades_per_day
-        self._bars: deque[Bar] = deque(maxlen=ma_period + 1)
+        self._bars: deque[Bar] = deque(maxlen=self.slow_ma_period)
         self.entry_context_bars = int(entry_context_bars)
         self._recent_bars: deque[Bar] = deque(maxlen=self.entry_context_bars)
         self._daily_bar: Bar | None = None
@@ -46,6 +52,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._manual_direction = manual_direction
         self._direction_daily_bars: tuple[Bar, Bar] | None = None
         self._last_evaluated_open_time: int | None = None
+        self._last_signaled_open_time: int | None = None
         self._trades_by_day: dict[int, int] = {}
         self._opening_direction: Direction | None = None
         self._opening_direction_reason = ""
@@ -53,6 +60,8 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._fallback_direction_reason = ""
         self.last_price: Decimal | None = None
         self.ma_value: Decimal | None = None
+        self.fast_ma_value: Decimal | None = None
+        self.slow_ma_value: Decimal | None = None
 
     @property
     def direction(self) -> Direction:
@@ -134,7 +143,7 @@ class FiveMinuteBreakoutStrategy(Strategy):
 
     @property
     def warmup_required(self) -> int:
-        return self.ma_period + 1
+        return self.slow_ma_period
 
     @property
     def recent_bars(self) -> tuple[Bar, ...]:
@@ -189,11 +198,14 @@ class FiveMinuteBreakoutStrategy(Strategy):
                 self._fallback_direction = None
                 self._fallback_direction_reason = ""
                 self._last_evaluated_open_time = None
+                self._last_signaled_open_time = None
                 self.ma_value = None
+                self.fast_ma_value = None
+                self.slow_ma_value = None
             self._daily_bar = bar
             self._remove_old_trade_counters(bar.open_time)
             return None
-        if bar.interval != "5m" or not bar.closed:
+        if bar.interval != "5m":
             return None
         if self._manual_direction is not None:
             day_key = bar.open_time - (bar.open_time % DAY_MS)
@@ -217,52 +229,74 @@ class FiveMinuteBreakoutStrategy(Strategy):
             and bar.open_time <= self._last_evaluated_open_time
         ):
             return None
-        self._last_evaluated_open_time = bar.open_time
-        self._append_closed_bar(bar)
-        if len(self._bars) < self.warmup_required:
+
+        signal = self._signal_for_latest_price(bar)
+        if bar.closed:
+            self._last_evaluated_open_time = bar.open_time
+            self._append_closed_bar(bar)
+        return signal
+
+    def _signal_for_latest_price(self, bar: Bar) -> Signal | None:
+        if (
+            len(self._bars) < self.warmup_required
+            or self._last_signaled_open_time == bar.open_time
+        ):
             return None
 
         bars = list(self._bars)
-        previous_bar = bars[-2]
-        previous_window = bars[-(self.ma_period + 1) : -1]
-        current_window = bars[-self.ma_period :]
-        previous_ma = self._mean_close(previous_window)
-        current_ma = self._mean_close(current_window)
-        self.ma_value = current_ma
+        first_bar = bars[-1]
+        second_bar = bars[-2]
+        fast_ma = self._mean_close(bars[-self.fast_ma_period :])
+        slow_ma = self._mean_close(bars[-self.slow_ma_period :])
+        self.fast_ma_value = fast_ma
+        self.slow_ma_value = slow_ma
+        self.ma_value = fast_ma
 
-        crossed_up = previous_bar.close <= previous_ma and bar.close > current_ma
-        broke_previous_high = bar.close > previous_bar.high
-        if self.direction is Direction.LONG and crossed_up and broke_previous_high:
-            direction_reason = self._direction_reason(long=True)
+        if (
+            self.direction is Direction.LONG
+            and fast_ma > slow_ma
+            and first_bar.close > second_bar.close
+            and bar.close > second_bar.high
+        ):
+            self._last_signaled_open_time = bar.open_time
             return Signal(
                 symbol=self.symbol,
                 side=Side.BUY,
                 price=bar.close,
-                ma_value=current_ma,
+                ma_value=fast_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"{direction_reason}；5分钟收盘价 {financial_text(bar.close)} "
-                    f"上穿 MA{self.ma_period} "
-                    f"{financial_text(current_ma)}，并突破前一根最高价 "
-                    f"{financial_text(previous_bar.high)}"
+                    f"{self._direction_reason(long=True)}；"
+                    f"MA7 {financial_text(fast_ma)} 高于 MA25 "
+                    f"{financial_text(slow_ma)}；第一根5分钟K线收盘价 "
+                    f"{financial_text(first_bar.close)} 高于第二根收盘价 "
+                    f"{financial_text(second_bar.close)}；最新价 "
+                    f"{financial_text(bar.close)} 突破第二根最高价 "
+                    f"{financial_text(second_bar.high)}"
                 ),
             )
 
-        crossed_down = previous_bar.close >= previous_ma and bar.close < current_ma
-        broke_previous_low = bar.close < previous_bar.low
-        if self.direction is Direction.SHORT and crossed_down and broke_previous_low:
-            direction_reason = self._direction_reason(long=False)
+        if (
+            self.direction is Direction.SHORT
+            and fast_ma < slow_ma
+            and first_bar.close < second_bar.close
+            and bar.close < second_bar.low
+        ):
+            self._last_signaled_open_time = bar.open_time
             return Signal(
                 symbol=self.symbol,
                 side=Side.SELL,
                 price=bar.close,
-                ma_value=current_ma,
+                ma_value=fast_ma,
                 bar_open_time=bar.open_time,
                 reason=(
-                    f"{direction_reason}；5分钟收盘价 {financial_text(bar.close)} "
-                    f"下穿 MA{self.ma_period} "
-                    f"{financial_text(current_ma)}，并跌破前一根最低价 "
-                    f"{financial_text(previous_bar.low)}"
+                    f"{self._direction_reason(long=False)}；"
+                    f"MA7 {financial_text(fast_ma)} 低于 MA25 "
+                    f"{financial_text(slow_ma)}；第一根5分钟K线收盘价 "
+                    f"{financial_text(first_bar.close)} 低于第二根收盘价 "
+                    f"{financial_text(second_bar.close)}；最新价 "
+                    f"{financial_text(bar.close)} 跌破第二根最低价 "
+                    f"{financial_text(second_bar.low)}"
                 ),
             )
         return None
@@ -293,7 +327,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
     def _reset_intraday_state(self) -> None:
         self._bars.clear()
         self._last_evaluated_open_time = None
+        self._last_signaled_open_time = None
         self.ma_value = None
+        self.fast_ma_value = None
+        self.slow_ma_value = None
 
     def _append_closed_bar(self, bar: Bar) -> None:
         if self._bars and self._bars[-1].open_time == bar.open_time:

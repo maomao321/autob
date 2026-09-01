@@ -1158,7 +1158,6 @@ class BacktestService:
     ) -> list[BacktestTrade]:
         strategy = FiveMinuteBreakoutStrategy(
             symbol=symbol,
-            ma_period=config.ma_period,
             max_trades_per_day=config.max_trades_per_day,
             manual_direction=None,
             entry_context_bars=config.ai_entry_timing_bars,
