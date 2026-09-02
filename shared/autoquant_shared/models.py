@@ -51,6 +51,9 @@ class Signal:
     ma_value: Decimal
     bar_open_time: int
     reason: str
+    strategy_context: dict[str, Any] = field(
+        default_factory=dict, compare=False, repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)

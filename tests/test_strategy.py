@@ -106,6 +106,26 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         self.assertIn("MA7", signal.reason)
         self.assertIn("MA25", signal.reason)
         self.assertIn("第二根最高价", signal.reason)
+        strategy_context = signal.strategy_context
+        self.assertEqual(
+            "five_minute_breakout",
+            strategy_context["strategy"]["strategy_id"],
+        )
+        self.assertEqual(
+            {"fast_ma_period": 7, "slow_ma_period": 25, "entry_context_bars": 60},
+            strategy_context["strategy"]["parameters"],
+        )
+        self.assertEqual(
+            "LONG_BREAKOUT", strategy_context["signal"]["signal_type"]
+        )
+        self.assertEqual(
+            "11.50", strategy_context["signal"]["breakout_level"]
+        )
+        self.assertTrue(
+            strategy_context["signal"]["trigger_conditions"][
+                "breakout_condition_met"
+            ]
+        )
 
     def test_long_signal_requires_every_configured_condition(self) -> None:
         cases = (

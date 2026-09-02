@@ -73,6 +73,25 @@ def candidate_signal() -> Signal:
         ma_value=Decimal("101"),
         bar_open_time=1_500,
         reason="5 分钟突破",
+        strategy_context={
+            "strategy": {
+                "strategy_id": "five_minute_breakout",
+                "strategy_name": "五分钟 MA7/MA25 双 K 线突破",
+                "parameters": {
+                    "fast_ma_period": 7,
+                    "slow_ma_period": 25,
+                },
+                "indicator_state": {
+                    "fast_ma_value": "101.00",
+                    "slow_ma_value": "100.00",
+                },
+            },
+            "signal": {
+                "signal_type": "LONG_BREAKOUT",
+                "breakout_level": "101.50",
+                "breakout_distance": "0.50",
+            },
+        },
     )
 
 
@@ -718,6 +737,20 @@ class AiDecisionTests(unittest.TestCase):
             set(context["recent_intraday_bars"][-1]),
         )
         self.assertEqual("102.00", context["today_daily_bar"]["close"])
+        self.assertEqual(
+            "five_minute_breakout",
+            context["strategy_info"]["strategy_id"],
+        )
+        self.assertEqual(
+            {"fast_ma_period": 7, "slow_ma_period": 25},
+            context["strategy_info"]["parameters"],
+        )
+        self.assertEqual("AAPL", context["candidate_entry"]["symbol"])
+        self.assertEqual("LONG", context["candidate_entry"]["implied_direction"])
+        self.assertEqual(
+            "LONG_BREAKOUT",
+            context["candidate_entry"]["strategy_signal_data"]["signal_type"],
+        )
 
     def test_entry_timing_waits_before_calling_model_with_fewer_than_60_bars(self) -> None:
         client = StaticClient("CHATGPT", Direction.LONG, 0.82)

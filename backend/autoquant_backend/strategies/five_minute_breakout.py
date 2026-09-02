@@ -258,6 +258,14 @@ class FiveMinuteBreakoutStrategy(Strategy):
                     f"{financial_text(bar.close)} 突破第二根最高价 "
                     f"{financial_text(second_bar.high)}"
                 ),
+                strategy_context=self._entry_decision_context(
+                    bar=bar,
+                    first_bar=first_bar,
+                    second_bar=second_bar,
+                    fast_ma=fast_ma,
+                    slow_ma=slow_ma,
+                    long=True,
+                ),
             )
 
         if (
@@ -282,8 +290,111 @@ class FiveMinuteBreakoutStrategy(Strategy):
                     f"{financial_text(bar.close)} 跌破第二根最低价 "
                     f"{financial_text(second_bar.low)}"
                 ),
+                strategy_context=self._entry_decision_context(
+                    bar=bar,
+                    first_bar=first_bar,
+                    second_bar=second_bar,
+                    fast_ma=fast_ma,
+                    slow_ma=slow_ma,
+                    long=False,
+                ),
             )
         return None
+
+    def _entry_decision_context(
+        self,
+        *,
+        bar: Bar,
+        first_bar: Bar,
+        second_bar: Bar,
+        fast_ma: Decimal,
+        slow_ma: Decimal,
+        long: bool,
+    ) -> dict[str, object]:
+        breakout_level = second_bar.high if long else second_bar.low
+        breakout_distance = (
+            bar.close - breakout_level
+            if long
+            else breakout_level - bar.close
+        )
+        breakout_percent = (
+            breakout_distance / breakout_level * Decimal("100")
+            if breakout_level > 0
+            else Decimal("0")
+        )
+        return {
+            "strategy": {
+                "strategy_id": self.name,
+                "strategy_name": "五分钟 MA7/MA25 双 K 线突破",
+                "description": (
+                    "先按当日方向过滤，再要求快慢均线同向、最近两根已收盘"
+                    "五分钟 K 线延续，最后由候选价格突破参考高点或低点。"
+                ),
+                "bar_interval": "5m",
+                "direction": self.direction.value,
+                "direction_source": self.direction_source,
+                "direction_reason": self._direction_reason(long=long),
+                "parameters": {
+                    "fast_ma_period": self.fast_ma_period,
+                    "slow_ma_period": self.slow_ma_period,
+                    "entry_context_bars": self.entry_context_bars,
+                },
+                "rules": {
+                    "direction_filter": "LONG 只允许 BUY；SHORT 只允许 SELL",
+                    "ma_filter": (
+                        "MA7 > MA25" if long else "MA7 < MA25"
+                    ),
+                    "closed_bar_confirmation": (
+                        "最近已收盘 K 线 close > 前一根 close"
+                        if long
+                        else "最近已收盘 K 线 close < 前一根 close"
+                    ),
+                    "breakout_trigger": (
+                        "候选价格 > 前一根已收盘 K 线 high"
+                        if long
+                        else "候选价格 < 前一根已收盘 K 线 low"
+                    ),
+                },
+                "indicator_state": {
+                    "fast_ma_value": financial_text(fast_ma),
+                    "slow_ma_value": financial_text(slow_ma),
+                    "ma_spread": financial_text(fast_ma - slow_ma),
+                    "warmup_bars": self.warmup_bars,
+                    "warmup_required": self.warmup_required,
+                },
+            },
+            "signal": {
+                "signal_type": (
+                    "LONG_BREAKOUT" if long else "SHORT_BREAKDOWN"
+                ),
+                "implied_direction": "LONG" if long else "SHORT",
+                "breakout_level": financial_text(breakout_level),
+                "breakout_distance": financial_text(breakout_distance),
+                "breakout_distance_percent": financial_text(
+                    breakout_percent
+                ),
+                "latest_closed_bar": self._context_bar(first_bar),
+                "reference_closed_bar": self._context_bar(second_bar),
+                "trigger_conditions": {
+                    "direction_matches": True,
+                    "ma_condition_met": True,
+                    "closed_bar_confirmation_met": True,
+                    "breakout_condition_met": True,
+                },
+            },
+        }
+
+    @staticmethod
+    def _context_bar(bar: Bar) -> dict[str, object]:
+        return {
+            "open_time_ms": bar.open_time,
+            "close_time_ms": bar.close_time,
+            "open": financial_text(bar.open),
+            "high": financial_text(bar.high),
+            "low": financial_text(bar.low),
+            "close": financial_text(bar.close),
+            "is_closed": bar.closed,
+        }
 
     def _direction_reason(self, *, long: bool) -> str:
         bias = "偏多" if long else "偏空"
