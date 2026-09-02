@@ -648,7 +648,7 @@ class AutoQuantApp(QMainWindow):
         self.account_timer.start(ACCOUNT_REFRESH_MS)
         self.backtest_timer = QTimer(self)
         self.backtest_timer.timeout.connect(self._refresh_backtest_data)
-        self.backtest_timer.start(5_000)
+        self.backtest_timer.setInterval(5_000)
         self.futures_rankings_timer = QTimer(self)
         self.futures_rankings_timer.timeout.connect(
             self._auto_refresh_futures_rankings
@@ -907,6 +907,12 @@ class AutoQuantApp(QMainWindow):
         return table
 
     def _on_page_changed(self, _index: int) -> None:
+        if self.notebook.currentWidget() is self.backtest_page:
+            if not self.backtest_timer.isActive():
+                self.backtest_timer.start()
+            self._refresh_backtest_data()
+        else:
+            self.backtest_timer.stop()
         if self.notebook.currentWidget() is self.contract_pool_page:
             self._sync_contract_pool_refresh_timer()
             self._refresh_futures_rankings()
@@ -2920,7 +2926,7 @@ class AutoQuantApp(QMainWindow):
             "导入 K 线", self._import_historical_bars
         )
         self.backtest_refresh_button = self._button(
-            "刷新", self._refresh_backtest_data
+            "刷新", lambda: self._refresh_backtest_data(manual=True)
         )
         controls_layout.addWidget(self.backtest_download_button)
         controls_layout.addWidget(self.backtest_run_button)
@@ -3313,11 +3319,12 @@ class AutoQuantApp(QMainWindow):
             )
         self._refresh_backtest_data()
 
-    def _refresh_backtest_data(self) -> None:
+    def _refresh_backtest_data(self, *, manual: bool = False) -> None:
         if self._closed or self._backtest_refresh_inflight:
             return
         self._backtest_refresh_inflight = True
-        self.backtest_refresh_button.setEnabled(False)
+        if manual:
+            self.backtest_refresh_button.setEnabled(False)
 
         def refresh() -> None:
             try:

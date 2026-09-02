@@ -822,6 +822,38 @@ class QtAppWidgetTests(unittest.TestCase):
             window._remove_selected_pool_contracts()
             self.assertFalse(window.contract_pool_timer.isActive())
 
+    def test_backtest_refresh_timer_tracks_visible_page_without_flashing_button(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=MagicMock())
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            self.assertFalse(window.backtest_timer.isActive())
+            with patch.object(window, "_refresh_backtest_data") as refresh:
+                window.notebook.setCurrentWidget(window.backtest_page)
+                refresh.assert_called_once_with()
+            self.assertTrue(window.backtest_timer.isActive())
+
+            window.notebook.setCurrentWidget(window.main_page)
+            self.assertFalse(window.backtest_timer.isActive())
+
+            with patch("autoquant_frontend.app.threading.Thread"):
+                window._refresh_backtest_data()
+                self.assertTrue(window.backtest_refresh_button.isEnabled())
+                window._apply_backtest_data([], [], "")
+
+                window._refresh_backtest_data(manual=True)
+                self.assertFalse(window.backtest_refresh_button.isEnabled())
+                window._apply_backtest_data([], [], "")
+                self.assertTrue(window.backtest_refresh_button.isEnabled())
+
     def test_removing_last_symbol_persists_without_saving_other_ui_edits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
