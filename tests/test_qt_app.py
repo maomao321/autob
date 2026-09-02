@@ -20,14 +20,10 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from autoquant_frontend.app import (
-    AutoQuantApp,
-    COLORS,
-    InteractiveChartView,
-    KeyedTable,
-    TextValue,
-)
+from autoquant_frontend.app import AutoQuantApp
 from autoquant_frontend.client import BackendClientError
+from autoquant_frontend.theme import COLORS
+from autoquant_frontend.widgets import InteractiveChartView, KeyedTable, TextValue
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_shared.models import (
     AiDecisionHistoryItem,
@@ -125,7 +121,7 @@ class QtAppWidgetTests(unittest.TestCase):
             window.max_daily_buy_notional_var.set("500")
             window.max_additions_var.set("3")
 
-            with patch("autoquant_frontend.app.threading.Thread") as thread:
+            with patch("autoquant_frontend.backtest_page.threading.Thread") as thread:
                 window._start_backtest_run()
                 thread.call_args.kwargs["target"]()
 
@@ -189,10 +185,10 @@ class QtAppWidgetTests(unittest.TestCase):
 
             with (
                 patch(
-                    "autoquant_frontend.app.QInputDialog.getItem",
+                    "autoquant_frontend.backtest_page.QInputDialog.getItem",
                     return_value=("五分钟突破", True),
                 ),
-                patch("autoquant_frontend.app.threading.Thread") as thread,
+                patch("autoquant_frontend.backtest_page.threading.Thread") as thread,
             ):
                 action_button.click()
                 thread.call_args.kwargs["target"]()
@@ -231,13 +227,13 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual("stop", action_button.property("action"))
             self.assertEqual("停止回测 BTCUSDT", action_button.toolTip())
 
-            with patch("autoquant_frontend.app.threading.Thread") as thread:
+            with patch("autoquant_frontend.backtest_page.threading.Thread") as thread:
                 action_button.click()
                 thread.call_args.kwargs["target"]()
             backend_client.stop_backtest.assert_called_once_with("run-1")
             window._apply_backtest_stop("run-1", "download-1", "")
 
-            with patch("autoquant_frontend.app.threading.Thread") as thread:
+            with patch("autoquant_frontend.backtest_page.threading.Thread") as thread:
                 window._update_historical_bars("download-1", "BTCUSDT")
                 thread.call_args.kwargs["target"]()
             backend_client.update_historical_download.assert_called_once_with(
@@ -719,7 +715,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.buy_notional_var.set("12")
             window.symbol_var.set(" nvda ")
-            with patch("autoquant_frontend.app.show_error") as show_error_mock:
+            with patch("autoquant_frontend.trading_page.show_error") as show_error_mock:
                 window._add_symbols()
 
             persisted = store.load()
@@ -746,7 +742,7 @@ class QtAppWidgetTests(unittest.TestCase):
 
             window.provider_var.set("binance_futures")
             window.symbol_var.set(" eth, solusdt ")
-            with patch("autoquant_frontend.app.show_error") as show_error_mock:
+            with patch("autoquant_frontend.trading_page.show_error") as show_error_mock:
                 window._add_symbols()
 
             persisted = store.load()
@@ -889,7 +885,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
 
-            with patch("autoquant_frontend.app.BacktestStatusListener"):
+            with patch("autoquant_frontend.backtest_page.BacktestStatusListener"):
                 window._open_contract_backtest("BTCUSDT")
 
             self.assertIs(window.backtest_page, window.notebook.currentWidget())
@@ -945,7 +941,7 @@ class QtAppWidgetTests(unittest.TestCase):
             self.addCleanup(window.deleteLater)
 
             self.assertIsNone(window._backtest_status_listener)
-            with patch("autoquant_frontend.app.BacktestStatusListener") as listener_type:
+            with patch("autoquant_frontend.backtest_page.BacktestStatusListener") as listener_type:
                 window.notebook.setCurrentWidget(window.backtest_page)
                 listener_type.assert_called_once()
                 listener_type.return_value.start.assert_called_once_with()
@@ -964,7 +960,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 listener_type.return_value.close.assert_called_once_with()
                 self.assertIsNone(window._backtest_status_listener)
 
-            with patch("autoquant_frontend.app.threading.Thread"):
+            with patch("autoquant_frontend.backtest_page.threading.Thread"):
                 window._refresh_backtest_data()
                 self.assertTrue(window.backtest_refresh_button.isEnabled())
                 window._apply_backtest_data([], [], "")
@@ -995,8 +991,8 @@ class QtAppWidgetTests(unittest.TestCase):
             window.buy_notional_var.set("12")
             window.tree.selectRow(0)
             with (
-                patch("autoquant_frontend.app.ask_yes_no", return_value=True),
-                patch("autoquant_frontend.app.show_error") as show_error_mock,
+                patch("autoquant_frontend.trading_page.ask_yes_no", return_value=True),
+                patch("autoquant_frontend.trading_page.show_error") as show_error_mock,
             ):
                 window._remove_selected()
 
@@ -1021,13 +1017,13 @@ class QtAppWidgetTests(unittest.TestCase):
             window.tree.selectRow(0)
 
             with (
-                patch("autoquant_frontend.app.ask_yes_no", return_value=True),
+                patch("autoquant_frontend.trading_page.ask_yes_no", return_value=True),
                 patch.object(
                     store,
                     "save",
                     side_effect=BackendClientError("backend unavailable"),
                 ),
-                patch("autoquant_frontend.app.show_error") as show_error_mock,
+                patch("autoquant_frontend.trading_page.show_error") as show_error_mock,
             ):
                 window._remove_selected()
 
@@ -1049,7 +1045,7 @@ class QtAppWidgetTests(unittest.TestCase):
             window.tree.selectRow(0)
 
             with (
-                patch("autoquant_frontend.app.ask_yes_no", return_value=False)
+                patch("autoquant_frontend.trading_page.ask_yes_no", return_value=False)
                 as ask_yes_no_mock,
                 patch.object(store, "save") as save_mock,
             ):

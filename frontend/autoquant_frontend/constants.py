@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+from autoquant_shared.models import RunState
+
+
+ACCOUNT_REFRESH_MS = 30_000
+FUTURES_RANKINGS_REFRESH_MS = 30 * 60 * 1_000
+CONTRACT_POOL_REFRESH_MS = 60 * 1_000
+
+MANUAL_DIRECTION_COLUMN = 3
+REALIZED_PNL_COLUMN = 5
+UNREALIZED_PNL_COLUMN = 6
+ACTION_COLUMN = 11
+BACKTEST_DOWNLOAD_ACTION_COLUMN = 1
+
+MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
+STRATEGY_OPTIONS = ("five_minute_breakout",)
+STRATEGY_LABELS = {
+    "five_minute_breakout": "五分钟突破",
+}
+
+STATE_TEXT = {
+    RunState.STOPPED: "已停止",
+    RunState.STARTING: "启动中",
+    RunState.WARMING_UP: "收集K线",
+    RunState.RUNNING: "运行中",
+    RunState.SIGNAL: "信号",
+    RunState.ERROR: "错误",
+    RunState.STOPPING: "停止中",
+}
+
+
+__all__ = [
+    "ACCOUNT_REFRESH_MS",
+    "ACTION_COLUMN",
+    "BACKTEST_DOWNLOAD_ACTION_COLUMN",
+    "CONTRACT_POOL_REFRESH_MS",
+    "FUTURES_RANKINGS_REFRESH_MS",
+    "MANUAL_DIRECTION_COLUMN",
+    "MANUAL_DIRECTION_OPTIONS",
+    "REALIZED_PNL_COLUMN",
+    "STATE_TEXT",
+    "STRATEGY_LABELS",
+    "STRATEGY_OPTIONS",
+    "UNREALIZED_PNL_COLUMN",
+]
