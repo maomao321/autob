@@ -4,21 +4,37 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from decimal import Decimal
-from typing import Any, Callable, Protocol
+from typing import Any
 
 from autoquant_backend.ai_decision import (
-    DecisionClient,
-    DeepSeekDecisionClient,
     EntryTimingDecision,
-    OpenAIResponsesDecisionClient,
     OpeningDecision,
-    OpeningDecisionService,
-    PublicMarketContextCollector,
-    QwenDecisionClient,
 )
-from autoquant_shared.config import AppConfig
+from autoquant_backend.engine.config import (
+    EntryTimingDecider,
+    FIVE_MINUTE_MS,
+    FUTURES_WARMUP_BARS,
+    LogCallback,
+    OpeningDecider,
+    RunnerConfig,
+    SnapshotCallback,
+)
+from autoquant_backend.engine.factories import (
+    create_opening_decider,
+    create_provider,
+    create_strategy,
+)
+from autoquant_backend.providers.binance_stocks import (
+    OrderRejectedError,
+    OrderValidationError,
+)
+from autoquant_backend.state import (
+    OrderLedger,
+    OrderRecord,
+    RiskLimitError,
+)
 from autoquant_shared.formatting import financial_text
 from autoquant_shared.models import (
     AiDecisionHistoryItem,
@@ -30,199 +46,6 @@ from autoquant_shared.models import (
     Side,
     Signal,
 )
-from autoquant_backend.providers.base import TradingProvider
-from autoquant_backend.providers.binance_futures import BinanceFuturesProvider
-from autoquant_backend.providers.binance_stocks import (
-    BinanceStocksProvider,
-    OrderRejectedError,
-    OrderValidationError,
-)
-from autoquant_backend.state import (
-    OrderLedger,
-    OrderRecord,
-    PortfolioPerformance,
-    RiskLimitError,
-)
-from autoquant_backend.strategies.base import Strategy
-from autoquant_backend.strategies.five_minute_breakout import FiveMinuteBreakoutStrategy
-
-
-SnapshotCallback = Callable[[RuntimeSnapshot], None]
-LogCallback = Callable[[str, str, str], None]
-FUTURES_WARMUP_BARS = 30
-FIVE_MINUTE_MS = 5 * 60 * 1000
-
-
-@dataclass(frozen=True, slots=True)
-class RunnerConfig:
-    app: AppConfig
-    api_key: str = ""
-    api_secret: str = ""
-    openai_api_key: str = ""
-    deepseek_api_key: str = ""
-    qwen_api_key: str = ""
-    manual_direction: Direction = Direction.FLAT
-
-
-class OpeningDecider(Protocol):
-    def decide(self, symbol: str, current_daily_bar: Bar) -> OpeningDecision:
-        """Return the direction filter for one exchange trading day."""
-
-
-class EntryTimingDecider(Protocol):
-    def decide_entry(
-        self,
-        symbol: str,
-        signal: Signal,
-        current_bar: Bar,
-        recent_bars: tuple[Bar, ...] = (),
-    ) -> EntryTimingDecision:
-        """Return whether the current candidate signal may enter now."""
-
-
-def create_provider(config: RunnerConfig) -> TradingProvider:
-    if config.app.provider == "binance_stocks":
-        return BinanceStocksProvider(
-            api_key=config.api_key,
-            api_secret=config.api_secret,
-            live_trading=config.app.trading_mode == "REAL",
-            rest_base_url=config.app.rest_base_url,
-            websocket_base_url=config.app.websocket_base_url,
-            recv_window=config.app.recv_window,
-            include_daily_stream=config.manual_direction is Direction.UNKNOWN,
-        )
-    if config.app.provider == "binance_futures":
-        return BinanceFuturesProvider(
-            api_key=config.api_key,
-            api_secret=config.api_secret,
-            live_trading=config.app.trading_mode == "REAL",
-            leverage=config.app.leverage,
-            recv_window=config.app.recv_window,
-            include_daily_stream=config.manual_direction is Direction.UNKNOWN,
-        )
-    raise ValueError(f"未知 API 供应商: {config.app.provider}")
-
-
-def create_strategy(symbol: str, config: RunnerConfig) -> Strategy:
-    if config.app.strategy == "five_minute_breakout":
-        return FiveMinuteBreakoutStrategy(
-            symbol=symbol,
-            entry_context_bars=config.app.ai_entry_timing_bars,
-            manual_direction=(
-                None
-                if config.manual_direction is Direction.UNKNOWN
-                else config.manual_direction
-            ),
-        )
-    raise ValueError(f"未知策略: {config.app.strategy}")
-
-
-def create_opening_decider(
-    config: RunnerConfig,
-    model_log_callback: Callable[[str], None] | None = None,
-    model_input_capture_callback: Callable[
-        [str, str, str, dict[str, Any]], None
-    ]
-    | None = None,
-    model_output_capture_callback: Callable[
-        [str, str, str, dict[str, Any], int], None
-    ]
-    | None = None,
-    market_data_provider: TradingProvider | None = None,
-) -> OpeningDecider | None:
-    mode = config.app.ai_provider
-    if mode == "DISABLED":
-        return None
-    clients: list[DecisionClient] = []
-    if mode in {"CHATGPT", "DUAL"}:
-        if not config.openai_api_key.strip():
-            raise ValueError("CHATGPT/DUAL 模式必须填写 OpenAI API Key")
-        clients.append(
-            OpenAIResponsesDecisionClient(
-                api_key=config.openai_api_key,
-                model=config.app.openai_model,
-                timeout_seconds=config.app.ai_timeout_seconds,
-                reasoning_enabled=config.app.openai_reasoning_enabled,
-                reasoning_effort=config.app.openai_reasoning_effort,
-                output_log_callback=model_log_callback,
-                output_capture_callback=model_output_capture_callback,
-            )
-        )
-    if mode in {"DEEPSEEK", "DUAL"}:
-        if not config.deepseek_api_key.strip():
-            raise ValueError("DEEPSEEK/DUAL 模式必须填写 DeepSeek API Key")
-        clients.append(
-            DeepSeekDecisionClient(
-                api_key=config.deepseek_api_key,
-                model=config.app.deepseek_model,
-                timeout_seconds=config.app.ai_timeout_seconds,
-                thinking_enabled=config.app.deepseek_thinking_enabled,
-                reasoning_effort=config.app.deepseek_reasoning_effort,
-                output_log_callback=model_log_callback,
-                output_capture_callback=model_output_capture_callback,
-            )
-        )
-    if mode == "QWEN":
-        if not config.qwen_api_key.strip():
-            raise ValueError("QWEN 模式必须填写 Qwen API Key")
-        clients.append(
-            QwenDecisionClient(
-                api_key=config.qwen_api_key,
-                model=config.app.qwen_model,
-                chat_url=config.app.qwen_chat_url,
-                timeout_seconds=config.app.ai_timeout_seconds,
-                thinking_enabled=config.app.qwen_thinking_enabled,
-                reasoning_effort=config.app.qwen_reasoning_effort,
-                output_log_callback=model_log_callback,
-                output_capture_callback=model_output_capture_callback,
-            )
-        )
-    historical_bars_fetcher = (
-        getattr(market_data_provider, "get_historical_bars", None)
-        if market_data_provider is not None
-        else None
-    )
-
-    def resolve_historical_symbol(symbol: str) -> str:
-        normalized = symbol.strip().upper()
-        if (
-            market_data_provider is not None
-            and market_data_provider.name == "binance_futures"
-        ):
-            quote_asset = market_data_provider.quote_asset.strip().upper()
-            if quote_asset and not normalized.endswith(quote_asset):
-                return normalized + quote_asset
-        return normalized
-
-    collector = PublicMarketContextCollector(
-        history_days=config.app.ai_history_days,
-        news_days=config.app.ai_news_days,
-        news_limit=config.app.ai_news_limit,
-        timeout_seconds=config.app.ai_timeout_seconds,
-        historical_bars_fetcher=(
-            historical_bars_fetcher
-            if callable(historical_bars_fetcher)
-            else None
-        ),
-        historical_source_name=(
-            f"{market_data_provider.name} API"
-            if market_data_provider is not None
-            else ""
-        ),
-        historical_symbol_resolver=(
-            resolve_historical_symbol
-            if market_data_provider is not None
-            else None
-        ),
-    )
-    return OpeningDecisionService(
-        collector=collector,
-        clients=tuple(clients),
-        min_confidence=float(Decimal(config.app.ai_min_confidence)),
-        mode=mode,
-        entry_timing_bar_count=config.app.ai_entry_timing_bars,
-        input_capture_callback=model_input_capture_callback,
-    )
 
 
 class SymbolRunner:
@@ -1717,114 +1540,3 @@ class SymbolRunner:
         self.log_callback(level, self.symbol, message)
 
 
-class TradingController:
-    def __init__(
-        self,
-        snapshot_callback: SnapshotCallback,
-        log_callback: LogCallback,
-        ledger: OrderLedger | None = None,
-    ) -> None:
-        self.snapshot_callback = snapshot_callback
-        self.log_callback = log_callback
-        self.ledger = ledger or OrderLedger()
-        self._runners: dict[str, SymbolRunner] = {}
-        self._lock = threading.Lock()
-
-    def start(self, symbol: str, config: RunnerConfig) -> None:
-        symbol = symbol.upper()
-        with self._lock:
-            existing = self._runners.get(symbol)
-            if existing and existing.is_alive:
-                return
-            runner = SymbolRunner(
-                symbol,
-                config,
-                self.snapshot_callback,
-                self.log_callback,
-                self.ledger,
-            )
-            self._runners[symbol] = runner
-            runner.start()
-
-    def stop(self, symbol: str, *, close_position: bool = False) -> None:
-        with self._lock:
-            runner = self._runners.get(symbol.upper())
-        if runner:
-            runner.stop(close_position=close_position)
-
-    def stop_all(self, *, close_position: bool = False) -> None:
-        with self._lock:
-            runners = list(self._runners.values())
-        for runner in runners:
-            runner.stop(close_position=close_position)
-
-    def stop_targets(
-        self, symbols: list[str] | None = None
-    ) -> list[tuple[str, str, Decimal]]:
-        requested = (
-            None if symbols is None else {symbol.upper() for symbol in symbols}
-        )
-        with self._lock:
-            runners = [
-                runner
-                for symbol, runner in self._runners.items()
-                if requested is None or symbol in requested
-            ]
-        targets: list[tuple[str, str, Decimal]] = []
-        for runner in runners:
-            mode = runner.config.app.trading_mode
-            is_paper = mode != "REAL"
-            quantity = self.ledger.position_summary(
-                runner.symbol, paper=is_paper
-            ).quantity
-            has_blocking_order = bool(
-                self.ledger.pending_count(runner.symbol, paper=is_paper)
-                or self.ledger.unknown_count(runner.symbol, paper=is_paper)
-            )
-            if runner.is_alive or quantity != 0 or has_blocking_order:
-                targets.append((runner.symbol, mode, quantity))
-        return targets
-
-    def join_all(self, timeout_per_runner: float = 2.0) -> None:
-        with self._lock:
-            runners = list(self._runners.values())
-        for runner in runners:
-            runner.join(timeout=timeout_per_runner)
-
-    def wait_for_all(self, timeout: float) -> bool:
-        deadline = time.monotonic() + max(0.0, timeout)
-        with self._lock:
-            runners = list(self._runners.values())
-        for runner in runners:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            runner.join(timeout=remaining)
-        return all(not runner.is_alive for runner in runners)
-
-    def is_running(self, symbol: str) -> bool:
-        with self._lock:
-            runner = self._runners.get(symbol.upper())
-            return bool(runner and runner.is_alive)
-
-    def unknown_live_orders(self, symbol: str) -> int:
-        return self.ledger.unknown_count(symbol.upper(), paper=False)
-
-    def resolve_unknown_live_orders(self, symbol: str) -> int:
-        if self.is_running(symbol):
-            raise RuntimeError("请先停止该股票，再解除未知订单锁")
-        return self.ledger.resolve_unknown(symbol.upper(), paper=False)
-
-    def open_position_symbols(self, *, paper: bool) -> list[str]:
-        return self.ledger.open_position_symbols(paper=paper)
-
-    def portfolio_performance(
-        self,
-        *,
-        paper: bool,
-        market_prices: dict[str, Decimal],
-    ) -> PortfolioPerformance:
-        return self.ledger.portfolio_performance(
-            paper=paper,
-            market_prices=market_prices,
-        )

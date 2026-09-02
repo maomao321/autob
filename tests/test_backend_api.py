@@ -120,7 +120,7 @@ class BackendRuntimeTests(unittest.TestCase):
             "window": "24h",
         }
         with patch(
-            "autoquant_backend.runtime.BinanceFuturesProvider"
+            "autoquant_backend.runtime.trading_api.BinanceFuturesProvider"
         ) as provider_class:
             provider_class.return_value.get_24h_rankings.return_value = market
 
@@ -277,7 +277,7 @@ class BackendRuntimeTests(unittest.TestCase):
         self.store.save(config)
 
         with patch(
-            "autoquant_backend.runtime.create_provider"
+            "autoquant_backend.runtime.trading_api.create_provider"
         ) as create_provider_mock:
             provider = create_provider_mock.return_value
             provider.quote_asset = "USDT"
@@ -291,7 +291,7 @@ class BackendRuntimeTests(unittest.TestCase):
 
     def test_account_overview_reuses_provider_instance(self) -> None:
         with patch(
-            "autoquant_backend.runtime.create_provider"
+            "autoquant_backend.runtime.trading_api.create_provider"
         ) as create_provider_mock:
             provider = create_provider_mock.return_value
             provider.quote_asset = "USDC"
@@ -328,7 +328,7 @@ class BackendRuntimeTests(unittest.TestCase):
         )
 
         with patch(
-            "autoquant_backend.runtime.create_provider"
+            "autoquant_backend.runtime.trading_api.create_provider"
         ) as create_provider_mock:
             provider = create_provider_mock.return_value
             provider.quote_asset = "USDC"
@@ -661,7 +661,7 @@ class BackendHTTPTests(unittest.TestCase):
         client = BackendClient(self.base_url, api_token="test-token")
 
         with patch(
-            "autoquant_backend.runtime.HistoricalDownloader.start",
+            "autoquant_backend.runtime.backtest_api.HistoricalDownloader.start",
             return_value="updated-download",
         ):
             updated_download_id = client.update_historical_download(
