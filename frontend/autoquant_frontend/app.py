@@ -108,7 +108,7 @@ MANUAL_DIRECTION_COLUMN = 3
 REALIZED_PNL_COLUMN = 5
 UNREALIZED_PNL_COLUMN = 6
 ACTION_COLUMN = 11
-BACKTEST_DOWNLOAD_ACTION_COLUMN = 9
+BACKTEST_DOWNLOAD_ACTION_COLUMN = 1
 MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
 STRATEGY_OPTIONS = ("five_minute_breakout",)
 STRATEGY_LABELS = {
@@ -2942,12 +2942,6 @@ class AutoQuantApp(QMainWindow):
         symbol.setPlaceholderText("例如 BTCUSDT")
         symbol.setMaximumWidth(180)
         controls_layout.addWidget(symbol)
-        controls_layout.addWidget(QLabel("策略"))
-        strategy = self._combo(
-            self.backtest_strategy_var, list(STRATEGY_OPTIONS)
-        )
-        strategy.setMaximumWidth(230)
-        controls_layout.addWidget(strategy)
         self.backtest_download_button = self._button(
             "下载", self._start_backtest_download, primary=True
         )
@@ -2985,10 +2979,10 @@ class AutoQuantApp(QMainWindow):
         downloads_layout = QVBoxLayout(downloads_box)
         self.backtest_download_tree = KeyedTable(
             [
-                "标的", "创建时间", "更新时间", "行情源", "状态", "进度",
-                "日线", "5分钟", "1分钟", "回测操作", "说明",
+                "标的", "回测", "创建时间", "更新时间", "行情源", "状态",
+                "进度", "日线", "5分钟", "1分钟", "说明",
             ],
-            [100, 150, 150, 125, 80, 70, 65, 75, 80, 72, 260],
+            [100, 72, 150, 150, 125, 80, 70, 65, 75, 80, 260],
             multi_select=False,
         )
         self.backtest_download_tree.setContextMenuPolicy(
@@ -3029,8 +3023,6 @@ class AutoQuantApp(QMainWindow):
 
     def _set_backtest_actions_enabled(self, enabled: bool) -> None:
         self.backtest_download_button.setEnabled(enabled)
-        self.backtest_run_button.setEnabled(enabled)
-        self.backtest_export_button.setEnabled(enabled)
         self.backtest_import_button.setEnabled(enabled)
 
     def _start_backtest_download(self) -> None:
@@ -4023,6 +4015,7 @@ class AutoQuantApp(QMainWindow):
             self.backtest_download_tree.insert(
                 "", None, iid=key, text=str(item.get("symbol", "")),
                 values=(
+                    "",
                     self._backtest_datetime(item.get("created_at")),
                     self._backtest_datetime(
                         item.get("updated_at") or item.get("created_at")
@@ -4030,7 +4023,7 @@ class AutoQuantApp(QMainWindow):
                     item.get("provider", ""),
                     status_text.get(status, status), f"{item.get('progress', 0)}%",
                     item.get("daily_count", 0), item.get("five_minute_count", 0),
-                    item.get("one_minute_count", 0), "", item.get("message", ""),
+                    item.get("one_minute_count", 0), item.get("message", ""),
                 ),
                 tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
             )

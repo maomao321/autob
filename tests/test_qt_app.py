@@ -175,7 +175,11 @@ class QtAppWidgetTests(unittest.TestCase):
             )
             self.assertEqual(
                 window._backtest_datetime(1_700_000_300_000),
-                window.backtest_download_tree.item(0, 2).text(),
+                window.backtest_download_tree.item(0, 3).text(),
+            )
+            self.assertEqual(
+                "回测",
+                window.backtest_download_tree.horizontalHeaderItem(1).text(),
             )
             action_button = window.backtest_download_tree.action_button(
                 "download-1"
