@@ -166,6 +166,142 @@ class StaticClient:
 
 
 class AiDecisionTests(unittest.TestCase):
+    @staticmethod
+    def _provider_daily_bars(symbol: str, count: int = 30) -> list[Bar]:
+        end_open_time = int(datetime.now(timezone.utc).timestamp() * 1000)
+        end_open_time -= end_open_time % 86_400_000
+        bars = []
+        for index in range(count):
+            open_time = end_open_time - (count - index) * 86_400_000
+            price = Decimal("100") + Decimal(index)
+            bars.append(
+                Bar(
+                    symbol=symbol,
+                    interval="1d",
+                    open_time=open_time,
+                    close_time=open_time + 86_400_000 - 1,
+                    open=price,
+                    high=price + Decimal("2"),
+                    low=price - Decimal("1"),
+                    close=price + Decimal("1"),
+                    closed=True,
+                )
+            )
+        return bars
+
+    @staticmethod
+    def _news_rss() -> bytes:
+        published = format_datetime(
+            datetime.now(timezone.utc) - timedelta(days=1), usegmt=True
+        )
+        return (
+            "<rss><channel><item><title>Market update</title>"
+            "<link>https://example.com/story</link>"
+            "<source>Example</source>"
+            f"<pubDate>{published}</pubDate>"
+            "</item></channel></rss>"
+        ).encode()
+
+    def test_public_context_prefers_provider_daily_bars(self) -> None:
+        provider_calls = []
+
+        def historical_bars(symbol, interval, start_time, end_time, limit):
+            provider_calls.append(
+                (symbol, interval, start_time, end_time, limit)
+            )
+            return self._provider_daily_bars(symbol, limit)
+
+        def get_bytes(url, _timeout):
+            if "news.google.com" in url:
+                return self._news_rss()
+            raise AssertionError(
+                "Nasdaq should not be called when provider data is valid"
+            )
+
+        collector = PublicMarketContextCollector(
+            history_days=30,
+            news_days=7,
+            news_limit=3,
+            timeout_seconds=10,
+            get_bytes=get_bytes,
+            historical_bars_fetcher=historical_bars,
+            historical_source_name="binance_futures API",
+            historical_symbol_resolver=lambda symbol: symbol + "USDT",
+        )
+        collector.set_trading_symbol("SOXL", "SOXLUSDT")
+
+        context = collector.collect("SOXL", daily_bar())
+
+        self.assertEqual(
+            {"SOXLUSDT", "SPYUSDT", "QQQUSDT"},
+            {call[0] for call in provider_calls},
+        )
+        self.assertTrue(all(call[1] == "1d" for call in provider_calls))
+        self.assertEqual(
+            "binance_futures API", context["data_quality"]["price_source"]
+        )
+        self.assertEqual(
+            {
+                "SOXL": "binance_futures API",
+                "SPY": "binance_futures API",
+                "QQQ": "binance_futures API",
+            },
+            context["data_quality"]["price_sources"],
+        )
+
+    def test_public_context_falls_back_to_nasdaq(self) -> None:
+        rows = [
+            {
+                "date": f"08/{day:02d}/2026",
+                "open": f"${99 + day}.00",
+                "high": f"${101 + day}.00",
+                "low": f"${98 + day}.00",
+                "close": f"${100 + day}.00",
+            }
+            for day in range(1, 31)
+        ]
+
+        def historical_bars(*_args):
+            raise RuntimeError("provider unavailable")
+
+        def get_bytes(url, _timeout):
+            if "news.google.com" in url:
+                return self._news_rss()
+            return json.dumps(
+                {"data": {"tradesTable": {"rows": rows}}}
+            ).encode()
+
+        collector = PublicMarketContextCollector(
+            history_days=30,
+            news_days=7,
+            news_limit=3,
+            timeout_seconds=10,
+            get_bytes=get_bytes,
+            historical_bars_fetcher=historical_bars,
+            historical_source_name="binance_futures API",
+        )
+
+        context = collector.collect("AAPL", daily_bar())
+
+        self.assertEqual(
+            "Nasdaq public historical endpoint",
+            context["data_quality"]["price_source"],
+        )
+        self.assertEqual(
+            {
+                "AAPL": "Nasdaq public historical endpoint",
+                "SPY": "Nasdaq public historical endpoint",
+                "QQQ": "Nasdaq public historical endpoint",
+            },
+            context["data_quality"]["price_sources"],
+        )
+        self.assertTrue(
+            all(
+                "已使用 Nasdaq 兜底" in warning
+                for warning in context["data_quality"]["warnings"]
+            )
+        )
+
     def test_public_context_combines_nasdaq_trends_and_news(self) -> None:
         rows = [
             {

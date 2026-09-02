@@ -128,6 +128,7 @@ def create_opening_decider(
         [str, str, str, dict[str, Any], int], None
     ]
     | None = None,
+    market_data_provider: TradingProvider | None = None,
 ) -> OpeningDecider | None:
     mode = config.app.ai_provider
     if mode == "DISABLED":
@@ -176,11 +177,43 @@ def create_opening_decider(
                 output_capture_callback=model_output_capture_callback,
             )
         )
+    historical_bars_fetcher = (
+        getattr(market_data_provider, "get_historical_bars", None)
+        if market_data_provider is not None
+        else None
+    )
+
+    def resolve_historical_symbol(symbol: str) -> str:
+        normalized = symbol.strip().upper()
+        if (
+            market_data_provider is not None
+            and market_data_provider.name == "binance_futures"
+        ):
+            quote_asset = market_data_provider.quote_asset.strip().upper()
+            if quote_asset and not normalized.endswith(quote_asset):
+                return normalized + quote_asset
+        return normalized
+
     collector = PublicMarketContextCollector(
         history_days=config.app.ai_history_days,
         news_days=config.app.ai_news_days,
         news_limit=config.app.ai_news_limit,
         timeout_seconds=config.app.ai_timeout_seconds,
+        historical_bars_fetcher=(
+            historical_bars_fetcher
+            if callable(historical_bars_fetcher)
+            else None
+        ),
+        historical_source_name=(
+            f"{market_data_provider.name} API"
+            if market_data_provider is not None
+            else ""
+        ),
+        historical_symbol_resolver=(
+            resolve_historical_symbol
+            if market_data_provider is not None
+            else None
+        ),
     )
     return OpeningDecisionService(
         collector=collector,
@@ -224,6 +257,7 @@ class SymbolRunner:
                 model_log_callback=lambda message: self._log("AI", message),
                 model_input_capture_callback=self._capture_ai_input,
                 model_output_capture_callback=self._capture_ai_output,
+                market_data_provider=self.provider,
             )
         self.entry_timing_decider = entry_timing_decider
         if self.entry_timing_decider is None and callable(

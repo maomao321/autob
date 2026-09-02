@@ -34,6 +34,8 @@ _PUBLIC_CACHE: dict[str, tuple[float, bytes]] = {}
 _PUBLIC_INFLIGHT: dict[str, threading.Event] = {}
 ModelInputCapture = Callable[[str, str, str, dict[str, Any]], None]
 ModelOutputCapture = Callable[[str, str, str, dict[str, Any], int], None]
+HistoricalBarsFetcher = Callable[[str, str, int, int, int], list[Bar]]
+HistoricalSymbolResolver = Callable[[str], str]
 
 
 class DecisionError(RuntimeError):
@@ -661,6 +663,11 @@ class OpeningDecisionService:
             return
         with self._context_lock:
             self._market_data_symbols[trading_symbol] = market_data_symbol
+        set_trading_symbol = getattr(
+            self.collector, "set_trading_symbol", None
+        )
+        if callable(set_trading_symbol):
+            set_trading_symbol(market_data_symbol, trading_symbol)
 
     def decide(self, symbol: str, current_daily_bar: Bar) -> OpeningDecision:
         trading_symbol = symbol.upper()
@@ -957,7 +964,7 @@ class OpeningDecisionService:
 
 
 class PublicMarketContextCollector:
-    """Fetch public news and price history, then calculate compact trend data."""
+    """Fetch news and provider-first price history for the AI context."""
 
     def __init__(
         self,
@@ -967,6 +974,9 @@ class PublicMarketContextCollector:
         timeout_seconds: int,
         benchmarks: tuple[str, ...] = ("SPY", "QQQ"),
         get_bytes: Callable[[str, int], bytes] | None = None,
+        historical_bars_fetcher: HistoricalBarsFetcher | None = None,
+        historical_source_name: str = "",
+        historical_symbol_resolver: HistoricalSymbolResolver | None = None,
     ) -> None:
         # Kept in the constructor for saved-config compatibility. The model
         # contract intentionally uses a fixed 30-bar daily window.
@@ -976,11 +986,29 @@ class PublicMarketContextCollector:
         self.timeout_seconds = timeout_seconds
         self.benchmarks = benchmarks
         self._get_bytes = get_bytes or _get_bytes
+        self._historical_bars_fetcher = historical_bars_fetcher
+        self._historical_source_name = (
+            historical_source_name.strip() or "API provider"
+        )
+        self._historical_symbol_resolver = historical_symbol_resolver
+        self._symbol_lock = threading.Lock()
+        self._trading_symbols: dict[str, str] = {}
+
+    def set_trading_symbol(
+        self, market_data_symbol: str, trading_symbol: str
+    ) -> None:
+        market_data_symbol = market_data_symbol.strip().upper()
+        trading_symbol = trading_symbol.strip().upper()
+        if not market_data_symbol or not trading_symbol:
+            return
+        with self._symbol_lock:
+            self._trading_symbols[market_data_symbol] = trading_symbol
 
     def collect(self, symbol: str, current_daily_bar: Bar) -> dict[str, Any]:
         symbol = symbol.upper()
         requested = (symbol,) + self.benchmarks
         trends: dict[str, dict[str, Any]] = {}
+        trend_sources: dict[str, str] = {}
         failures: list[str] = []
         news: list[dict[str, str]] = []
         with ThreadPoolExecutor(max_workers=len(requested) + 1) as executor:
@@ -992,7 +1020,11 @@ class PublicMarketContextCollector:
             for future in as_completed(trend_futures):
                 ticker = trend_futures[future]
                 try:
-                    trends[ticker] = future.result()
+                    trend, source, warning = future.result()
+                    trends[ticker] = trend
+                    trend_sources[ticker] = source
+                    if warning:
+                        failures.append(f"{ticker}走势: {warning}")
                 except Exception as exc:
                     failures.append(f"{ticker}走势: {_safe_error(exc)}")
             try:
@@ -1010,6 +1042,13 @@ class PublicMarketContextCollector:
         if not broad_market:
             raise DecisionError("大盘近期走势不可用")
 
+        used_sources = tuple(dict.fromkeys(trend_sources.values()))
+        price_source = (
+            used_sources[0]
+            if len(used_sources) == 1
+            else "mixed: " + ", ".join(used_sources)
+        )
+
         return {
             "as_of_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "symbol": symbol,
@@ -1020,12 +1059,94 @@ class PublicMarketContextCollector:
             "data_quality": {
                 "warnings": failures + ([] if news else ["未获取到近期新闻"]),
                 "news_count": len(news),
-                "price_source": "Nasdaq public historical endpoint",
+                "price_source": price_source,
+                "price_sources": trend_sources,
                 "news_source": "Google News RSS",
             },
         }
 
-    def _fetch_trend(self, symbol: str) -> dict[str, Any]:
+    def _fetch_trend(self, symbol: str) -> tuple[dict[str, Any], str, str]:
+        primary_error = ""
+        if self._historical_bars_fetcher is not None:
+            try:
+                return (
+                    self._fetch_provider_trend(symbol),
+                    self._historical_source_name,
+                    "",
+                )
+            except Exception as exc:
+                primary_error = _safe_error(exc)
+
+        try:
+            trend = self._fetch_nasdaq_trend(symbol)
+        except Exception as exc:
+            if primary_error:
+                raise DecisionError(
+                    f"{self._historical_source_name} 失败: {primary_error}；"
+                    f"Nasdaq 兜底失败: {_safe_error(exc)}"
+                ) from exc
+            raise
+        warning = (
+            f"{self._historical_source_name} 失败，已使用 Nasdaq 兜底: "
+            f"{primary_error}"
+            if primary_error
+            else ""
+        )
+        return trend, "Nasdaq public historical endpoint", warning
+
+    def _fetch_provider_trend(self, symbol: str) -> dict[str, Any]:
+        fetcher = self._historical_bars_fetcher
+        if fetcher is None:
+            raise DecisionError("未配置 API 供应商历史 K 线接口")
+        with self._symbol_lock:
+            provider_symbol = self._trading_symbols.get(symbol, "")
+        if not provider_symbol:
+            provider_symbol = symbol
+            if self._historical_symbol_resolver is not None:
+                provider_symbol = self._historical_symbol_resolver(symbol)
+        provider_symbol = provider_symbol.strip().upper()
+        if not provider_symbol:
+            raise DecisionError(f"{symbol} 无法映射到 API 供应商交易代码")
+        now_ms = int(time.time() * 1000)
+        end_time = now_ms - 1
+        calendar_days = max(self.history_days * 3, 60)
+        start_time = end_time - calendar_days * 86_400_000
+        bars = fetcher(
+            provider_symbol,
+            "1d",
+            start_time,
+            end_time,
+            self.history_days,
+        )
+        valid_bars = {
+            bar.open_time: bar
+            for bar in bars
+            if isinstance(bar, Bar)
+            and bar.interval == "1d"
+            and bar.closed
+            and bar.open_time <= end_time
+            and _valid_bar_prices(bar)
+        }
+        ordered = sorted(valid_bars.values(), key=lambda bar: bar.open_time)
+        if len(ordered) < self.history_days:
+            raise DecisionError(
+                f"{provider_symbol} 有效日线少于 {self.history_days} 根"
+            )
+        points = [
+            (
+                datetime.fromtimestamp(
+                    bar.open_time / 1000, tz=timezone.utc
+                ).date().isoformat(),
+                bar.open,
+                bar.high,
+                bar.low,
+                bar.close,
+            )
+            for bar in ordered[-self.history_days :]
+        ]
+        return _trend_payload(symbol, points)
+
+    def _fetch_nasdaq_trend(self, symbol: str) -> dict[str, Any]:
         today = date.today()
         calendar_days = max(self.history_days * 2, 45)
         params = {
@@ -1421,6 +1542,16 @@ def _bar_payload(bar: Bar) -> dict[str, Any]:
         "close": financial_text(bar.close),
         "is_closed": bar.closed,
     }
+
+
+def _valid_bar_prices(bar: Bar) -> bool:
+    prices = (bar.open, bar.high, bar.low, bar.close)
+    return (
+        all(value.is_finite() and value > 0 for value in prices)
+        and bar.low <= min(bar.open, bar.close)
+        and bar.high >= max(bar.open, bar.close)
+        and bar.low <= bar.high
+    )
 
 
 def _clean_text_list(
