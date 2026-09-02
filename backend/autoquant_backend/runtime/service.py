@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from collections import deque
+from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from autoquant_backend.runtime.backtest_api import BacktestRuntimeMixin
 from autoquant_backend.runtime.config_api import ConfigRuntimeMixin
 from autoquant_backend.runtime.lifecycle import LifecycleRuntimeMixin
 from autoquant_backend.runtime.models import ServiceLog
-from autoquant_backend.runtime.payloads import snapshot_payload
+from autoquant_backend.runtime.payloads import _json_value, snapshot_payload
 from autoquant_backend.runtime.trading_api import TradingRuntimeMixin
 from autoquant_backend.state import OrderLedger
 from autoquant_shared.config import AppConfig, ConfigStore, default_config_path

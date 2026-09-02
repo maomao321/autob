@@ -64,6 +64,44 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertNotIn("server-key", str(payload))
         self.assertNotIn("server-secret", str(payload))
 
+    def test_status_serializes_service_logs_after_runner_activity(self) -> None:
+        self.runtime._on_log("INFO", "AAPL", "runner started")
+
+        payload = self.runtime.status()
+
+        self.assertEqual(1, len(payload["logs"]))
+        self.assertEqual("INFO", payload["logs"][0]["level"])
+        self.assertEqual("AAPL", payload["logs"][0]["symbol"])
+        self.assertEqual("runner started", payload["logs"][0]["message"])
+
+    def test_check_connection_serializes_provider_metadata(self) -> None:
+        with patch(
+            "autoquant_backend.runtime.trading_api.create_provider"
+        ) as create_provider_mock:
+            create_provider_mock.return_value.check_symbol.return_value = {
+                "price": Decimal("123.456"),
+                "direction": Direction.LONG,
+            }
+
+            payload = self.runtime.check_connection("aapl")
+
+        self.assertEqual("123.456", payload["info"]["price"])
+        self.assertEqual("LONG", payload["info"]["direction"])
+
+    def test_real_runner_restore_requires_explicit_environment_opt_in(self) -> None:
+        config = self.store.load()
+        config.trading_mode = "REAL"
+        self.store.save(config)
+        self.runtime.desired_state_path.write_text(
+            '{"runners": {"AAPL": "LONG"}}', encoding="utf-8"
+        )
+
+        with patch.dict("os.environ", {}, clear=True):
+            restored = self.runtime.restore_desired_runners()
+
+        self.assertEqual([], restored)
+        self.assertIn("AUTOQUANT_RESTORE_REAL=1", str(self.runtime.status()["logs"]))
+
     def test_backtest_uses_submitted_strategy_configuration_snapshot(self) -> None:
         submitted = {
             "buy_notional": "125",
@@ -479,6 +517,18 @@ class BackendHTTPTests(unittest.TestCase):
         client = BackendClient(self.base_url, api_token="wrong")
         with self.assertRaises(BackendClientError):
             client.load_config()
+
+    def test_internal_server_error_includes_technical_detail(self) -> None:
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        with patch.object(
+            self.runtime, "status", side_effect=NameError("missing runtime import")
+        ):
+            with self.assertRaisesRegex(
+                BackendClientError,
+                "服务器处理失败: missing runtime import",
+            ):
+                client.request("GET", "/api/v1/status")
 
     def test_authenticated_config_round_trip(self) -> None:
         client = BackendClient(self.base_url, api_token="test-token")

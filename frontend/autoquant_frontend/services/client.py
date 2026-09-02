@@ -26,6 +26,18 @@ class BackendClientError(RuntimeError):
     pass
 
 
+def _http_error_message(raw: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(payload, dict):
+        return raw
+    message = str(payload.get("error", raw))
+    detail = str(payload.get("detail", "")).strip()
+    return f"{message}: {detail}" if detail else message
+
+
 @dataclass(frozen=True, slots=True)
 class RemoteRunnerConfig:
     app: AppConfig
@@ -96,10 +108,7 @@ class BackendClient:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                detail = json.loads(raw).get("error", raw)
-            except json.JSONDecodeError:
-                detail = raw
+            detail = _http_error_message(raw)
             raise BackendClientError(f"后端 HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise BackendClientError(f"无法连接后端 {self.base_url}: {exc}") from exc
@@ -133,10 +142,7 @@ class BackendClient:
                 return response.read(), dict(response.headers.items())
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                detail = json.loads(raw).get("error", raw)
-            except json.JSONDecodeError:
-                detail = raw
+            detail = _http_error_message(raw)
             raise BackendClientError(f"后端 HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise BackendClientError(f"无法连接后端 {self.base_url}: {exc}") from exc

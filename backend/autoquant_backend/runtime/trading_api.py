@@ -9,7 +9,7 @@ from autoquant_backend.engine import create_provider
 from autoquant_backend.providers.base import TradingProvider
 from autoquant_backend.providers.binance_futures import BinanceFuturesProvider
 from autoquant_backend.runtime.constants import FUTURES_MARKET_CACHE_SECONDS
-from autoquant_backend.runtime.payloads import overview_payload
+from autoquant_backend.runtime.payloads import _json_value, overview_payload
 from autoquant_shared.formatting import financial_text
 from autoquant_shared.models import AccountOverview, Direction, RuntimeSnapshot
 
@@ -306,4 +306,3 @@ class TradingRuntimeMixin:
             ],
             "count": len(items),
         }
-
