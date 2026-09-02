@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant_frontend.constants import STRATEGY_LABELS
-from autoquant_frontend.theme import COLORS
+from autoquant_frontend.ui.constants import STRATEGY_LABELS
+from autoquant_frontend.ui.theme import COLORS
 
 
 class StrategyConfigPageMixin:

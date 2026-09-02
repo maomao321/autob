@@ -15,11 +15,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant_frontend.client import BackendClientError
-from autoquant_frontend.constants import CONTRACT_POOL_REFRESH_MS
-from autoquant_frontend.dialogs import show_error, show_info
-from autoquant_frontend.theme import COLORS
-from autoquant_frontend.widgets import KeyedTable
+from autoquant_frontend.services.client import BackendClientError
+from autoquant_frontend.ui.constants import CONTRACT_POOL_REFRESH_MS
+from autoquant_frontend.components.dialogs import show_error, show_info
+from autoquant_frontend.ui.theme import COLORS
+from autoquant_frontend.components.widgets import KeyedTable
 from autoquant_shared.config import MAX_CONTRACT_POOL_SYMBOLS
 
 

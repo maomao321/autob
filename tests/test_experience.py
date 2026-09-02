@@ -9,7 +9,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from autoquant_frontend.experience import (
+from autoquant_frontend.services.experience import (
     ExperienceError,
     OpenAIVectorStoreUploader,
     import_external_experiences,

@@ -33,15 +33,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant_frontend.client import BacktestStatusListener
-from autoquant_frontend.constants import (
+from autoquant_frontend.services.client import BacktestStatusListener
+from autoquant_frontend.ui.constants import (
     BACKTEST_DOWNLOAD_ACTION_COLUMN,
     STRATEGY_LABELS,
     STRATEGY_OPTIONS,
 )
-from autoquant_frontend.dialogs import ask_yes_no, show_error, show_info
-from autoquant_frontend.theme import COLORS
-from autoquant_frontend.widgets import InteractiveChartView, KeyedTable
+from autoquant_frontend.components.dialogs import ask_yes_no, show_error, show_info
+from autoquant_frontend.ui.theme import COLORS
+from autoquant_frontend.components.widgets import InteractiveChartView, KeyedTable
 from autoquant_shared.config import strategy_config_snapshot
 
 

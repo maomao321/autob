@@ -15,7 +15,7 @@ from autoquant_backend.runtime import (
     snapshot_payload,
 )
 from autoquant_backend.backtest import BacktestTrade
-from autoquant_frontend.client import (
+from autoquant_frontend.services.client import (
     BacktestStatusListener,
     BackendClient,
     BackendClientError,

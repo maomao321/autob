@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from autoquant_frontend.client import BackendClientError, RemoteRunnerConfig
-from autoquant_frontend.constants import (
+from autoquant_frontend.services.client import BackendClientError, RemoteRunnerConfig
+from autoquant_frontend.ui.constants import (
     ACTION_COLUMN,
     MANUAL_DIRECTION_COLUMN,
     MANUAL_DIRECTION_OPTIONS,
@@ -29,9 +29,9 @@ from autoquant_frontend.constants import (
     STATE_TEXT,
     UNREALIZED_PNL_COLUMN,
 )
-from autoquant_frontend.dialogs import ask_yes_no, show_error, show_info
-from autoquant_frontend.theme import COLORS
-from autoquant_frontend.widgets import KeyedTable, TextValue
+from autoquant_frontend.components.dialogs import ask_yes_no, show_error, show_info
+from autoquant_frontend.ui.theme import COLORS
+from autoquant_frontend.components.widgets import KeyedTable, TextValue
 from autoquant_shared.config import AppConfig, MAX_SYMBOLS, normalize_symbols
 from autoquant_shared.models import (
     AccountOverview,

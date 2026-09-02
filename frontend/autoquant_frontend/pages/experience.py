@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from autoquant_frontend.dialogs import ask_yes_no, show_error, show_info
-from autoquant_frontend.experience import (
+from autoquant_frontend.components.dialogs import ask_yes_no, show_error, show_info
+from autoquant_frontend.services.experience import (
     ExperienceError,
     ExperienceImportResult,
     OpenAIVectorStoreUploader,
@@ -25,8 +25,8 @@ from autoquant_frontend.experience import (
     summarize_experiences,
     write_experience_document,
 )
-from autoquant_frontend.theme import COLORS
-from autoquant_frontend.widgets import KeyedTable
+from autoquant_frontend.ui.theme import COLORS
+from autoquant_frontend.components.widgets import KeyedTable
 
 
 class ExperiencePageMixin:

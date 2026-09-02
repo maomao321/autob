@@ -25,37 +25,39 @@ from autoquant_shared.config import (
     ConfigStore,
     credential_or_environment,
 )
-from autoquant_frontend.client import (
+from autoquant_frontend.services.client import (
     BacktestStatusListener,
     BackendClient,
     RemoteConfigStore,
     RemoteTradingController,
 )
-from autoquant_frontend.backtest_page import BacktestPageMixin
-from autoquant_frontend.ai_decision_page import AiDecisionPageMixin
-from autoquant_frontend.constants import (
-    ACCOUNT_REFRESH_MS,
-    CONTRACT_POOL_REFRESH_MS,
-    FUTURES_RANKINGS_REFRESH_MS,
-)
-from autoquant_frontend.contract_pool_page import ContractPoolPageMixin
-from autoquant_frontend.config_page import ConfigPageMixin
-from autoquant_frontend.experience import TradeExperience
-from autoquant_frontend.dialogs import (
+from autoquant_frontend.components import (
+    InteractiveChartView,
+    KeyedTable,
+    TextValue,
     show_error,
     show_info,
     show_warning,
 )
-from autoquant_frontend.experience_page import ExperiencePageMixin
-from autoquant_frontend.strategy_config_page import StrategyConfigPageMixin
-from autoquant_frontend.theme import (
+from autoquant_frontend.pages import (
+    AiDecisionPageMixin,
+    BacktestPageMixin,
+    ConfigPageMixin,
+    ContractPoolPageMixin,
+    ExperiencePageMixin,
+    StrategyConfigPageMixin,
+    TradeHistoryPageMixin,
+    TradingPageMixin,
+)
+from autoquant_frontend.ui import (
+    ACCOUNT_REFRESH_MS,
     COLORS,
+    CONTRACT_POOL_REFRESH_MS,
+    FUTURES_RANKINGS_REFRESH_MS,
     application_icon_path,
     application_style_sheet,
 )
-from autoquant_frontend.widgets import InteractiveChartView, KeyedTable, TextValue
-from autoquant_frontend.trading_page import TradingPageMixin
-from autoquant_frontend.trade_history_page import TradeHistoryPageMixin
+from autoquant_frontend.services.experience import TradeExperience
 from autoquant_shared.models import AiDecisionHistoryItem
 
 

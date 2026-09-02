@@ -53,18 +53,20 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_frontend_components_do_not_depend_on_main_window(self) -> None:
         frontend = PROJECT_ROOT / "frontend" / "autoquant_frontend"
         for name in (
-            "backtest_page.py",
-            "ai_decision_page.py",
-            "config_page.py",
-            "constants.py",
-            "contract_pool_page.py",
-            "dialogs.py",
-            "experience_page.py",
-            "strategy_config_page.py",
-            "theme.py",
-            "trade_history_page.py",
-            "trading_page.py",
-            "widgets.py",
+            "components/dialogs.py",
+            "components/widgets.py",
+            "pages/ai_decision.py",
+            "pages/backtest.py",
+            "pages/config.py",
+            "pages/contract_pool.py",
+            "pages/experience.py",
+            "pages/strategy_config.py",
+            "pages/trade_history.py",
+            "pages/trading.py",
+            "services/client.py",
+            "services/experience.py",
+            "ui/constants.py",
+            "ui/theme.py",
         ):
             with self.subTest(module=name):
                 modules = imported_modules_in_file(frontend / name)

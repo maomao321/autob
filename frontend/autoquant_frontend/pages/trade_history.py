@@ -6,8 +6,8 @@ from decimal import Decimal
 
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QVBoxLayout
 
-from autoquant_frontend.dialogs import show_error
-from autoquant_frontend.widgets import KeyedTable
+from autoquant_frontend.components.dialogs import show_error
+from autoquant_frontend.components.widgets import KeyedTable
 from autoquant_shared.models import TradeHistoryItem
 
 
@@ -168,4 +168,3 @@ class TradeHistoryPageMixin:
         self.trade_history_refresh_button.setEnabled(True)
         self.trade_history_status_var.set(f"查询失败：{message}")
         show_error("交易记录查询失败", message)
-

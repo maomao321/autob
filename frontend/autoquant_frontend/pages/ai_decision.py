@@ -15,8 +15,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from autoquant_frontend.dialogs import show_error
-from autoquant_frontend.widgets import KeyedTable
+from autoquant_frontend.components.dialogs import show_error
+from autoquant_frontend.components.widgets import KeyedTable
 from autoquant_shared.models import AiDecisionHistoryItem
 
 
@@ -258,4 +258,3 @@ class AiDecisionPageMixin:
         self.ai_decision_refresh_button.setEnabled(True)
         self.ai_decision_status_var.set(f"查询失败：{message}")
         show_error("AI 决策记录查询失败", message)
-
