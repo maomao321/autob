@@ -5,7 +5,7 @@ import os
 import threading
 import time
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -644,9 +644,16 @@ class BackendRuntime:
             "count": len(items),
         }
 
-    def start_historical_download(self, symbol: str) -> dict[str, Any]:
+    def start_historical_download(
+        self, symbol: str, provider: str = ""
+    ) -> dict[str, Any]:
         runner_config = self._runner_config()
-        provider_name = runner_config.app.provider
+        provider_name = provider.strip().lower() or runner_config.app.provider
+        if provider_name != runner_config.app.provider:
+            runner_config = replace(
+                runner_config,
+                app=replace(runner_config.app, provider=provider_name),
+            )
         downloader = HistoricalDownloader(
             self.backtest_store,
             lambda: create_provider(runner_config),
@@ -655,9 +662,41 @@ class BackendRuntime:
         download_id = downloader.start(symbol)
         return {"accepted": True, "download_id": download_id}
 
+    def update_historical_download(self, download_id: str) -> dict[str, Any]:
+        download = self.backtest_store.get_download(download_id)
+        if download is None:
+            raise ValueError("历史 K 线下载记录不存在")
+        result = self.start_historical_download(
+            str(download.get("symbol", "")),
+            str(download.get("provider", "")),
+        )
+        return {
+            **result,
+            "source_download_id": download_id.strip(),
+            "update": True,
+        }
+
     def historical_downloads(self, limit: int = 50) -> dict[str, Any]:
         items = self.backtest_store.list_downloads(limit)
         return {"items": items, "count": len(items)}
+
+    def wait_backtest_status(
+        self, after_revision: int = -1, timeout: float = 10.0
+    ) -> dict[str, Any]:
+        revision = self.backtest_store.wait_for_status_change(
+            after_revision, timeout
+        )
+        changed = revision != after_revision
+        if not changed:
+            return {"revision": revision, "changed": False}
+        downloads = self.historical_downloads()["items"]
+        runs = self.backtest_runs()["items"]
+        return {
+            "revision": revision,
+            "changed": True,
+            "downloads": downloads,
+            "runs": runs,
+        }
 
     def export_historical_bars(
         self, symbol: str, provider: str = ""
@@ -709,12 +748,24 @@ class BackendRuntime:
             }
         )
         merged["strategy"] = strategy
+        merged["provider"] = (
+            str(payload.get("provider", "")).strip().lower()
+            or config.provider
+        )
         run_config = AppConfig(**merged)
         run_config.validate()
         run_id = self.backtest_service.start(
-            run_config.provider, symbol, strategy, run_config
+            run_config.provider,
+            symbol,
+            strategy,
+            run_config,
+            download_id=str(payload.get("download_id", "")),
         )
         return {"accepted": True, "run_id": run_id}
+
+    def stop_backtest(self, run_id: str) -> dict[str, Any]:
+        self.backtest_service.cancel(run_id)
+        return {"accepted": True, "run_id": run_id.strip()}
 
     def backtest_runs(self, limit: int = 100) -> dict[str, Any]:
         items = self.backtest_store.list_runs(limit)

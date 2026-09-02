@@ -115,7 +115,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store, backend_client=backend_client)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
@@ -135,6 +135,110 @@ class QtAppWidgetTests(unittest.TestCase):
             self.assertEqual("500", snapshot["max_daily_buy_notional"])
             self.assertEqual(3, snapshot["max_additions_per_position"])
             self.assertNotIn("api_key", snapshot)
+
+    def test_download_row_can_start_stop_backtest_and_update_klines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(
+                AppConfig(
+                    symbols=["BTCUSDT"], provider="binance_futures"
+                )
+            )
+            backend_client = MagicMock()
+            backend_client.start_backtest.return_value = "run-1"
+            backend_client.update_historical_download.return_value = "download-2"
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(store, backend_client=backend_client)
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+            download = {
+                "download_id": "download-1",
+                "created_at": 1_700_000_000_000,
+                "updated_at": 1_700_000_300_000,
+                "symbol": "BTCUSDT",
+                "provider": "binance_futures",
+                "status": "COMPLETED",
+                "progress": 100,
+                "daily_count": 100,
+                "five_minute_count": 1000,
+                "one_minute_count": 5000,
+                "message": "下载完成",
+            }
+            window._apply_backtest_data([download], [], "")
+
+            self.assertEqual(
+                "BTCUSDT", window.backtest_download_tree.item(0, 0).text()
+            )
+            self.assertEqual(
+                window._backtest_datetime(1_700_000_300_000),
+                window.backtest_download_tree.item(0, 2).text(),
+            )
+            action_button = window.backtest_download_tree.action_button(
+                "download-1"
+            )
+            self.assertEqual("start", action_button.property("action"))
+            self.assertEqual("启动回测 BTCUSDT", action_button.toolTip())
+
+            with (
+                patch(
+                    "autoquant_frontend.app.QInputDialog.getItem",
+                    return_value=("五分钟突破", True),
+                ),
+                patch("autoquant_frontend.app.threading.Thread") as thread,
+            ):
+                action_button.click()
+                thread.call_args.kwargs["target"]()
+
+            self.assertEqual(
+                "download-1",
+                backend_client.start_backtest.call_args.kwargs["download_id"],
+            )
+            self.assertEqual(
+                "binance_futures",
+                backend_client.start_backtest.call_args.kwargs["provider"],
+            )
+            window._apply_backtest_action(
+                "run", "run-1", "", "download-1"
+            )
+            active_run = {
+                "run_id": "run-1",
+                "download_id": "download-1",
+                "created_at": 1_700_000_400_000,
+                "symbol": "BTCUSDT",
+                "provider": "binance_futures",
+                "strategy": "five_minute_breakout",
+                "status": "RUNNING",
+                "trade_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "total_pnl": "0",
+                "return_percent": "0",
+                "max_drawdown_percent": "0",
+                "message": "正在执行回测",
+            }
+            window._apply_backtest_data([download], [active_run], "")
+            action_button = window.backtest_download_tree.action_button(
+                "download-1"
+            )
+            self.assertEqual("stop", action_button.property("action"))
+            self.assertEqual("停止回测 BTCUSDT", action_button.toolTip())
+
+            with patch("autoquant_frontend.app.threading.Thread") as thread:
+                action_button.click()
+                thread.call_args.kwargs["target"]()
+            backend_client.stop_backtest.assert_called_once_with("run-1")
+            window._apply_backtest_stop("run-1", "download-1", "")
+
+            with patch("autoquant_frontend.app.threading.Thread") as thread:
+                window._update_historical_bars("download-1", "BTCUSDT")
+                thread.call_args.kwargs["target"]()
+            backend_client.update_historical_download.assert_called_once_with(
+                "download-1"
+            )
 
     def test_ai_switch_controls_runner_direction_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -259,7 +363,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
@@ -661,7 +765,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store, backend_client=backend_client)
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
@@ -776,12 +880,13 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store, backend_client=MagicMock())
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
 
-            window._open_contract_backtest("BTCUSDT")
+            with patch("autoquant_frontend.app.BacktestStatusListener"):
+                window._open_contract_backtest("BTCUSDT")
 
             self.assertIs(window.backtest_page, window.notebook.currentWidget())
             self.assertEqual("BTCUSDT", window.backtest_symbol_var.get())
@@ -802,7 +907,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store, backend_client=MagicMock())
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
@@ -822,7 +927,7 @@ class QtAppWidgetTests(unittest.TestCase):
             window._remove_selected_pool_contracts()
             self.assertFalse(window.contract_pool_timer.isActive())
 
-    def test_backtest_refresh_timer_tracks_visible_page_without_flashing_button(self) -> None:
+    def test_backtest_status_listener_tracks_visible_page_without_flashing_button(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
             store.save(AppConfig(symbols=["AAPL"]))
@@ -830,19 +935,30 @@ class QtAppWidgetTests(unittest.TestCase):
                 window = AutoQuantApp(store, backend_client=MagicMock())
             self.addCleanup(window.event_timer.stop)
             self.addCleanup(window.account_timer.stop)
-            self.addCleanup(window.backtest_timer.stop)
+            self.addCleanup(window._stop_backtest_status_listener)
             self.addCleanup(window.futures_rankings_timer.stop)
             self.addCleanup(window.contract_pool_timer.stop)
             self.addCleanup(window.deleteLater)
 
-            self.assertFalse(window.backtest_timer.isActive())
-            with patch.object(window, "_refresh_backtest_data") as refresh:
+            self.assertIsNone(window._backtest_status_listener)
+            with patch("autoquant_frontend.app.BacktestStatusListener") as listener_type:
                 window.notebook.setCurrentWidget(window.backtest_page)
-                refresh.assert_called_once_with()
-            self.assertTrue(window.backtest_timer.isActive())
+                listener_type.assert_called_once()
+                listener_type.return_value.start.assert_called_once_with()
+                self.assertIs(
+                    listener_type.return_value,
+                    window._backtest_status_listener,
+                )
 
-            window.notebook.setCurrentWidget(window.main_page)
-            self.assertFalse(window.backtest_timer.isActive())
+                window.notebook.setCurrentWidget(window.main_page)
+                listener_type.return_value.close.assert_not_called()
+                self.assertIs(
+                    listener_type.return_value,
+                    window._backtest_status_listener,
+                )
+                window._stop_backtest_status_listener()
+                listener_type.return_value.close.assert_called_once_with()
+                self.assertIsNone(window._backtest_status_listener)
 
             with patch("autoquant_frontend.app.threading.Thread"):
                 window._refresh_backtest_data()

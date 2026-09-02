@@ -199,6 +199,17 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 stage=query.get("stage", ["ALL"])[0],
                 limit=int(query.get("limit", ["100"])[0]),
             )
+        if path == "/api/v1/backtest/status" and self.command == "GET":
+            query = parse_qs(parsed.query)
+            return HTTPStatus.OK, runtime.wait_backtest_status(
+                after_revision=int(query.get("after", ["-1"])[0]),
+                timeout=float(query.get("timeout", ["10"])[0]),
+            )
+        if path == "/api/v1/backtest/downloads/update" and self.command == "POST":
+            payload = self._json_body()
+            return HTTPStatus.ACCEPTED, runtime.update_historical_download(
+                str(payload.get("download_id", ""))
+            )
         if path == "/api/v1/backtest/downloads":
             if self.command == "GET":
                 query = parse_qs(parsed.query)
@@ -251,6 +262,13 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             )
 
         parts = [unquote(part) for part in path.split("/") if part]
+        if (
+            len(parts) == 6
+            and parts[:4] == ["api", "v1", "backtest", "runs"]
+            and parts[5] == "stop"
+            and self.command == "POST"
+        ):
+            return HTTPStatus.ACCEPTED, runtime.stop_backtest(parts[4])
         if len(parts) >= 5 and parts[:3] == ["api", "v1", "runners"]:
             symbol = parts[3]
             action = parts[4]

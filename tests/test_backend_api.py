@@ -15,7 +15,11 @@ from autoquant_backend.runtime import (
     snapshot_payload,
 )
 from autoquant_backend.backtest import BacktestTrade
-from autoquant_frontend.client import BackendClient, BackendClientError
+from autoquant_frontend.client import (
+    BacktestStatusListener,
+    BackendClient,
+    BackendClientError,
+)
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_backend.server import create_server
 from autoquant_backend.state import OrderLedger
@@ -79,6 +83,7 @@ class BackendRuntimeTests(unittest.TestCase):
                     "symbol": "AAPL",
                     "strategy": "five_minute_breakout",
                     "strategy_config": submitted,
+                    "download_id": "download-1",
                 }
             )
 
@@ -92,6 +97,7 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertEqual("5", run_config.take_profit_percent)
         self.assertEqual(45, run_config.max_signal_age_seconds)
         self.assertEqual(80, run_config.ai_entry_timing_bars)
+        self.assertEqual("download-1", start.call_args.kwargs["download_id"])
         self.assertEqual("100.00", self.store.load().buy_notional)
 
     def test_futures_rankings_reuses_server_cache_and_slices_limit(self) -> None:
@@ -590,6 +596,84 @@ class BackendHTTPTests(unittest.TestCase):
             client.start_historical_download("AAPL")
         with self.assertRaisesRegex(BackendClientError, "请先完成"):
             client.start_backtest("AAPL", "five_minute_breakout")
+
+    def test_backtest_status_wait_returns_only_after_state_changes(self) -> None:
+        client = BackendClient(self.base_url, api_token="test-token")
+        initial = client.wait_backtest_status(-1, timeout=0)
+
+        unchanged = client.wait_backtest_status(
+            initial["revision"], timeout=0
+        )
+        self.runtime.backtest_store.create_download(
+            "binance_futures", "BTCUSDT", 0, 86_400_000
+        )
+        changed = client.wait_backtest_status(
+            initial["revision"], timeout=0
+        )
+
+        self.assertTrue(initial["changed"])
+        self.assertFalse(unchanged["changed"])
+        self.assertTrue(changed["changed"])
+        self.assertEqual("BTCUSDT", changed["downloads"][0]["symbol"])
+        self.assertEqual([], changed["runs"])
+
+    def test_backtest_status_listener_receives_backend_notifications(self) -> None:
+        client = BackendClient(self.base_url, api_token="test-token")
+        received: list[tuple[list[dict], list[dict]]] = []
+        errors: list[str] = []
+        notified = threading.Event()
+
+        def receive(downloads: list[dict], runs: list[dict]) -> None:
+            received.append((downloads, runs))
+            notified.set()
+
+        listener = BacktestStatusListener(
+            client,
+            status_callback=receive,
+            error_callback=errors.append,
+            wait_timeout=1,
+        )
+        self.addCleanup(listener.close)
+        listener.start()
+        self.assertTrue(notified.wait(2))
+        notified.clear()
+
+        self.runtime.backtest_store.create_download(
+            "binance_futures", "BTCUSDT", 0, 86_400_000
+        )
+
+        self.assertTrue(notified.wait(2))
+        listener.close()
+        self.assertEqual([], errors)
+        self.assertEqual("BTCUSDT", received[-1][0][0]["symbol"])
+        self.assertEqual([], received[-1][1])
+
+    def test_backtest_download_can_update_to_latest_and_stop_run(self) -> None:
+        download_id = self.runtime.backtest_store.create_download(
+            "binance_futures", "BTCUSDT", 0, 86_400_000
+        )
+        self.runtime.backtest_store.update_download(
+            download_id,
+            status="COMPLETED",
+            progress=100,
+            completed_at=86_400_000,
+        )
+        client = BackendClient(self.base_url, api_token="test-token")
+
+        with patch(
+            "autoquant_backend.runtime.HistoricalDownloader.start",
+            return_value="updated-download",
+        ):
+            updated_download_id = client.update_historical_download(
+                download_id
+            )
+        with patch.object(
+            self.runtime.backtest_service, "cancel"
+        ) as cancel:
+            client.stop_backtest("run-1")
+
+        self.assertEqual("updated-download", updated_download_id)
+        cancel.assert_called_once_with("run-1")
 
     def test_historical_bars_export_and_import_api_round_trip(self) -> None:
         self.runtime.backtest_store.upsert_bars(

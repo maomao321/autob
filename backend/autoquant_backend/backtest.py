@@ -67,7 +67,27 @@ class BacktestStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._status_condition = threading.Condition()
+        self._status_revision = 0
         self._initialize()
+
+    def _notify_status_changed(self) -> None:
+        with self._status_condition:
+            self._status_revision += 1
+            self._status_condition.notify_all()
+
+    def wait_for_status_change(
+        self, after_revision: int, timeout: float
+    ) -> int:
+        normalized_revision = max(-1, int(after_revision))
+        normalized_timeout = min(max(float(timeout), 0.0), 10.0)
+        with self._status_condition:
+            if normalized_revision == self._status_revision:
+                self._status_condition.wait_for(
+                    lambda: self._status_revision != normalized_revision,
+                    timeout=normalized_timeout,
+                )
+            return self._status_revision
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=30)
@@ -118,10 +138,26 @@ class BacktestStore:
                     one_minute_count INTEGER NOT NULL DEFAULT 0,
                     message TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
                     completed_at INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            download_columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(market_downloads)"
+                ).fetchall()
+            }
+            if "updated_at" not in download_columns:
+                connection.execute(
+                    "ALTER TABLE market_downloads ADD COLUMN "
+                    "updated_at INTEGER NOT NULL DEFAULT 0"
+                )
+                connection.execute(
+                    "UPDATE market_downloads SET updated_at = created_at "
+                    "WHERE updated_at = 0"
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_market_downloads_time
@@ -134,6 +170,7 @@ class BacktestStore:
                     run_id TEXT PRIMARY KEY,
                     provider TEXT NOT NULL,
                     symbol TEXT NOT NULL,
+                    download_id TEXT NOT NULL DEFAULT '',
                     strategy TEXT NOT NULL,
                     start_time INTEGER NOT NULL,
                     end_time INTEGER NOT NULL,
@@ -162,6 +199,11 @@ class BacktestStore:
                 connection.execute(
                     "ALTER TABLE backtest_runs ADD COLUMN "
                     "strategy_config_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "download_id" not in run_columns:
+                connection.execute(
+                    "ALTER TABLE backtest_runs ADD COLUMN "
+                    "download_id TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute(
                 """
@@ -198,17 +240,17 @@ class BacktestStore:
                 """
                 UPDATE market_downloads
                 SET status='FAILED', message='后端重启，下载任务已中断',
-                    completed_at=?
+                    updated_at=?, completed_at=?
                 WHERE status IN ('QUEUED', 'RUNNING')
                 """,
-                (now,),
+                (now, now),
             )
             connection.execute(
                 """
                 UPDATE backtest_runs
                 SET status='FAILED', message='后端重启，回测任务已中断',
                     completed_at=?
-                WHERE status IN ('QUEUED', 'RUNNING')
+                WHERE status IN ('QUEUED', 'RUNNING', 'STOPPING')
                 """,
                 (now,),
             )
@@ -223,8 +265,8 @@ class BacktestStore:
                 """
                 INSERT INTO market_downloads (
                     download_id, provider, symbol, days, start_time, end_time,
-                    status, message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', '等待下载', ?)
+                    status, message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', '等待下载', ?, ?)
                 """,
                 (
                     download_id,
@@ -234,8 +276,10 @@ class BacktestStore:
                     start_time,
                     end_time,
                     now,
+                    now,
                 ),
             )
+        self._notify_status_changed()
         return download_id
 
     def update_download(self, download_id: str, **fields: Any) -> None:
@@ -252,12 +296,14 @@ class BacktestStore:
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return
+        updates["updated_at"] = int(time.time() * 1000)
         assignments = ", ".join(f"{key} = ?" for key in updates)
         with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 f"UPDATE market_downloads SET {assignments} WHERE download_id = ?",
                 (*updates.values(), download_id),
             )
+        self._notify_status_changed()
 
     def upsert_bars(self, provider: str, bars: list[Bar]) -> int:
         if not bars:
@@ -448,6 +494,17 @@ class BacktestStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_download(self, download_id: str) -> dict[str, Any] | None:
+        normalized = download_id.strip()
+        if not normalized:
+            return None
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM market_downloads WHERE download_id = ?",
+                (normalized,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def has_active_download(self, provider: str, symbol: str) -> bool:
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
@@ -477,8 +534,9 @@ class BacktestStore:
                 INSERT INTO market_downloads (
                     download_id, provider, symbol, days, start_time, end_time,
                     status, progress, daily_count, five_minute_count,
-                    one_minute_count, message, created_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', 100, ?, ?, ?, ?, ?, ?)
+                    one_minute_count, message, created_at, updated_at,
+                    completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'COMPLETED', 100, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     download_id,
@@ -493,8 +551,10 @@ class BacktestStore:
                     "历史 K 线数据包导入完成",
                     now,
                     now,
+                    now,
                 ),
             )
+        self._notify_status_changed()
         return download_id
 
     def delete_historical_bars(
@@ -525,6 +585,8 @@ class BacktestStore:
                 "DELETE FROM market_downloads WHERE provider = ? AND symbol = ?",
                 (provider, symbol),
             )
+        if downloads_cursor.rowcount:
+            self._notify_status_changed()
         return {
             "deleted_bars": max(0, int(bars_cursor.rowcount)),
             "deleted_downloads": max(0, int(downloads_cursor.rowcount)),
@@ -538,6 +600,7 @@ class BacktestStore:
         start_time: int,
         end_time: int,
         config: AppConfig,
+        download_id: str = "",
     ) -> str:
         run_id = uuid.uuid4().hex
         now = int(time.time() * 1000)
@@ -562,14 +625,16 @@ class BacktestStore:
             connection.execute(
                 """
                 INSERT INTO backtest_runs (
-                    run_id, provider, symbol, strategy, start_time, end_time,
+                    run_id, provider, symbol, download_id, strategy,
+                    start_time, end_time,
                     status, config_json, strategy_config_json, message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?, '等待回测', ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?, '等待回测', ?)
                 """,
                 (
                     run_id,
                     provider,
                     symbol,
+                    download_id.strip(),
                     strategy,
                     start_time,
                     end_time,
@@ -578,7 +643,50 @@ class BacktestStore:
                     now,
                 ),
             )
+        self._notify_status_changed()
         return run_id
+
+    def has_active_run_for_download(self, download_id: str) -> bool:
+        normalized = download_id.strip()
+        if not normalized:
+            return False
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM backtest_runs
+                WHERE download_id = ?
+                  AND status IN ('QUEUED', 'RUNNING', 'STOPPING')
+                LIMIT 1
+                """,
+                (normalized,),
+            ).fetchone()
+        return row is not None
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        normalized = run_id.strip()
+        if not normalized:
+            return None
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM backtest_runs WHERE run_id = ?",
+                (normalized,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def request_run_cancel(self, run_id: str) -> bool:
+        with self._lock, closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                """
+                UPDATE backtest_runs
+                SET status='STOPPING', message='正在停止回测', completed_at=0
+                WHERE run_id = ? AND status IN ('QUEUED', 'RUNNING')
+                """,
+                (run_id.strip(),),
+            )
+        changed = cursor.rowcount > 0
+        if changed:
+            self._notify_status_changed()
+        return changed
 
     def complete_run(
         self,
@@ -588,11 +696,17 @@ class BacktestStore:
         total_pnl: Decimal,
         return_percent: Decimal,
         max_drawdown_percent: Decimal,
-    ) -> None:
+    ) -> bool:
         wins = sum(1 for trade in trades if trade.pnl > 0)
         losses = sum(1 for trade in trades if trade.pnl < 0)
         now = int(time.time() * 1000)
         with self._lock, closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT status FROM backtest_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None or str(row["status"]) not in {"QUEUED", "RUNNING"}:
+                return False
             connection.executemany(
                 """
                 INSERT INTO backtest_trades (
@@ -635,6 +749,8 @@ class BacktestStore:
                     run_id,
                 ),
             )
+        self._notify_status_changed()
+        return True
 
     def update_run(self, run_id: str, status: str, message: str) -> None:
         completed_at = (
@@ -648,12 +764,14 @@ class BacktestStore:
                 """,
                 (status, message, completed_at, run_id),
             )
+        self._notify_status_changed()
 
     def list_runs(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT run_id, provider, symbol, strategy, start_time, end_time,
+                       download_id,
                        status, trade_count, win_count, loss_count, total_pnl,
                        return_percent, max_drawdown_percent, message,
                        created_at, completed_at, strategy_config_json
@@ -1096,36 +1214,75 @@ class HistoricalDownloader:
         )
 
 
+class BacktestCancelled(RuntimeError):
+    pass
+
+
 class BacktestService:
     def __init__(self, store: BacktestStore) -> None:
         self.store = store
+        self._lock = threading.RLock()
+        self._cancel_events: dict[str, threading.Event] = {}
 
     def start(
-        self, provider: str, symbol: str, strategy: str, config: AppConfig
+        self,
+        provider: str,
+        symbol: str,
+        strategy: str,
+        config: AppConfig,
+        *,
+        download_id: str = "",
     ) -> str:
         normalized = symbol.strip().upper()
         if not normalized:
             raise ValueError("回测标的不能为空")
         if strategy != "five_minute_breakout":
             raise ValueError(f"暂不支持回测策略: {strategy}")
-        download = self.store.latest_complete_download(provider, normalized)
+        download = (
+            self.store.get_download(download_id)
+            if download_id.strip()
+            else self.store.latest_complete_download(provider, normalized)
+        )
         if download is None:
             raise ValueError("请先完成该标的历史 K 线下载或导入")
-        run_id = self.store.create_run(
-            provider,
-            normalized,
-            strategy,
-            int(download["start_time"]),
-            int(download["end_time"]),
-            config,
-        )
+        if str(download.get("provider", "")) != provider:
+            raise ValueError("历史 K 线记录与当前行情源不一致")
+        if str(download.get("symbol", "")).upper() != normalized:
+            raise ValueError("历史 K 线记录与回测标的不一致")
+        if str(download.get("status", "")) != "COMPLETED":
+            raise ValueError("所选历史 K 线记录尚未完成")
+        selected_download_id = str(download.get("download_id", ""))
+        with self._lock:
+            if self.store.has_active_run_for_download(selected_download_id):
+                raise ValueError("所选历史 K 线记录已有回测正在执行")
+            run_id = self.store.create_run(
+                provider,
+                normalized,
+                strategy,
+                int(download["start_time"]),
+                int(download["end_time"]),
+                config,
+                selected_download_id,
+            )
+            cancel_event = threading.Event()
+            self._cancel_events[run_id] = cancel_event
         threading.Thread(
             target=self._run,
-            args=(run_id, provider, normalized, download, config),
+            args=(run_id, provider, normalized, download, config, cancel_event),
             name=f"backtest-run-{normalized}",
             daemon=True,
         ).start()
         return run_id
+
+    def cancel(self, run_id: str) -> None:
+        normalized = run_id.strip()
+        with self._lock:
+            cancel_event = self._cancel_events.get(normalized)
+        if cancel_event is None:
+            raise ValueError("回测任务不存在或已经结束")
+        if not self.store.request_run_cancel(normalized):
+            raise ValueError("回测任务已经结束")
+        cancel_event.set()
 
     def _run(
         self,
@@ -1134,21 +1291,38 @@ class BacktestService:
         symbol: str,
         download: dict[str, Any],
         config: AppConfig,
+        cancel_event: threading.Event | None = None,
     ) -> None:
+        cancel_event = cancel_event or threading.Event()
         try:
+            if cancel_event.is_set():
+                raise BacktestCancelled
             self.store.update_run(run_id, "RUNNING", "正在执行回测")
             start_time = int(download["start_time"])
             end_time = int(download["end_time"])
             daily = self.store.load_bars(
                 provider, symbol, "1d", start_time, end_time
             )
+            if cancel_event.is_set():
+                raise BacktestCancelled
             five = self.store.load_bars(
                 provider, symbol, "5m", start_time, end_time
             )
+            if cancel_event.is_set():
+                raise BacktestCancelled
             minute = self.store.load_bars(
                 provider, symbol, "1m", start_time, end_time
             )
-            trades = self._simulate(symbol, daily, five, minute, config)
+            trades = self._simulate(
+                symbol,
+                daily,
+                five,
+                minute,
+                config,
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set():
+                raise BacktestCancelled
             total_pnl = sum((trade.pnl for trade in trades), Decimal("0"))
             capital = Decimal(config.buy_notional)
             return_percent = (
@@ -1166,17 +1340,27 @@ class BacktestService:
                     max_drawdown = max(
                         max_drawdown, (peak - equity) / peak * Decimal("100")
                     )
-            self.store.complete_run(
+            completed = self.store.complete_run(
                 run_id,
                 trades,
                 total_pnl=total_pnl,
                 return_percent=return_percent,
                 max_drawdown_percent=max_drawdown,
             )
+            if not completed:
+                raise BacktestCancelled
+        except BacktestCancelled:
+            self.store.update_run(run_id, "CANCELLED", "回测已停止")
         except Exception as exc:
-            self.store.update_run(
-                run_id, "FAILED", str(exc) or exc.__class__.__name__
-            )
+            if cancel_event.is_set():
+                self.store.update_run(run_id, "CANCELLED", "回测已停止")
+            else:
+                self.store.update_run(
+                    run_id, "FAILED", str(exc) or exc.__class__.__name__
+                )
+        finally:
+            with self._lock:
+                self._cancel_events.pop(run_id, None)
 
     @staticmethod
     def _simulate(
@@ -1185,6 +1369,8 @@ class BacktestService:
         five: list[Bar],
         minute: list[Bar],
         config: AppConfig,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> list[BacktestTrade]:
         strategy = FiveMinuteBreakoutStrategy(
             symbol=symbol,
@@ -1221,7 +1407,11 @@ class BacktestService:
             position = None
 
         for five_bar in five:
+            if cancel_event is not None and cancel_event.is_set():
+                raise BacktestCancelled
             while minute_index < len(minute) and minute[minute_index].close_time <= five_bar.close_time:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise BacktestCancelled
                 minute_bar = minute[minute_index]
                 minute_index += 1
                 if position is None or minute_bar.open_time <= position["entry_time"]:

@@ -68,7 +68,12 @@ class BackendClient:
         self.timeout = timeout
 
     def request(
-        self, method: str, path: str, payload: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> Any:
         body = None
         headers = {
@@ -84,7 +89,10 @@ class BackendClient:
             f"{self.base_url}{path}", data=body, method=method, headers=headers
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            request_timeout = (
+                self.timeout if timeout is None else max(0.1, float(timeout))
+            )
+            with urlopen(request, timeout=request_timeout) as response:
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
@@ -157,6 +165,14 @@ class BackendClient:
         payload = self.request("GET", f"/api/v1/backtest/downloads?{query}")
         return [item for item in payload.get("items", []) if isinstance(item, dict)]
 
+    def update_historical_download(self, download_id: str) -> str:
+        payload = self.request(
+            "POST",
+            "/api/v1/backtest/downloads/update",
+            {"download_id": download_id.strip()},
+        )
+        return str(payload["download_id"])
+
     def export_historical_bars(
         self, symbol: str, provider: str = ""
     ) -> bytes:
@@ -208,6 +224,9 @@ class BackendClient:
         symbol: str,
         strategy: str,
         strategy_config: dict[str, Any] | None = None,
+        *,
+        download_id: str = "",
+        provider: str = "",
     ) -> str:
         body: dict[str, Any] = {
             "symbol": symbol.strip().upper(),
@@ -215,6 +234,10 @@ class BackendClient:
         }
         if strategy_config is not None:
             body["strategy_config"] = dict(strategy_config)
+        if download_id.strip():
+            body["download_id"] = download_id.strip()
+        if provider.strip():
+            body["provider"] = provider.strip().lower()
         payload = self.request(
             "POST",
             "/api/v1/backtest/runs",
@@ -222,10 +245,33 @@ class BackendClient:
         )
         return str(payload["run_id"])
 
+    def stop_backtest(self, run_id: str) -> None:
+        self.request(
+            "POST",
+            f"/api/v1/backtest/runs/{quote(run_id.strip(), safe='')}/stop",
+            {},
+        )
+
     def backtest_runs(self, limit: int = 100) -> list[dict[str, Any]]:
         query = urlencode({"limit": min(max(int(limit), 1), 500)})
         payload = self.request("GET", f"/api/v1/backtest/runs?{query}")
         return [item for item in payload.get("items", []) if isinstance(item, dict)]
+
+    def wait_backtest_status(
+        self, after_revision: int = -1, timeout: float = 10.0
+    ) -> dict[str, Any]:
+        wait_timeout = min(max(float(timeout), 0.0), 10.0)
+        query = urlencode(
+            {"after": int(after_revision), "timeout": wait_timeout}
+        )
+        payload = self.request(
+            "GET",
+            f"/api/v1/backtest/status?{query}",
+            timeout=wait_timeout + 5.0,
+        )
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的回测监听状态格式不正确")
+        return payload
 
     def backtest_trade_details(
         self, run_id: str, limit: int = 50_000
@@ -332,6 +378,67 @@ def _ai_decision_history_item(
         elapsed_ms=int(payload.get("elapsed_ms", 0)),
         response_ms=int(payload.get("response_ms", 0)),
     )
+
+
+class BacktestStatusListener:
+    def __init__(
+        self,
+        client: BackendClient,
+        status_callback: Callable[
+            [list[dict[str, Any]], list[dict[str, Any]]], None
+        ],
+        error_callback: Callable[[str], None],
+        *,
+        wait_timeout: float = 10.0,
+        retry_delay: float = 1.0,
+    ) -> None:
+        self.client = client
+        self.status_callback = status_callback
+        self.error_callback = error_callback
+        self.wait_timeout = min(max(float(wait_timeout), 0.2), 10.0)
+        self.retry_delay = max(float(retry_delay), 0.2)
+        self._closed = threading.Event()
+        self._thread = threading.Thread(
+            target=self._listen,
+            name="backtest-status-listener",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _listen(self) -> None:
+        revision = -1
+        reported_error = ""
+        while not self._closed.is_set():
+            try:
+                payload = self.client.wait_backtest_status(
+                    revision, self.wait_timeout
+                )
+                revision = int(payload.get("revision", revision))
+                if payload.get("changed"):
+                    downloads = [
+                        item
+                        for item in payload.get("downloads", [])
+                        if isinstance(item, dict)
+                    ]
+                    runs = [
+                        item
+                        for item in payload.get("runs", [])
+                        if isinstance(item, dict)
+                    ]
+                    if not self._closed.is_set():
+                        self.status_callback(downloads, runs)
+                reported_error = ""
+            except Exception as exc:
+                message = str(exc)
+                if message != reported_error and not self._closed.is_set():
+                    self.error_callback(message)
+                    reported_error = message
+                self._closed.wait(self.retry_delay)
+
+    def close(self) -> None:
+        self._closed.set()
 
 
 class RemoteTradingController:
@@ -512,6 +619,7 @@ class RemoteTradingController:
 
 
 __all__ = [
+    "BacktestStatusListener",
     "BackendClient",
     "BackendClientError",
     "RemoteConfigStore",

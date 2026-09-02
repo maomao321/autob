@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from autoquant_backend.backtest import (
     BacktestService,
@@ -49,10 +51,120 @@ def make_bar(
 
 
 class BacktestTests(unittest.TestCase):
+    def test_store_status_waiter_is_notified_when_download_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            revision = store.wait_for_status_change(-1, 0)
+            download_id = store.create_download(
+                "binance_futures", "BTCUSDT", 0, DAY_MS
+            )
+            revision = store.wait_for_status_change(revision, 0)
+            observed: list[int] = []
+            waiter = threading.Thread(
+                target=lambda: observed.append(
+                    store.wait_for_status_change(revision, 1)
+                )
+            )
+            waiter.start()
+
+            store.update_download(
+                download_id, status="RUNNING", message="正在下载"
+            )
+            waiter.join(timeout=1)
+
+            self.assertFalse(waiter.is_alive())
+            self.assertEqual([revision + 1], observed)
+
+    def test_download_records_track_updated_at(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            download_id = store.create_download(
+                "binance_futures", "BTCUSDT", 0, DAY_MS
+            )
+            created = store.get_download(download_id)
+
+            store.update_download(
+                download_id, status="RUNNING", progress=25
+            )
+            updated = store.get_download(download_id)
+
+            self.assertIsNotNone(created)
+            self.assertIsNotNone(updated)
+            self.assertGreater(int(created["updated_at"]), 0)
+            self.assertGreaterEqual(
+                int(updated["updated_at"]), int(created["updated_at"])
+            )
+
+    def test_backtest_can_be_started_and_stopped_for_download_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            download_id = store.create_download(
+                "binance_futures", "BTCUSDT", 0, DAY_MS
+            )
+            store.update_download(
+                download_id,
+                status="COMPLETED",
+                progress=100,
+                completed_at=DAY_MS,
+            )
+            service = BacktestService(store)
+            config = AppConfig(
+                symbols=["BTCUSDT"], provider="binance_futures"
+            )
+            simulation_started = threading.Event()
+
+            def simulate(*_args, **kwargs):
+                simulation_started.set()
+                cancel_event = kwargs["cancel_event"]
+                cancel_event.wait(2)
+                return []
+
+            with patch.object(
+                BacktestService, "_simulate", side_effect=simulate
+            ):
+                run_id = service.start(
+                    "binance_futures",
+                    "BTCUSDT",
+                    "five_minute_breakout",
+                    config,
+                    download_id=download_id,
+                )
+                self.assertTrue(simulation_started.wait(1))
+                service.cancel(run_id)
+                for _ in range(100):
+                    if store.get_run(run_id)["status"] == "CANCELLED":
+                        break
+                    threading.Event().wait(0.01)
+
+            run = store.get_run(run_id)
+            self.assertEqual(download_id, run["download_id"])
+            self.assertEqual("CANCELLED", run["status"])
+
     def test_existing_backtest_database_adds_strategy_snapshot_column(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "orders.sqlite3"
             with closing(sqlite3.connect(path)) as connection, connection:
+                connection.execute(
+                    """
+                    CREATE TABLE market_downloads (
+                        download_id TEXT PRIMARY KEY,
+                        provider TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        days INTEGER NOT NULL,
+                        start_time INTEGER NOT NULL,
+                        end_time INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        current_interval TEXT NOT NULL DEFAULT '',
+                        progress INTEGER NOT NULL DEFAULT 0,
+                        daily_count INTEGER NOT NULL DEFAULT 0,
+                        five_minute_count INTEGER NOT NULL DEFAULT 0,
+                        one_minute_count INTEGER NOT NULL DEFAULT 0,
+                        message TEXT NOT NULL DEFAULT '',
+                        created_at INTEGER NOT NULL,
+                        completed_at INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
                 connection.execute(
                     """
                     CREATE TABLE backtest_runs (
@@ -80,13 +192,21 @@ class BacktestTests(unittest.TestCase):
             store = BacktestStore(path)
 
             with closing(store._connect()) as connection:
-                columns = {
+                run_columns = {
                     row["name"]
                     for row in connection.execute(
                         "PRAGMA table_info(backtest_runs)"
                     ).fetchall()
                 }
-            self.assertIn("strategy_config_json", columns)
+                download_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(market_downloads)"
+                    ).fetchall()
+                }
+            self.assertIn("strategy_config_json", run_columns)
+            self.assertIn("download_id", run_columns)
+            self.assertIn("updated_at", download_columns)
 
     def test_store_upserts_candles_and_persists_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

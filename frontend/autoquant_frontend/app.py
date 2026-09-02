@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -71,6 +72,7 @@ from autoquant_shared.config import (
     strategy_config_snapshot,
 )
 from autoquant_frontend.client import (
+    BacktestStatusListener,
     BackendClient,
     BackendClientError,
     RemoteConfigStore,
@@ -106,6 +108,7 @@ MANUAL_DIRECTION_COLUMN = 3
 REALIZED_PNL_COLUMN = 5
 UNREALIZED_PNL_COLUMN = 6
 ACTION_COLUMN = 11
+BACKTEST_DOWNLOAD_ACTION_COLUMN = 9
 MANUAL_DIRECTION_OPTIONS = ("LONG", "SHORT", "FLAT")
 STRATEGY_OPTIONS = ("five_minute_breakout",)
 STRATEGY_LABELS = {
@@ -249,6 +252,8 @@ class KeyedTable(QTableWidget):
         super().__init__(0, len(headers))
         self._keys: list[str] = []
         self._action_buttons: dict[str, QPushButton] = {}
+        self._action_verbs: dict[str, tuple[str, str]] = {}
+        self._action_subjects: dict[str, str] = {}
         self.setHorizontalHeaderLabels(headers)
         self.setAlternatingRowColors(True)
         self.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -302,6 +307,8 @@ class KeyedTable(QTableWidget):
         self.removeRow(row)
         self._keys.pop(row)
         self._action_buttons.pop(key, None)
+        self._action_verbs.pop(key, None)
+        self._action_subjects.pop(key, None)
 
     def item_update(
         self,
@@ -356,6 +363,10 @@ class KeyedTable(QTableWidget):
         column: int,
         on_start: Callable[[], None],
         on_stop: Callable[[], None],
+        *,
+        start_verb: str = "启动",
+        stop_verb: str = "停止并平仓",
+        action_subject: str = "",
     ) -> QPushButton:
         if key not in self._keys:
             raise KeyError(key)
@@ -380,6 +391,8 @@ class KeyedTable(QTableWidget):
         layout.addStretch()
         self.setCellWidget(self._keys.index(key), column, container)
         self._action_buttons[key] = button
+        self._action_verbs[key] = (start_verb, stop_verb)
+        self._action_subjects[key] = action_subject or key
         self.set_action_state(key, action="start")
         return button
 
@@ -393,11 +406,15 @@ class KeyedTable(QTableWidget):
         color = COLORS["negative"] if is_stop else COLORS["positive"]
         hover_background = "#fdecea" if is_stop else "#e8f5ec"
         pressed_background = "#fbd5d1" if is_stop else "#d5eddd"
-        verb = "停止并平仓" if is_stop else "启动"
+        start_verb, stop_verb = self._action_verbs.get(
+            key, ("启动", "停止并平仓")
+        )
+        verb = stop_verb if is_stop else start_verb
+        subject = self._action_subjects.get(key, key)
         button.setProperty("action", "stop" if is_stop else "start")
         button.setText("●" if is_stop else "▶")
-        button.setAccessibleName(f"{verb} {key}")
-        button.setToolTip(f"{verb} {key}")
+        button.setAccessibleName(f"{verb} {subject}")
+        button.setToolTip(f"{verb} {subject}")
         button.setStyleSheet(
             f"""
             QPushButton#rowActionButton {{
@@ -445,6 +462,8 @@ class KeyedTable(QTableWidget):
         self.setRowCount(0)
         self._keys.clear()
         self._action_buttons.clear()
+        self._action_verbs.clear()
+        self._action_subjects.clear()
 
     def _write_row(
         self, row: int, values: tuple[object, ...], tags: tuple[str, ...]
@@ -620,7 +639,9 @@ class AutoQuantApp(QMainWindow):
         self._backtest_refresh_inflight = False
         self._backtest_action_inflight = False
         self._backtest_detail_inflight = False
+        self._backtest_status_listener: BacktestStatusListener | None = None
         self._backtest_downloads: dict[str, dict[str, object]] = {}
+        self._backtest_active_runs: dict[str, dict[str, object]] = {}
         self._backtest_detail_dialog: QDialog | None = None
         self._ai_decisions: dict[str, AiDecisionHistoryItem] = {}
         self._futures_tickers: dict[str, dict[str, str]] = {}
@@ -646,9 +667,6 @@ class AutoQuantApp(QMainWindow):
         self.account_timer = QTimer(self)
         self.account_timer.timeout.connect(self._account_refresh_tick)
         self.account_timer.start(ACCOUNT_REFRESH_MS)
-        self.backtest_timer = QTimer(self)
-        self.backtest_timer.timeout.connect(self._refresh_backtest_data)
-        self.backtest_timer.setInterval(5_000)
         self.futures_rankings_timer = QTimer(self)
         self.futures_rankings_timer.timeout.connect(
             self._auto_refresh_futures_rankings
@@ -908,11 +926,7 @@ class AutoQuantApp(QMainWindow):
 
     def _on_page_changed(self, _index: int) -> None:
         if self.notebook.currentWidget() is self.backtest_page:
-            if not self.backtest_timer.isActive():
-                self.backtest_timer.start()
-            self._refresh_backtest_data()
-        else:
-            self.backtest_timer.stop()
+            self._start_backtest_status_listener()
         if self.notebook.currentWidget() is self.contract_pool_page:
             self._sync_contract_pool_refresh_timer()
             self._refresh_futures_rankings()
@@ -930,6 +944,27 @@ class AutoQuantApp(QMainWindow):
                 self.contract_pool_timer.start(CONTRACT_POOL_REFRESH_MS)
         else:
             self.contract_pool_timer.stop()
+
+    def _start_backtest_status_listener(self) -> None:
+        if self._closed or self._backtest_status_listener is not None:
+            return
+        listener = BacktestStatusListener(
+            self.backend_client,
+            status_callback=lambda downloads, runs: self._enqueue_event(
+                ("backtest_status", downloads, runs, "")
+            ),
+            error_callback=lambda error: self._enqueue_event(
+                ("backtest_status", [], [], error)
+            ),
+        )
+        self._backtest_status_listener = listener
+        listener.start()
+
+    def _stop_backtest_status_listener(self) -> None:
+        listener = self._backtest_status_listener
+        self._backtest_status_listener = None
+        if listener is not None:
+            listener.close()
 
     def _auto_refresh_futures_rankings(self) -> None:
         if self.notebook.currentWidget() is self.contract_pool_page:
@@ -2900,7 +2935,7 @@ class AutoQuantApp(QMainWindow):
         layout.setContentsMargins(14, 8, 14, 14)
         layout.setSpacing(8)
 
-        controls = QGroupBox("历史数据与策略回测")
+        controls = QGroupBox("策略回测")
         controls_layout = QHBoxLayout(controls)
         controls_layout.addWidget(QLabel("标的"))
         symbol = self._line(self.backtest_symbol_var)
@@ -2914,13 +2949,7 @@ class AutoQuantApp(QMainWindow):
         strategy.setMaximumWidth(230)
         controls_layout.addWidget(strategy)
         self.backtest_download_button = self._button(
-            "下载 180 天 K 线", self._start_backtest_download, primary=True
-        )
-        self.backtest_run_button = self._button(
-            "执行回测", self._start_backtest_run, primary=True
-        )
-        self.backtest_export_button = self._button(
-            "导出 K 线", self._export_historical_bars
+            "下载", self._start_backtest_download, primary=True
         )
         self.backtest_import_button = self._button(
             "导入 K 线", self._import_historical_bars
@@ -2929,8 +2958,6 @@ class AutoQuantApp(QMainWindow):
             "刷新", lambda: self._refresh_backtest_data(manual=True)
         )
         controls_layout.addWidget(self.backtest_download_button)
-        controls_layout.addWidget(self.backtest_run_button)
-        controls_layout.addWidget(self.backtest_export_button)
         controls_layout.addWidget(self.backtest_import_button)
         controls_layout.addWidget(self.backtest_refresh_button)
         controls_layout.addStretch()
@@ -2954,14 +2981,14 @@ class AutoQuantApp(QMainWindow):
         status.setStyleSheet(f"color: {COLORS['muted']};")
         layout.addWidget(status)
 
-        downloads_box = QGroupBox("历史 K 线下载记录")
+        downloads_box = QGroupBox("历史 K 线")
         downloads_layout = QVBoxLayout(downloads_box)
         self.backtest_download_tree = KeyedTable(
             [
-                "创建时间", "标的", "行情源", "状态", "进度",
-                "日线", "5分钟", "1分钟", "说明",
+                "标的", "创建时间", "更新时间", "行情源", "状态", "进度",
+                "日线", "5分钟", "1分钟", "回测操作", "说明",
             ],
-            [150, 100, 125, 80, 70, 65, 75, 80, 260],
+            [100, 150, 150, 125, 80, 70, 65, 75, 80, 72, 260],
             multi_select=False,
         )
         self.backtest_download_tree.setContextMenuPolicy(
@@ -2972,7 +2999,7 @@ class AutoQuantApp(QMainWindow):
         )
         downloads_layout.addWidget(self.backtest_download_tree)
 
-        runs_box = QGroupBox("持久化回测结果")
+        runs_box = QGroupBox("回测结果")
         runs_layout = QVBoxLayout(runs_box)
         self.backtest_run_tree = KeyedTable(
             [
@@ -3037,6 +3064,57 @@ class AutoQuantApp(QMainWindow):
             strategy = self.backtest_strategy_var.get().strip()
             if not strategy:
                 raise ValueError("请选择回测策略")
+        except ValueError as exc:
+            show_error("无法回测", str(exc))
+            return
+        self._submit_backtest_run(symbol, strategy)
+
+    def _choose_backtest_strategy(self, symbol: str) -> str | None:
+        strategies = list(STRATEGY_OPTIONS)
+        labels = [STRATEGY_LABELS.get(item, item) for item in strategies]
+        current = self.backtest_strategy_var.get().strip()
+        current_index = strategies.index(current) if current in strategies else 0
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "选择回测策略",
+            f"{symbol} 回测策略",
+            labels,
+            current_index,
+            False,
+        )
+        if not accepted:
+            return None
+        strategy = strategies[labels.index(selected)]
+        self.backtest_strategy_var.set(strategy)
+        return strategy
+
+    def _start_download_backtest(self, download_id: str) -> None:
+        if self._backtest_action_inflight:
+            return
+        item = self._backtest_downloads.get(download_id)
+        if item is None:
+            return
+        symbol = str(item.get("symbol", "")).strip().upper()
+        provider = str(item.get("provider", "")).strip().lower()
+        strategy = self._choose_backtest_strategy(symbol)
+        if strategy is None:
+            return
+        self._submit_backtest_run(
+            symbol,
+            strategy,
+            download_id=download_id,
+            provider=provider,
+        )
+
+    def _submit_backtest_run(
+        self,
+        symbol: str,
+        strategy: str,
+        *,
+        download_id: str = "",
+        provider: str = "",
+    ) -> None:
+        try:
             current_strategy_config = strategy_config_snapshot(
                 self._current_config(), strategy
             )
@@ -3046,6 +3124,10 @@ class AutoQuantApp(QMainWindow):
         self._backtest_action_inflight = True
         self._set_backtest_actions_enabled(False)
         self.backtest_status_var.set(f"正在提交 {symbol} 的策略回测任务…")
+        if download_id:
+            self.backtest_download_tree.set_action_state(
+                download_id, action="start", enabled=False
+            )
 
         def submit() -> None:
             try:
@@ -3064,13 +3146,49 @@ class AutoQuantApp(QMainWindow):
                             "slow_ma_period",
                         }
                     },
+                    download_id=download_id,
+                    provider=provider,
                 )
-                self._enqueue_event(("backtest_action", "run", run_id, ""))
+                self._enqueue_event(
+                    ("backtest_action", "run", run_id, "", download_id)
+                )
             except Exception as exc:
-                self._enqueue_event(("backtest_action", "run", "", str(exc)))
+                self._enqueue_event(
+                    ("backtest_action", "run", "", str(exc), download_id)
+                )
 
         threading.Thread(
             target=submit, name="backtest-run-submit", daemon=True
+        ).start()
+
+    def _stop_download_backtest(self, download_id: str) -> None:
+        if self._backtest_action_inflight:
+            return
+        run = self._backtest_active_runs.get(download_id)
+        if run is None:
+            return
+        run_id = str(run.get("run_id", ""))
+        symbol = str(run.get("symbol", ""))
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_download_tree.set_action_state(
+            download_id, action="stop", enabled=False
+        )
+        self.backtest_status_var.set(f"正在停止 {symbol} 的回测任务…")
+
+        def stop() -> None:
+            try:
+                self.backend_client.stop_backtest(run_id)
+                self._enqueue_event(
+                    ("backtest_stop", run_id, download_id, "")
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    ("backtest_stop", run_id, download_id, str(exc))
+                )
+
+        threading.Thread(
+            target=stop, name="backtest-run-stop", daemon=True
         ).start()
 
     def _export_historical_bars(self) -> None:
@@ -3096,8 +3214,14 @@ class AutoQuantApp(QMainWindow):
             return
         symbol = str(item.get("symbol", "")).strip().upper()
         provider = str(item.get("provider", "")).strip().lower()
-        status = str(item.get("status", ""))
+        has_active_download = any(
+            str(candidate.get("symbol", "")).strip().upper() == symbol
+            and str(candidate.get("provider", "")).strip().lower() == provider
+            and str(candidate.get("status", "")) in {"QUEUED", "RUNNING"}
+            for candidate in self._backtest_downloads.values()
+        )
         menu = QMenu(self.backtest_download_tree)
+        update_action = menu.addAction("更新 K 线到最新")
         export_action = menu.addAction("导出该标的 K 线")
         delete_action = menu.addAction("删除该标的 K 线")
         export_action.setEnabled(
@@ -3111,7 +3235,13 @@ class AutoQuantApp(QMainWindow):
             )
             > 0
         )
-        delete_action.setEnabled(status not in {"QUEUED", "RUNNING"})
+        delete_action.setEnabled(not has_active_download)
+        update_action.setEnabled(not has_active_download)
+        update_action.triggered.connect(
+            lambda _checked=False: self._update_historical_bars(
+                str(item.get("download_id", "")), symbol
+            )
+        )
         export_action.triggered.connect(
             lambda _checked=False: self._begin_historical_export(
                 symbol, provider
@@ -3125,6 +3255,44 @@ class AutoQuantApp(QMainWindow):
         menu.exec(
             self.backtest_download_tree.viewport().mapToGlobal(position)
         )
+
+    def _update_historical_bars(
+        self, download_id: str, symbol: str
+    ) -> None:
+        if self._backtest_action_inflight:
+            return
+        self._backtest_action_inflight = True
+        self._set_backtest_actions_enabled(False)
+        self.backtest_status_var.set(f"正在更新 {symbol} 的 K 线到最新…")
+
+        def update() -> None:
+            try:
+                new_download_id = (
+                    self.backend_client.update_historical_download(download_id)
+                )
+                self._enqueue_event(
+                    (
+                        "backtest_action",
+                        "update",
+                        new_download_id,
+                        "",
+                        download_id,
+                    )
+                )
+            except Exception as exc:
+                self._enqueue_event(
+                    (
+                        "backtest_action",
+                        "update",
+                        "",
+                        str(exc),
+                        download_id,
+                    )
+                )
+
+        threading.Thread(
+            target=update, name="historical-bars-update", daemon=True
+        ).start()
 
     def _begin_historical_export(
         self, symbol: str, provider: str
@@ -3226,7 +3394,6 @@ class AutoQuantApp(QMainWindow):
         )
         self.backtest_status_var.set(message)
         show_info("删除完成", message)
-        self._refresh_backtest_data()
 
     def _import_historical_bars(self) -> None:
         if self._backtest_action_inflight:
@@ -3301,23 +3468,56 @@ class AutoQuantApp(QMainWindow):
             )
             self.backtest_status_var.set(message)
             show_info("导入完成", message)
-            self._refresh_backtest_data()
 
     def _apply_backtest_action(
-        self, action: str, identifier: str, error: str
+        self,
+        action: str,
+        identifier: str,
+        error: str,
+        source_download_id: str = "",
     ) -> None:
         self._backtest_action_inflight = False
         self._set_backtest_actions_enabled(True)
         if error:
-            title = "历史数据下载失败" if action == "download" else "回测启动失败"
+            title = {
+                "download": "历史数据下载失败",
+                "update": "历史 K 线更新失败",
+                "run": "回测启动失败",
+            }.get(action, "操作失败")
             self.backtest_status_var.set(f"{title}：{error}")
             show_error(title, error)
+            if source_download_id:
+                active = self._backtest_active_runs.get(source_download_id)
+                self.backtest_download_tree.set_action_state(
+                    source_download_id,
+                    action="stop" if active else "start",
+                    enabled=True,
+                )
         else:
-            label = "下载" if action == "download" else "回测"
+            label = {
+                "download": "下载",
+                "update": "K 线更新",
+                "run": "回测",
+            }.get(action, "后台")
             self.backtest_status_var.set(
                 f"{label}任务已提交（{identifier[:8]}），后台执行中。"
             )
-        self._refresh_backtest_data()
+
+    def _apply_backtest_stop(
+        self, run_id: str, download_id: str, error: str
+    ) -> None:
+        self._backtest_action_inflight = False
+        self._set_backtest_actions_enabled(True)
+        if error:
+            self.backtest_status_var.set(f"回测停止失败：{error}")
+            show_error("回测停止失败", error)
+            self.backtest_download_tree.set_action_state(
+                download_id, action="stop", enabled=True
+            )
+            return
+        self.backtest_status_var.set(
+            f"回测任务 {run_id[:8]} 正在停止。"
+        )
 
     def _refresh_backtest_data(self, *, manual: bool = False) -> None:
         if self._closed or self._backtest_refresh_inflight:
@@ -3786,15 +3986,20 @@ class AutoQuantApp(QMainWindow):
         downloads: list[dict[str, object]],
         runs: list[dict[str, object]],
         error: str,
+        *,
+        refresh_complete: bool = True,
     ) -> None:
-        self._backtest_refresh_inflight = False
-        self.backtest_refresh_button.setEnabled(True)
+        if refresh_complete:
+            self._backtest_refresh_inflight = False
+            self.backtest_refresh_button.setEnabled(True)
         if error:
             self.backtest_status_var.set(f"回测记录刷新失败：{error}")
             return
         status_text = {
             "QUEUED": "排队中",
             "RUNNING": "进行中",
+            "STOPPING": "停止中",
+            "CANCELLED": "已停止",
             "COMPLETED": "已完成",
             "FAILED": "失败",
         }
@@ -3803,19 +4008,51 @@ class AutoQuantApp(QMainWindow):
             for item in downloads
             if str(item.get("download_id", ""))
         }
+        active_run_statuses = {"QUEUED", "RUNNING", "STOPPING"}
+        self._backtest_active_runs = {
+            str(item.get("download_id", "")): dict(item)
+            for item in runs
+            if str(item.get("download_id", ""))
+            and str(item.get("status", "")) in active_run_statuses
+        }
         self.backtest_download_tree.clear_rows()
         for item in downloads:
             key = str(item.get("download_id", ""))
             status = str(item.get("status", ""))
+            active_run = self._backtest_active_runs.get(key)
             self.backtest_download_tree.insert(
-                "", None, iid=key, text=self._backtest_datetime(item.get("created_at")),
+                "", None, iid=key, text=str(item.get("symbol", "")),
                 values=(
-                    item.get("symbol", ""), item.get("provider", ""),
+                    self._backtest_datetime(item.get("created_at")),
+                    self._backtest_datetime(
+                        item.get("updated_at") or item.get("created_at")
+                    ),
+                    item.get("provider", ""),
                     status_text.get(status, status), f"{item.get('progress', 0)}%",
                     item.get("daily_count", 0), item.get("five_minute_count", 0),
-                    item.get("one_minute_count", 0), item.get("message", ""),
+                    item.get("one_minute_count", 0), "", item.get("message", ""),
                 ),
                 tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
+            )
+            self.backtest_download_tree.set_action_button(
+                key,
+                BACKTEST_DOWNLOAD_ACTION_COLUMN,
+                lambda _checked=False, download_id=key:
+                self._start_download_backtest(download_id),
+                lambda _checked=False, download_id=key:
+                self._stop_download_backtest(download_id),
+                start_verb="启动回测",
+                stop_verb="停止回测",
+                action_subject=str(item.get("symbol", "")),
+            )
+            self.backtest_download_tree.set_action_state(
+                key,
+                action="stop" if active_run is not None else "start",
+                enabled=(
+                    str(active_run.get("status", "")) != "STOPPING"
+                    if active_run is not None
+                    else status == "COMPLETED"
+                ),
             )
         self.backtest_run_tree.clear_rows()
         for item in runs:
@@ -3849,7 +4086,7 @@ class AutoQuantApp(QMainWindow):
                     "",
                     item.get("message", ""),
                 ),
-                tags=("error",) if status == "FAILED" else ("running",) if status == "RUNNING" else (),
+                tags=("error",) if status == "FAILED" else ("running",) if status in active_run_statuses else (),
             )
             detail_button = QPushButton("回测明细", self.backtest_run_tree)
             detail_button.setFlat(True)
@@ -3895,7 +4132,7 @@ class AutoQuantApp(QMainWindow):
             1 for item in downloads if item.get("status") in {"QUEUED", "RUNNING"}
         )
         active_runs = sum(
-            1 for item in runs if item.get("status") in {"QUEUED", "RUNNING"}
+            1 for item in runs if item.get("status") in active_run_statuses
         )
         self.backtest_status_var.set(
             f"已加载 {len(downloads)} 条下载记录、{len(runs)} 条回测结果；"
@@ -3951,9 +4188,25 @@ class AutoQuantApp(QMainWindow):
             elif event[0] == "contract_pool_tickers":
                 self._apply_contract_pool_tickers(event[1], event[2])
             elif event[0] == "backtest_action":
-                self._apply_backtest_action(event[1], event[2], event[3])
+                self._apply_backtest_action(
+                    event[1],
+                    event[2],
+                    event[3],
+                    event[4] if len(event) > 4 else "",
+                )
+            elif event[0] == "backtest_stop":
+                self._apply_backtest_stop(
+                    event[1], event[2], event[3]
+                )
             elif event[0] == "backtest_data":
                 self._apply_backtest_data(event[1], event[2], event[3])
+            elif event[0] == "backtest_status":
+                self._apply_backtest_data(
+                    event[1],
+                    event[2],
+                    event[3],
+                    refresh_complete=False,
+                )
             elif event[0] == "backtest_archive":
                 self._apply_backtest_archive(
                     event[1], event[2], event[3], event[4]
@@ -4047,7 +4300,7 @@ class AutoQuantApp(QMainWindow):
         self._closed = True
         self.event_timer.stop()
         self.account_timer.stop()
-        self.backtest_timer.stop()
+        self._stop_backtest_status_listener()
         self.futures_rankings_timer.stop()
         self.contract_pool_timer.stop()
         self.controller.close()
