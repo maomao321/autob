@@ -288,7 +288,13 @@ class EntryGateDecider:
 
     def decide_entry(self, symbol, signal, current_bar, recent_bars=()):
         self.entry_calls.append(
-            (symbol, signal.bar_open_time, current_bar.open_time, len(recent_bars))
+            (
+                symbol,
+                signal.bar_open_time,
+                current_bar.open_time,
+                len(recent_bars),
+                signal.strategy_context,
+            )
         )
         return EntryTimingDecision(
             enter_now=self.enter_now,
@@ -300,6 +306,75 @@ class EntryGateDecider:
 
 
 class SymbolRunnerTests(unittest.TestCase):
+    def test_ai_addition_carries_position_context_and_explanation(self) -> None:
+        decider = EntryGateDecider(enter_now=True)
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "AAPL",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["AAPL"],
+                        ai_provider="CHATGPT",
+                        max_additions_per_position=2,
+                    ),
+                    openai_api_key="test-key",
+                    manual_direction=Direction.UNKNOWN,
+                ),
+                lambda _snapshot: None,
+                lambda *_args: None,
+                ledger,
+                opening_decider=decider,
+            )
+            runner.provider = FakeProvider()
+            runner.strategy.on_bar(make_bar("101", 0, interval="1d"))
+            current_bar = make_bar("100", 1, closed=False)
+            candidate = Signal(
+                symbol="AAPL",
+                side=Side.BUY,
+                price=Decimal("100"),
+                ma_value=Decimal("99"),
+                bar_open_time=current_bar.open_time,
+                reason="同方向突破",
+                strategy_context={"signal": {"signal_type": "LONG_BREAKOUT"}},
+            )
+
+            runner._handle_signal(candidate, current_bar, is_paper=True)
+            runner._handle_signal(candidate, current_bar, is_paper=True)
+
+        self.assertEqual(2, len(decider.entry_calls))
+        opening_context = decider.entry_calls[0][4]
+        addition_context = decider.entry_calls[1][4]
+        self.assertEqual(
+            "OPEN_POSITION",
+            opening_context["entry_intent"]["type"],
+        )
+        self.assertNotIn("position_context", opening_context)
+        self.assertEqual(
+            "ADD_POSITION",
+            addition_context["entry_intent"]["type"],
+        )
+        self.assertIn(
+            "第 1 次加仓候选",
+            addition_context["entry_intent"]["explanation"],
+        )
+        self.assertEqual(
+            "LONG",
+            addition_context["position_context"]["direction"],
+        )
+        self.assertEqual(
+            "1.00",
+            addition_context["position_context"]["quantity"],
+        )
+        self.assertEqual(
+            "100.00",
+            addition_context["position_context"]["average_entry_price"],
+        )
+        self.assertEqual(
+            0,
+            addition_context["position_context"]["completed_additions"],
+        )
+
     def test_addition_limit_resets_after_position_is_fully_closed(self) -> None:
         logs = []
         with tempfile.TemporaryDirectory() as directory:

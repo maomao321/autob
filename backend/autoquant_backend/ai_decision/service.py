@@ -212,6 +212,15 @@ class OpeningDecisionService:
         strategy_signal_data = raw_strategy_context.get("signal")
         if not isinstance(strategy_signal_data, dict):
             strategy_signal_data = {}
+        entry_intent = raw_strategy_context.get("entry_intent")
+        if not isinstance(entry_intent, dict):
+            entry_intent = {
+                "type": "OPEN_POSITION",
+                "explanation": "当前候选为首次开仓。",
+            }
+        position_context = raw_strategy_context.get("position_context")
+        if not isinstance(position_context, dict):
+            position_context = None
         signal_age_ms = (
             max(0, int(time.time() * 1000) - current_bar.event_time)
             if current_bar.event_time > 0
@@ -234,9 +243,16 @@ class OpeningDecisionService:
                 current_bar.event_time if current_bar.event_time > 0 else None
             ),
             "signal_age_ms": signal_age_ms,
+            "entry_type": _clean_text(
+                str(entry_intent.get("type", "OPEN_POSITION")), 40
+            ),
+            "entry_explanation": _clean_text(
+                str(entry_intent.get("explanation", "")), 500
+            ),
             "strategy_reason": _clean_text(signal.reason, 700),
             "strategy_signal_data": strategy_signal_data,
         }
+        context["current_position"] = position_context
         context["current_intraday_bar"] = _bar_payload(current_bar)
         eligible_bars = sorted(
             {
@@ -384,5 +400,4 @@ class OpeningDecisionService:
             risks=("置信度不足，已放弃本次开仓",)
             + decision.risks[:4],
         )
-
 

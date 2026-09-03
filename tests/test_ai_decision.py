@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from email.utils import format_datetime
@@ -815,6 +816,54 @@ class AiDecisionTests(unittest.TestCase):
         self.assertEqual(
             "LONG_BREAKOUT",
             context["candidate_entry"]["strategy_signal_data"]["signal_type"],
+        )
+
+    def test_entry_timing_includes_addition_position_context(self) -> None:
+        client = StaticClient("CHATGPT", Direction.LONG, 0.82)
+        service = OpeningDecisionService(
+            StaticCollector(),
+            (client,),
+            min_confidence=0.7,
+            mode="CHATGPT",
+        )
+        service.decide("AAPL", daily_bar())
+        base_signal = candidate_signal()
+        strategy_context = dict(base_signal.strategy_context)
+        strategy_context["entry_intent"] = {
+            "type": "ADD_POSITION",
+            "explanation": "本次 BUY 与现有多头同向，属于第 1 次加仓候选。",
+        }
+        strategy_context["position_context"] = {
+            "direction": "LONG",
+            "quantity": "2.00",
+            "average_entry_price": "98.50",
+            "completed_additions": 0,
+            "proposed_addition_number": 1,
+            "max_additions": 2,
+        }
+        addition_signal = replace(
+            base_signal,
+            strategy_context=strategy_context,
+        )
+
+        service.decide_entry(
+            "AAPL",
+            addition_signal,
+            intraday_bar(),
+            intraday_history(),
+        )
+
+        context = client.entry_contexts[-1]
+        self.assertEqual("ADD_POSITION", context["candidate_entry"]["entry_type"])
+        self.assertIn(
+            "第 1 次加仓",
+            context["candidate_entry"]["entry_explanation"],
+        )
+        self.assertEqual("LONG", context["current_position"]["direction"])
+        self.assertEqual("2.00", context["current_position"]["quantity"])
+        self.assertEqual(
+            "98.50",
+            context["current_position"]["average_entry_price"],
         )
 
     def test_entry_timing_waits_before_calling_model_with_fewer_than_60_bars(self) -> None:

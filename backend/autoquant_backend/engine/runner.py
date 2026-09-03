@@ -33,6 +33,7 @@ from autoquant_backend.providers.binance_stocks import (
 from autoquant_backend.state import (
     OrderLedger,
     OrderRecord,
+    PositionSummary,
     RiskLimitError,
 )
 from autoquant_shared.formatting import financial_text
@@ -326,7 +327,12 @@ class SymbolRunner:
                 )
                 return False
         if not is_exit and self.config.app.ai_provider != "DISABLED":
-            ai_allows_entry = self._ai_allows_entry(signal, bar)
+            ai_signal = self._signal_with_position_context(
+                signal,
+                position=position,
+                is_addition=is_addition,
+            )
+            ai_allows_entry = self._ai_allows_entry(ai_signal, bar)
             if self.stop_event.is_set():
                 self._log(
                     "INFO",
@@ -381,6 +387,49 @@ class SymbolRunner:
             return True
         self._submit_order(order, is_paper=is_paper)
         return False
+
+    def _signal_with_position_context(
+        self,
+        signal: Signal,
+        *,
+        position: PositionSummary,
+        is_addition: bool,
+    ) -> Signal:
+        strategy_context = dict(signal.strategy_context)
+        if not is_addition:
+            strategy_context["entry_intent"] = {
+                "type": "OPEN_POSITION",
+                "explanation": "当前无同方向持仓，本次是首次开仓候选。",
+            }
+            strategy_context.pop("position_context", None)
+            return replace(signal, strategy_context=strategy_context)
+
+        direction = "LONG" if position.quantity > 0 else "SHORT"
+        side_text = "多头" if position.quantity > 0 else "空头"
+        addition_number = position.additions + 1
+        max_additions = self.config.app.max_additions_per_position
+        strategy_context["entry_intent"] = {
+            "type": "ADD_POSITION",
+            "explanation": (
+                f"当前已持有{side_text} {financial_text(abs(position.quantity))}，"
+                f"本次 {signal.side.value} 突破信号与现有持仓同向，"
+                f"属于第 {addition_number} 次加仓候选（上限 "
+                f"{max_additions} 次）。"
+            ),
+        }
+        strategy_context["position_context"] = {
+            "direction": direction,
+            "quantity": financial_text(abs(position.quantity)),
+            "average_entry_price": financial_text(position.average_price),
+            "open_fee": financial_text(position.open_fee),
+            "completed_additions": position.additions,
+            "proposed_addition_number": addition_number,
+            "max_additions": max_additions,
+            "remaining_additions_before_order": max(
+                0, max_additions - position.additions
+            ),
+        }
+        return replace(signal, strategy_context=strategy_context)
 
     def _create_signal_order(
         self,
