@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtCharts import QChartView
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QGroupBox,
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
 from autoquant_frontend.app import AutoQuantApp
 from autoquant_frontend.services.client import BackendClientError
 from autoquant_frontend.components.widgets import InteractiveChartView, KeyedTable, TextValue
-from autoquant_frontend.ui.theme import COLORS
+from autoquant_frontend.ui.theme import COLORS, application_icon_path
 from autoquant_shared.config import AppConfig, ConfigStore
 from autoquant_shared.models import (
     AiDecisionHistoryItem,
@@ -38,6 +39,12 @@ class QtAppWidgetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.qt_app = QApplication.instance() or QApplication([])
+
+    def test_application_icon_is_available(self) -> None:
+        icon_path = application_icon_path()
+
+        self.assertTrue(icon_path.is_file(), icon_path)
+        self.assertFalse(QIcon(str(icon_path)).isNull())
 
     def test_text_value_synchronizes_with_line_edit(self) -> None:
         value = TextValue("initial")

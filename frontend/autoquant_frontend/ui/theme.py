@@ -25,7 +25,7 @@ def application_icon_path() -> Path:
         bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
         return bundle_root / "assets" / "autoquant-icon.png"
     return (
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "packaging"
         / "assets"
         / "autoquant-icon.png"
