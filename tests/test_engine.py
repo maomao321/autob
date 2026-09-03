@@ -73,8 +73,8 @@ class FakeProvider:
     ):
         if interval == "1d":
             return [
-                make_bar("99", -2, interval="1d"),
-                make_bar("100", -1, interval="1d"),
+                make_bar("99", -2, interval="1d", symbol=symbol),
+                make_bar("100", -1, interval="1d", symbol=symbol),
             ][-limit:]
         return []
 
@@ -147,7 +147,9 @@ class HistoricalWarmupProvider(FakeProvider):
         return self.history[-limit:]
 
     def stream_bars(self, symbol: str, stop_event: Event, status_callback=None):
-        yield make_bar("101", 0, interval="1d", open_price="100")
+        yield make_bar(
+            "101", 0, interval="1d", open_price="100", symbol=symbol
+        )
         yield from self.live
 
 
@@ -563,7 +565,7 @@ class SymbolRunnerTests(unittest.TestCase):
             self.assertEqual([], provider.history_requests)
             self.assertEqual([], provider.orders)
 
-    def test_futures_preloads_thirty_closed_bars_before_realtime(self) -> None:
+    def test_futures_preloads_twenty_five_closed_bars_before_realtime(self) -> None:
         snapshots = []
         with tempfile.TemporaryDirectory() as directory:
             ledger = OrderLedger(Path(directory) / "orders.sqlite3")
@@ -599,11 +601,52 @@ class SymbolRunnerTests(unittest.TestCase):
                 provider.history_requests[0]
             )
             self.assertEqual("5m", interval)
-            self.assertEqual(30, limit)
-            self.assertEqual(30 * 300_000 - 1, end_time - start_time)
+            self.assertEqual(25, limit)
+            self.assertEqual(25 * 300_000 - 1, end_time - start_time)
             self.assertEqual([], provider.orders)
             self.assertEqual(25, snapshots[-1].warmup_bars)
             self.assertEqual(25, snapshots[-1].warmup_required)
+
+    def test_automatic_direction_uses_historical_warmup_without_live_bars(
+        self,
+    ) -> None:
+        snapshots = []
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = OrderLedger(Path(directory) / "orders.sqlite3")
+            runner = SymbolRunner(
+                "BTCUSDT",
+                RunnerConfig(
+                    AppConfig(
+                        symbols=["BTCUSDT"],
+                        provider="binance_futures",
+                    ),
+                    manual_direction=Direction.UNKNOWN,
+                ),
+                snapshots.append,
+                lambda *_args: None,
+                ledger,
+            )
+            history = [
+                make_bar("10", index, symbol="BTCUSDT")
+                for index in range(25)
+            ]
+            provider = HistoricalWarmupProvider(history)
+            runner.provider = provider
+
+            runner.start()
+            runner.join(timeout=2)
+
+            self.assertEqual(1, len(provider.history_requests))
+            _symbol, interval, start_time, end_time, limit = (
+                provider.history_requests[0]
+            )
+            self.assertEqual("5m", interval)
+            self.assertEqual(25, limit)
+            self.assertEqual(25 * 300_000 - 1, end_time - start_time)
+            self.assertEqual(25, snapshots[-1].warmup_bars)
+            self.assertTrue(
+                any(snapshot.state is RunState.RUNNING for snapshot in snapshots)
+            )
 
     def test_signal_found_only_in_history_is_not_submitted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -224,21 +224,44 @@ class FiveMinuteBreakoutStrategyTests(unittest.TestCase):
         strategy.on_bar(bar("13", 26))
         self.assertIsNotNone(strategy.on_bar(bar("14", 27, closed=False)))
 
-    def test_new_daily_bar_clears_intraday_warmup(self) -> None:
+    def test_new_daily_bar_keeps_contiguous_intraday_warmup(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL")
         strategy.on_bar(bar("101", 0, interval="1d", open_price="100"))
-        for index in range(3):
+        for index in range(285, 288):
             strategy.on_bar(bar("10", index))
         self.assertEqual(3, strategy.warmup_bars)
 
         strategy.on_bar(bar("102", 1, interval="1d", open_price="101"))
 
-        self.assertEqual(0, strategy.warmup_bars)
+        self.assertEqual(3, strategy.warmup_bars)
         self.assertIsNone(strategy.ma_value)
-        strategy.on_bar(bar("11", 3))
-        self.assertEqual(0, strategy.warmup_bars)
         strategy.on_bar(bar("11", 288))
-        self.assertEqual(1, strategy.warmup_bars)
+        self.assertEqual(4, strategy.warmup_bars)
+
+    def test_warmup_seed_accepts_twenty_five_contiguous_bars_across_days(
+        self,
+    ) -> None:
+        strategy = FiveMinuteBreakoutStrategy(
+            "AAPL", manual_direction=Direction.LONG
+        )
+        history = [bar(str(100 + index), index) for index in range(275, 300)]
+
+        strategy.seed_warmup_bars(history)
+
+        self.assertEqual(25, strategy.warmup_bars)
+        self.assertIsNotNone(strategy.fast_ma_value)
+        self.assertIsNotNone(strategy.slow_ma_value)
+
+    def test_warmup_seed_rejects_bars_before_latest_gap(self) -> None:
+        strategy = FiveMinuteBreakoutStrategy(
+            "AAPL", manual_direction=Direction.LONG
+        )
+        history = [bar("10", index) for index in range(25)]
+        history.extend([bar("11", 26), bar("12", 27)])
+
+        strategy.seed_warmup_bars(history)
+
+        self.assertEqual(2, strategy.warmup_bars)
 
     def test_recent_model_context_keeps_latest_60_five_minute_bars(self) -> None:
         strategy = FiveMinuteBreakoutStrategy("AAPL")

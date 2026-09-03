@@ -13,7 +13,7 @@ from autoquant_shared.models import Bar, Direction, RuntimeSnapshot, Signal
 
 SnapshotCallback = Callable[[RuntimeSnapshot], None]
 LogCallback = Callable[[str, str, str], None]
-FUTURES_WARMUP_BARS = 30
+FUTURES_WARMUP_BARS = 25
 FIVE_MINUTE_MS = 5 * 60 * 1000
 
 
@@ -42,5 +42,4 @@ class EntryTimingDecider(Protocol):
         recent_bars: tuple[Bar, ...] = (),
     ) -> EntryTimingDecision:
         """Return whether the current candidate signal may enter now."""
-
 

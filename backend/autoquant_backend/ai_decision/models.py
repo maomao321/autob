@@ -8,7 +8,7 @@ from autoquant_shared.models import Bar, Direction, Signal
 
 ModelInputCapture = Callable[[str, str, str, dict[str, Any]], None]
 ModelOutputCapture = Callable[[str, str, str, dict[str, Any], int], None]
-HistoricalBarsFetcher = Callable[[str, str, int, int, int], list[Bar]]
+HistoricalBarsFetcher = Callable[[str, str, int | None, int, int], list[Bar]]
 HistoricalSymbolResolver = Callable[[str], str]
 
 
@@ -93,5 +93,4 @@ class DecisionClient(Protocol):
 class MarketContextCollector(Protocol):
     def collect(self, symbol: str, current_daily_bar: Bar) -> dict[str, Any]:
         """Collect recent news, broad-market trends and symbol trends."""
-
 

@@ -68,7 +68,8 @@ class StrategyConfigPageMixin:
             "收盘价低于第二根；最新价向下跌破第二根最低价。<br><br>"
             "<b>行情更新：</b>当前未收盘 K 线会随最新价实时判断；当前 K 线收盘后，"
             "第一根和第二根参考 K 线自动向前滚动。同一根当前 K 线最多发出一次信号。"
-            "Futures 启动时预热最近 30 根已收盘 5 分钟 K 线。"
+            "Futures 启动时直接加载当前时间点之前连续的 25 根已收盘 5 分钟 K 线，"
+            "可跨日使用，无需等待实时 K 线补齐。"
         )
         self.five_minute_breakout_description.setObjectName(
             "fiveMinuteBreakoutDescription"

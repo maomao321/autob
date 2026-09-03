@@ -256,6 +256,8 @@ class AiDecisionTests(unittest.TestCase):
             {call[0] for call in provider_calls},
         )
         self.assertTrue(all(call[1] == "1d" for call in provider_calls))
+        self.assertTrue(all(call[2] is None for call in provider_calls))
+        self.assertTrue(all(call[4] == 30 for call in provider_calls))
         self.assertEqual(
             "binance_futures API", context["data_quality"]["price_source"]
         )
@@ -267,6 +269,68 @@ class AiDecisionTests(unittest.TestCase):
             },
             context["data_quality"]["price_sources"],
         )
+
+    def test_public_context_requests_latest_bars_at_end_time(self) -> None:
+        source_bars = self._provider_daily_bars("AAPLUSDT", 30)
+
+        def historical_bars(symbol, interval, start_time, end_time, limit):
+            self.assertEqual("1d", interval)
+            self.assertIsNone(start_time)
+            self.assertGreater(end_time, 0)
+            self.assertEqual(30, limit)
+            return source_bars
+
+        collector = PublicMarketContextCollector(
+            history_days=30,
+            news_days=7,
+            news_limit=3,
+            timeout_seconds=10,
+            historical_bars_fetcher=historical_bars,
+            historical_source_name="binance_futures API",
+            historical_symbol_resolver=lambda symbol: symbol + "USDT",
+        )
+
+        trend = collector._fetch_provider_trend("AAPL")
+
+        expected_first = datetime.fromtimestamp(
+            source_bars[-30].open_time / 1000, tz=timezone.utc
+        ).date().isoformat()
+        expected_latest = datetime.fromtimestamp(
+            source_bars[-1].open_time / 1000, tz=timezone.utc
+        ).date().isoformat()
+        self.assertEqual(30, trend["observations"])
+        self.assertEqual(expected_first, trend["first_date"])
+        self.assertEqual(expected_latest, trend["latest_date"])
+
+    def test_provider_trend_rejects_stale_daily_bars(self) -> None:
+        stale_offset = 30 * 86_400_000
+        source_bars = [
+            Bar(
+                symbol=bar.symbol,
+                interval=bar.interval,
+                open_time=bar.open_time - stale_offset,
+                close_time=bar.close_time - stale_offset,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+                volume=bar.volume,
+                closed=bar.closed,
+            )
+            for bar in self._provider_daily_bars("AAPLUSDT", 30)
+        ]
+        collector = PublicMarketContextCollector(
+            history_days=30,
+            news_days=7,
+            news_limit=3,
+            timeout_seconds=10,
+            historical_bars_fetcher=lambda *_args: source_bars,
+            historical_source_name="binance_futures API",
+            historical_symbol_resolver=lambda symbol: symbol + "USDT",
+        )
+
+        with self.assertRaisesRegex(DecisionError, "最新日线已过期"):
+            collector._fetch_provider_trend("AAPL")
 
     def test_public_context_falls_back_to_nasdaq(self) -> None:
         rows = [

@@ -392,6 +392,31 @@ class BinanceFuturesProviderTests(unittest.TestCase):
         self.assertEqual(Decimal("12"), bars[-1].close)
         self.assertTrue(all(bar.closed for bar in bars))
 
+    def test_latest_historical_klines_use_end_time_without_start_time(
+        self,
+    ) -> None:
+        class LatestHistoryProvider(BinanceFuturesProvider):
+            def _request_json(self, method, path, params, signed):
+                self.request = (method, path, params, signed)
+                return [[1000, "10", "12", "9", "11", "5", 1999]]
+
+        provider = LatestHistoryProvider()
+        bars = provider.get_historical_bars("SNOWUSDT", "1d", None, 2999, 30)
+
+        self.assertEqual(1, len(bars))
+        self.assertEqual("GET", provider.request[0])
+        self.assertEqual("/fapi/v1/klines", provider.request[1])
+        self.assertEqual(
+            {
+                "symbol": "SNOWUSDT",
+                "interval": "1d",
+                "endTime": 2999,
+                "limit": 30,
+            },
+            provider.request[2],
+        )
+        self.assertFalse(provider.request[3])
+
 
 if __name__ == "__main__":
     unittest.main()

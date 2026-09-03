@@ -908,15 +908,18 @@ class SymbolRunner:
         fetcher = getattr(self.provider, "get_historical_bars", None)
         if not callable(fetcher):
             return
-        end_time = min(daily_bar.close_time, int(time.time() * 1000) - 1)
-        if end_time < daily_bar.open_time:
+        requested_end_time = min(
+            daily_bar.close_time, int(time.time() * 1000) - 1
+        )
+        next_bar_boundary = (
+            (requested_end_time + 1) // FIVE_MINUTE_MS
+        ) * FIVE_MINUTE_MS
+        end_time = next_bar_boundary - 1
+        if end_time < 0:
             return
 
-        start_time = daily_bar.open_time
-        if ai_enabled:
-            # Include earlier sessions so an early-session candidate can still
-            # carry a complete 60-bar timing context.
-            start_time -= 14 * 86_400_000
+        fetch_count = max(required, context_required)
+        start_time = next_bar_boundary - fetch_count * FIVE_MINUTE_MS
         self._update(
             RunState.WARMING_UP,
             f"正在加载最近 {context_required} 根历史 5 分钟 K 线",
@@ -927,7 +930,7 @@ class SymbolRunner:
                 "5m",
                 start_time,
                 end_time,
-                context_required,
+                fetch_count,
             )
         except Exception as exc:
             message = " ".join(str(exc).split())[:300]
@@ -940,12 +943,16 @@ class SymbolRunner:
         seed_recent = getattr(self.strategy, "seed_recent_bars", None)
         if ai_enabled and callable(seed_recent):
             seed_recent(bars)
-        for historical_bar in bars:
-            if self.stop_event.is_set():
-                return
-            # Historical signals are intentionally discarded: the bars only seed
-            # indicator state and must never cause a retroactive order.
-            self.strategy.on_bar(historical_bar)
+        seed_warmup = getattr(self.strategy, "seed_warmup_bars", None)
+        if callable(seed_warmup):
+            seed_warmup(bars)
+        else:
+            for historical_bar in bars:
+                if self.stop_event.is_set():
+                    return
+                # Historical signals are intentionally discarded: the bars only
+                # seed indicator state and must never cause a retroactive order.
+                self.strategy.on_bar(historical_bar)
         loaded = int(getattr(self.strategy, "warmup_bars", 0))
         recent_count = len(tuple(getattr(self.strategy, "recent_bars", ())))
         self._log(
@@ -991,12 +998,16 @@ class SymbolRunner:
             )
             return
 
-        for historical_bar in bars:
-            if self.stop_event.is_set():
-                return
-            # Seed indicators only. A signal found before the real-time stream
-            # must never submit a retroactive order.
-            self.strategy.on_bar(historical_bar)
+        seed_warmup = getattr(self.strategy, "seed_warmup_bars", None)
+        if callable(seed_warmup):
+            seed_warmup(bars)
+        else:
+            for historical_bar in bars:
+                if self.stop_event.is_set():
+                    return
+                # Seed indicators only. A signal found before the real-time stream
+                # must never submit a retroactive order.
+                self.strategy.on_bar(historical_bar)
         loaded = int(getattr(self.strategy, "warmup_bars", 0))
         required = int(getattr(self.strategy, "warmup_required", 0))
         self._log(
@@ -1538,5 +1549,4 @@ class SymbolRunner:
 
     def _log(self, level: str, message: str) -> None:
         self.log_callback(level, self.symbol, message)
-
 

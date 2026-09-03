@@ -498,22 +498,26 @@ class BinanceStocksProvider(TradingProvider):
         self,
         symbol: str,
         interval: str,
-        start_time: int,
+        start_time: int | None,
         end_time: int,
         limit: int,
     ) -> list[Bar]:
         if interval not in {"1d", "5m"}:
             raise ProviderError(f"历史预热暂不支持周期 {interval}")
-        if limit <= 0 or end_time < start_time:
+        if limit <= 0 or (start_time is not None and end_time < start_time):
             return []
         normalized_symbol = symbol.strip().upper()
+        query_start_time = start_time
+        if query_start_time is None:
+            calendar_days = max(limit * 3, 60)
+            query_start_time = end_time - calendar_days * 86_400_000
         bars: list[Bar] = []
         for asset_class in ("stocks", "etf"):
             if interval == "1d":
                 params = urlencode(
                     {
                         "assetclass": asset_class,
-                        "fromdate": self._utc_date(start_time),
+                        "fromdate": self._utc_date(query_start_time),
                         "todate": self._utc_date(end_time),
                         "limit": max(limit, 10),
                     }
@@ -545,7 +549,8 @@ class BinanceStocksProvider(TradingProvider):
         eligible = [
             bar
             for bar in bars
-            if start_time <= bar.open_time and bar.close_time <= end_time
+            if (start_time is None or start_time <= bar.open_time)
+            and bar.close_time <= end_time
         ]
         return eligible[-limit:]
 

@@ -607,24 +607,26 @@ class BinanceFuturesProvider(BinanceStocksProvider):
         self,
         symbol: str,
         interval: str,
-        start_time: int,
+        start_time: int | None,
         end_time: int,
         limit: int,
     ) -> list[Bar]:
         if interval not in {"1d", "5m", "1m"}:
             raise ProviderError(f"Futures 历史 K 线不支持周期 {interval}")
-        if limit <= 0 or end_time < start_time:
+        if limit <= 0 or (start_time is not None and end_time < start_time):
             return []
+        params = {
+            "symbol": symbol.strip().upper(),
+            "interval": interval,
+            "endTime": end_time,
+            "limit": min(limit, 1500),
+        }
+        if start_time is not None:
+            params["startTime"] = start_time
         payload = self._request_json(
             "GET",
             "/fapi/v1/klines",
-            {
-                "symbol": symbol.strip().upper(),
-                "interval": interval,
-                "startTime": start_time,
-                "endTime": end_time,
-                "limit": min(limit, 1500),
-            },
+            params,
             signed=False,
         )
         if not isinstance(payload, list):
@@ -651,7 +653,7 @@ class BinanceFuturesProvider(BinanceStocksProvider):
                 continue
             if (
                 bar.closed
-                and start_time <= bar.open_time
+                and (start_time is None or start_time <= bar.open_time)
                 and bar.close_time <= end_time
             ):
                 bars.append(bar)

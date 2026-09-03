@@ -84,7 +84,7 @@ class QtAppWidgetTests(unittest.TestCase):
             description = window.five_minute_breakout_description.text()
             self.assertIn("做多信号", description)
             self.assertIn("做空信号", description)
-            self.assertIn("30 根", description)
+            self.assertIn("连续的 25 根", description)
             self.assertIsNotNone(
                 window.strategy_config_page.findChild(
                     QGroupBox, "fiveMinuteBreakoutSettings"

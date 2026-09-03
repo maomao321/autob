@@ -46,9 +46,12 @@ class TradingProvider(ABC):
         self,
         symbol: str,
         interval: str,
-        start_time: int,
+        start_time: int | None,
         end_time: int,
         limit: int,
     ) -> list[Bar]:
-        """Return closed historical bars in chronological order when supported."""
+        """Return closed historical bars in chronological order when supported.
+
+        When start_time is None, return the latest bars ending at end_time.
+        """
         return []

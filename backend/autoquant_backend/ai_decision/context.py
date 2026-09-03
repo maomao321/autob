@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 
 from autoquant_backend.ai_decision.constants import (
     DIRECTION_DAILY_BAR_COUNT,
+    DIRECTION_DAILY_MAX_AGE_DAYS,
     GOOGLE_NEWS_URL,
     NASDAQ_HISTORICAL_URL,
 )
@@ -173,12 +174,12 @@ class PublicMarketContextCollector:
             raise DecisionError(f"{symbol} 无法映射到 API 供应商交易代码")
         now_ms = int(time.time() * 1000)
         end_time = now_ms - 1
-        calendar_days = max(self.history_days * 3, 60)
-        start_time = end_time - calendar_days * 86_400_000
+        # Omitting start_time makes provider APIs return the latest bars at or
+        # before end_time instead of the first bars in a lookback range.
         bars = fetcher(
             provider_symbol,
             "1d",
-            start_time,
+            None,
             end_time,
             self.history_days,
         )
@@ -195,6 +196,15 @@ class PublicMarketContextCollector:
         if len(ordered) < self.history_days:
             raise DecisionError(
                 f"{provider_symbol} 有效日线少于 {self.history_days} 根"
+            )
+        latest_age_ms = end_time - ordered[-1].close_time
+        max_age_ms = DIRECTION_DAILY_MAX_AGE_DAYS * 86_400_000
+        if latest_age_ms > max_age_ms:
+            latest_date = datetime.fromtimestamp(
+                ordered[-1].open_time / 1000, tz=timezone.utc
+            ).date().isoformat()
+            raise DecisionError(
+                f"{provider_symbol} 最新日线已过期（{latest_date}）"
             )
         points = [
             (
@@ -385,5 +395,3 @@ def _valid_bar_prices(bar: Bar) -> bool:
         and bar.high >= max(bar.open, bar.close)
         and bar.low <= bar.high
     )
-
-

@@ -8,6 +8,7 @@ from autoquant_shared.formatting import financial_text
 from autoquant_backend.strategies.base import Strategy
 
 DAY_MS = 86_400_000
+FIVE_MINUTE_MS = 5 * 60 * 1000
 AI_ENTRY_CONTEXT_BARS = 60
 FAST_MA_PERIOD = 7
 SLOW_MA_PERIOD = 25
@@ -161,6 +162,63 @@ class FiveMinuteBreakoutStrategy(Strategy):
         self._recent_bars.clear()
         self._recent_bars.extend(eligible[-self.entry_context_bars :])
 
+    def seed_warmup_bars(self, bars: list[Bar]) -> None:
+        """Seed MA state from the latest contiguous closed 5-minute bars."""
+        eligible = sorted(
+            {
+                bar.open_time: bar
+                for bar in bars
+                if bar.symbol.upper() == self.symbol
+                and bar.interval == "5m"
+                and bar.closed
+            }.values(),
+            key=lambda bar: bar.open_time,
+        )
+        recent_by_open_time = {
+            bar.open_time: bar for bar in (*self._recent_bars, *eligible)
+        }
+        self._recent_bars.clear()
+        self._recent_bars.extend(
+            sorted(
+                recent_by_open_time.values(), key=lambda bar: bar.open_time
+            )[-self.entry_context_bars :]
+        )
+        contiguous: list[Bar] = []
+        for candidate in reversed(eligible):
+            if (
+                contiguous
+                and contiguous[-1].open_time - candidate.open_time
+                != FIVE_MINUTE_MS
+            ):
+                break
+            contiguous.append(candidate)
+            if len(contiguous) >= self.warmup_required:
+                break
+        contiguous.reverse()
+
+        self._bars.clear()
+        self._bars.extend(contiguous)
+        self._last_evaluated_open_time = (
+            contiguous[-1].open_time if contiguous else None
+        )
+        self._last_signaled_open_time = None
+        if self._manual_direction is not None and contiguous:
+            latest_open_time = contiguous[-1].open_time
+            self._manual_day_key = latest_open_time - (latest_open_time % DAY_MS)
+        if len(contiguous) >= self.warmup_required:
+            values = list(self._bars)
+            self.fast_ma_value = self._mean_close(
+                values[-self.fast_ma_period :]
+            )
+            self.slow_ma_value = self._mean_close(
+                values[-self.slow_ma_period :]
+            )
+            self.ma_value = self.fast_ma_value
+        else:
+            self.ma_value = None
+            self.fast_ma_value = None
+            self.slow_ma_value = None
+
     @property
     def current_day_key(self) -> int | None:
         if self._manual_direction is not None:
@@ -179,15 +237,10 @@ class FiveMinuteBreakoutStrategy(Strategy):
             if self._daily_bar is not None and bar.open_time < self._daily_bar.open_time:
                 return None
             if self._daily_bar is None or bar.open_time > self._daily_bar.open_time:
-                self._bars.clear()
                 self._direction_daily_bars = None
                 self._fallback_direction = None
                 self._fallback_direction_reason = ""
-                self._last_evaluated_open_time = None
                 self._last_signaled_open_time = None
-                self.ma_value = None
-                self.fast_ma_value = None
-                self.slow_ma_value = None
             self._daily_bar = bar
             return None
         if bar.interval != "5m":
@@ -214,7 +267,15 @@ class FiveMinuteBreakoutStrategy(Strategy):
         ):
             return None
 
-        signal = self._signal_for_latest_price(bar)
+        follows_latest_closed_bar = (
+            not self._bars
+            or bar.open_time - self._bars[-1].open_time <= FIVE_MINUTE_MS
+        )
+        signal = (
+            self._signal_for_latest_price(bar)
+            if follows_latest_closed_bar
+            else None
+        )
         if bar.closed:
             self._last_evaluated_open_time = bar.open_time
             self._append_closed_bar(bar)
@@ -419,17 +480,21 @@ class FiveMinuteBreakoutStrategy(Strategy):
         return None
 
     def _reset_intraday_state(self) -> None:
-        self._bars.clear()
-        self._last_evaluated_open_time = None
         self._last_signaled_open_time = None
-        self.ma_value = None
-        self.fast_ma_value = None
-        self.slow_ma_value = None
 
     def _append_closed_bar(self, bar: Bar) -> None:
         if self._bars and self._bars[-1].open_time == bar.open_time:
             self._bars[-1] = bar
         else:
+            if (
+                self._bars
+                and bar.open_time - self._bars[-1].open_time
+                != FIVE_MINUTE_MS
+            ):
+                self._bars.clear()
+                self.ma_value = None
+                self.fast_ma_value = None
+                self.slow_ma_value = None
             self._bars.append(bar)
         if self._recent_bars and self._recent_bars[-1].open_time == bar.open_time:
             self._recent_bars[-1] = bar
