@@ -48,7 +48,9 @@ from autoquant_frontend.pages import (
     StrategyConfigPageMixin,
     TradeHistoryPageMixin,
     TradingPageMixin,
+    UsersPageMixin,
 )
+from autoquant_frontend.pages.users import authenticate_client
 from autoquant_frontend.ui import (
     ACCOUNT_REFRESH_MS,
     COLORS,
@@ -73,6 +75,7 @@ __all__ = [
 
 
 class AutoQuantApp(
+    UsersPageMixin,
     ContractPoolPageMixin,
     ConfigPageMixin,
     StrategyConfigPageMixin,
@@ -88,6 +91,7 @@ class AutoQuantApp(
         config_store: ConfigStore | RemoteConfigStore | None = None,
         backend_client: BackendClient | None = None,
         controller: RemoteTradingController | None = None,
+        authenticated_user: dict[str, object] | None = None,
     ) -> None:
         super().__init__()
         self.setWindowIcon(QIcon(str(application_icon_path())))
@@ -95,6 +99,7 @@ class AutoQuantApp(
         self.resize(1280, 820)
         self.setMinimumSize(1020, 680)
         self.backend_client = backend_client or BackendClient()
+        self.authenticated_user = authenticated_user or {}
         self.store = config_store or RemoteConfigStore(self.backend_client)
         self.events: queue.Queue[tuple] = queue.Queue(maxsize=1000)
         self.config = self._load_config()
@@ -265,6 +270,7 @@ class AutoQuantApp(
         self.ai_decision_page = QWidget()
         self.experience_page = QWidget()
         self.backtest_page = QWidget()
+        self.users_page = QWidget()
         self.notebook.addTab(self.main_page, "交易监控")
         self.notebook.addTab(self.contract_pool_page, "合约池")
         self.notebook.addTab(self.config_page, "运行配置")
@@ -273,6 +279,7 @@ class AutoQuantApp(
         self.notebook.addTab(self.ai_decision_page, "AI 决策")
         self.notebook.addTab(self.experience_page, "交易经验库")
         self.notebook.addTab(self.backtest_page, "策略回测")
+        self.notebook.addTab(self.users_page, "用户管理")
         self._build_main_page()
         self._build_contract_pool_page()
         self._build_config_page()
@@ -281,6 +288,7 @@ class AutoQuantApp(
         self._build_ai_decision_page()
         self._build_experience_page()
         self._build_backtest_page()
+        self._build_users_page()
         self.notebook.currentChanged.connect(self._on_page_changed)
 
     @staticmethod
@@ -445,7 +453,13 @@ def main() -> None:
     app.setApplicationName("AutoQuant")
     app.setOrganizationName("AutoQuant")
     app.setWindowIcon(QIcon(str(application_icon_path())))
-    window = AutoQuantApp()
+    client = BackendClient()
+    authenticated_user = authenticate_client(client)
+    if authenticated_user is None:
+        return
+    window = AutoQuantApp(
+        backend_client=client, authenticated_user=authenticated_user
+    )
     window.show()
     raise SystemExit(app.exec())
 

@@ -6,6 +6,7 @@ from autoquant_frontend.pages.experience import ExperiencePageMixin
 from autoquant_frontend.pages.strategy_config import StrategyConfigPageMixin
 from autoquant_frontend.pages.trade_history import TradeHistoryPageMixin
 from autoquant_frontend.pages.trading import TradingPageMixin
+from autoquant_frontend.pages.users import UsersPageMixin
 
 __all__ = [
     "AiDecisionPageMixin",
@@ -16,4 +17,5 @@ __all__ = [
     "StrategyConfigPageMixin",
     "TradeHistoryPageMixin",
     "TradingPageMixin",
+    "UsersPageMixin",
 ]

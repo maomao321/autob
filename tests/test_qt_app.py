@@ -46,6 +46,49 @@ class QtAppWidgetTests(unittest.TestCase):
         self.assertTrue(icon_path.is_file(), icon_path)
         self.assertFalse(QIcon(str(icon_path)).isNull())
 
+    def test_admin_user_has_user_management_page(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory) / "config.json")
+            store.save(AppConfig(symbols=["AAPL"]))
+            backend_client = MagicMock()
+            backend_client.users.return_value = [
+                {
+                    "user_id": "user-1",
+                    "username": "admin",
+                    "display_name": "系统管理员",
+                    "role": "ADMIN",
+                    "active": True,
+                    "created_at": 1_700_000_000_000,
+                    "last_login_at": None,
+                }
+            ]
+            with patch("autoquant_frontend.app.RemoteTradingController"):
+                window = AutoQuantApp(
+                    store,
+                    backend_client=backend_client,
+                    authenticated_user={
+                        "user_id": "user-1",
+                        "username": "admin",
+                        "display_name": "系统管理员",
+                        "role": "ADMIN",
+                        "auth_type": "session",
+                    },
+                )
+            self.addCleanup(window.event_timer.stop)
+            self.addCleanup(window.account_timer.stop)
+            self.addCleanup(window.futures_rankings_timer.stop)
+            self.addCleanup(window.contract_pool_timer.stop)
+            self.addCleanup(window.deleteLater)
+
+            titles = [
+                window.notebook.tabText(index)
+                for index in range(window.notebook.count())
+            ]
+            self.assertIn("用户管理", titles)
+            self.assertFalse(window.user_admin_group.isHidden())
+            self.assertEqual(1, window.users_table.rowCount())
+            self.assertEqual("admin", window.users_table.item(0, 0).text())
+
     def test_text_value_synchronizes_with_line_edit(self) -> None:
         value = TextValue("initial")
         field = QLineEdit()

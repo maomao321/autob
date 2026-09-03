@@ -153,6 +153,104 @@ class BackendClient:
     def save_config(self, config: AppConfig) -> AppConfig:
         return AppConfig(**self.request("PUT", "/api/v1/config", asdict(config)))
 
+    def auth_status(self) -> dict[str, Any]:
+        payload = self.request("GET", "/api/v1/auth/status")
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的认证状态格式不正确")
+        return payload
+
+    def login(self, username: str, password: str) -> dict[str, Any]:
+        payload = self.request(
+            "POST",
+            "/api/v1/auth/login",
+            {"username": username.strip(), "password": password},
+        )
+        if not isinstance(payload, dict) or not payload.get("token"):
+            raise BackendClientError("后端返回的登录结果格式不正确")
+        self.api_token = str(payload["token"])
+        return payload
+
+    def setup_admin(
+        self, username: str, password: str, display_name: str = ""
+    ) -> dict[str, Any]:
+        payload = self.request(
+            "POST",
+            "/api/v1/auth/setup",
+            {
+                "username": username.strip(),
+                "password": password,
+                "display_name": display_name.strip(),
+            },
+        )
+        if not isinstance(payload, dict) or not payload.get("token"):
+            raise BackendClientError("后端返回的初始化结果格式不正确")
+        self.api_token = str(payload["token"])
+        return payload
+
+    def current_user(self) -> dict[str, Any]:
+        payload = self.request("GET", "/api/v1/auth/me")
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的用户信息格式不正确")
+        return payload
+
+    def logout(self) -> None:
+        try:
+            self.request("POST", "/api/v1/auth/logout", {})
+        finally:
+            self.api_token = ""
+
+    def change_password(self, current_password: str, password: str) -> None:
+        self.request(
+            "POST",
+            "/api/v1/auth/password",
+            {"current_password": current_password, "password": password},
+        )
+        self.api_token = ""
+
+    def users(self) -> list[dict[str, Any]]:
+        payload = self.request("GET", "/api/v1/users")
+        return [item for item in payload.get("items", []) if isinstance(item, dict)]
+
+    def create_user(
+        self,
+        username: str,
+        password: str,
+        *,
+        display_name: str = "",
+        role: str = "OPERATOR",
+    ) -> dict[str, Any]:
+        payload = self.request(
+            "POST",
+            "/api/v1/users",
+            {
+                "username": username.strip(),
+                "password": password,
+                "display_name": display_name.strip(),
+                "role": role.strip().upper(),
+            },
+        )
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的用户信息格式不正确")
+        return payload
+
+    def update_user(self, user_id: str, **changes: Any) -> dict[str, Any]:
+        payload = self.request(
+            "PUT", f"/api/v1/users/{quote(user_id, safe='')}", changes
+        )
+        if not isinstance(payload, dict):
+            raise BackendClientError("后端返回的用户信息格式不正确")
+        return payload
+
+    def reset_user_password(self, user_id: str, password: str) -> None:
+        self.request(
+            "POST",
+            f"/api/v1/users/{quote(user_id, safe='')}/password",
+            {"password": password},
+        )
+
+    def delete_user(self, user_id: str) -> None:
+        self.request("DELETE", f"/api/v1/users/{quote(user_id, safe='')}")
+
     def futures_rankings(self, limit: int = 20) -> dict[str, Any]:
         query = urlencode({"limit": min(max(int(limit), 1), 100)})
         payload = self.request("GET", f"/api/v1/futures/rankings?{query}")

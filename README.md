@@ -15,7 +15,6 @@ python3 -m pip install -e .
 先在服务器启动后端：
 
 ```bash
-export AUTOQUANT_API_TOKEN='请替换为足够长的随机令牌'
 autoquant-server --host 127.0.0.1 --port 8765
 ```
 
@@ -23,11 +22,10 @@ autoquant-server --host 127.0.0.1 --port 8765
 
 ```bash
 export AUTOQUANT_SERVER_URL='http://127.0.0.1:8765'
-export AUTOQUANT_API_TOKEN='与服务器相同的令牌'
 autoquant
 ```
 
-同一台电脑运行时，可以分别双击 `run-server.command` 和 `run.command`；Windows 对应 `run-server.bat` 和 `run.bat`。默认仅监听本机回环地址，本机模式可以不设置令牌。
+首次启动前端会要求创建管理员，之后使用用户名和密码登录。同一台电脑运行时，可以分别双击 `run-server.command` 和 `run.command`；Windows 对应 `run-server.bat` 和 `run.bat`。默认仅监听本机回环地址。无人值守集成仍可在前后端设置相同的 `AUTOQUANT_API_TOKEN`，该令牌具有管理员权限。
 
 macOS 的两个 `.command` 启动器会主动查找 pyenv（包括 Homebrew 和 `~/.pyenv` 的常见安装位置），因此从 Finder 双击时不依赖交互式 Shell 的初始化配置。先在项目目录选择一个 Python 3.10 或更高版本：
 
@@ -40,7 +38,7 @@ chmod +x run.command run-server.command
 
 ### 远程服务器部署
 
-生产环境建议让后端继续监听 `127.0.0.1`，再通过带 HTTPS 的反向代理或 SSH 隧道访问。不要把无 TLS 的交易接口直接暴露到公网。若确实使用 `--host 0.0.0.0`，服务会强制要求设置 `AUTOQUANT_API_TOKEN`。前端也会默认拒绝连接非本机的明文 HTTP 地址；仅受信任内网临时调试可显式设置 `AUTOQUANT_ALLOW_INSECURE_HTTP=1`。
+生产环境建议让后端继续监听 `127.0.0.1`，先从服务器本机创建首位管理员，再通过带 HTTPS 的反向代理或 SSH 隧道访问。不要把无 TLS 的交易接口直接暴露到公网。若确实使用 `--host 0.0.0.0`，服务会要求已有管理员或已设置 `AUTOQUANT_API_TOKEN`。前端也会默认拒绝连接非本机的明文 HTTP 地址；仅受信任内网临时调试可显式设置 `AUTOQUANT_ALLOW_INSECURE_HTTP=1`。
 
 Linux 可参考 `packaging/autoquant.service.example` 配置 systemd。后端收到退出信号时只停止本进程内的行情线程，不会自动提交平仓订单；已启动的 PAPER 策略会记录在 `running.json` 并在服务重启后恢复。REAL 策略只有明确设置 `AUTOQUANT_RESTORE_REAL=1` 才会自动恢复，避免服务器重启后未经授权恢复实盘交易。
 
@@ -52,7 +50,12 @@ curl http://127.0.0.1:8765/health
 
 ### REST API
 
-除 `/health` 外，设置令牌后所有接口都要求请求头 `Authorization: Bearer <token>`。当前前端使用以下版本化接口：
+除健康检查、认证状态、首次初始化和登录外，所有接口都要求请求头 `Authorization: Bearer <token>`。用户登录成功后会获得 12 小时内存会话；后端重启、账号停用/删除或密码被重置后需要重新登录。`AUTOQUANT_API_TOKEN` 继续作为管理员级服务令牌。当前前端使用以下版本化接口：
+
+- `GET /api/v1/auth/status`、`POST /api/v1/auth/setup`：查询认证状态，并仅允许从服务器本机初始化首位管理员。
+- `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/auth/logout`：登录、读取当前账号和退出登录。
+- `POST /api/v1/auth/password`：当前用户验证原密码后修改密码，并撤销该用户现有会话。
+- `GET /api/v1/users`、`POST /api/v1/users`、`PUT/DELETE /api/v1/users/{user_id}`、`POST /api/v1/users/{user_id}/password`：管理员查询、新增、修改、停用、删除用户或重置密码。系统始终保留至少一名启用的管理员。
 
 - `GET /api/v1/config`、`PUT /api/v1/config`：读取或更新服务器配置，读取结果只返回凭据掩码。
 - `GET /api/v1/status?after_log=<序号>`：增量读取运行快照与日志。
@@ -96,8 +99,8 @@ chmod +x packaging/build_macos.sh run.command
 
 ## 使用步骤
 
-1. 首次运行保留 `PAPER` 模式。
-2. 打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API 和交易模式；Futures 杠杆默认为 `1x`。
+1. 首次运行创建管理员账号；后续使用账号密码登录。管理员可在“用户管理”页新增管理员或操作员、启停账号、切换角色和重置密码。操作员可以使用交易、配置与回测功能，但不能管理用户。
+2. 首次运行保留 `PAPER` 模式。打开“运行配置”页，选择 `binance_stocks` 或 `binance_futures`，配置交易 API 和交易模式；Futures 杠杆默认为 `1x`。
 3. 打开“策略配置”页选择运行策略。每种策略使用独立配置区并附带完整信号说明；五分钟突破策略可独立配置开仓金额、单笔上限、每日开仓上限、本次持仓加仓次数、止盈止损、信号有效期和 AI 时机 K 线数量，均线固定为 MA7/MA25。
 4. 需要大模型时，在“运行配置”勾选“启用大模型决策”，选择 `CHATGPT`、`DEEPSEEK`、`QWEN` 或 `DUAL`，并填写对应 Key 和模型名。
 5. 打开“合约池”页查看 USDT 永续合约的滚动 24 小时股票涨幅榜、股票跌幅榜、加密涨幅榜和加密跌幅榜；仅在该页面打开期间，左侧候选合约池每分钟同步涨跌幅，右侧四个榜单每 30 分钟自动刷新，也可手动刷新。后端会优先复用 60 秒行情缓存，避免多个前端或相邻刷新重复请求 Binance。在任一榜单右键可加入合约池；在合约池右键可带入标的跳转到策略回测，或将标的加入并选中到交易监控页，也可移除。合约池最多保存 100 个标的，跳转交易监控后仍需用户确认启动，不会自动发出订单。
@@ -110,7 +113,7 @@ chmod +x packaging/build_macos.sh run.command
 
 交易监控表格的“手动方向”在大模型开关关闭时生效，支持 `LONG`、`SHORT` 或 `FLAT`。该选择在启动标的时读取并锁定，并随“保存配置”写入配置文件。`FLAT` 表示禁止该标的产生普通开仓信号。大模型开关开启时，后端强制使用模型方向，不会回退到手动方向下单。
 
-配置和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance、OpenAI、DeepSeek 和 Qwen 凭据不会通过读取配置接口明文回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
+配置、用户库和订单账本只保存在后端服务器的 `%LOCALAPPDATA%\AutoQuant`（Windows）或 `~/.autoquant`（Linux/macOS）。用户库为 `users.sqlite3`，密码只保存为带随机盐的 PBKDF2-HMAC-SHA256 摘要；交易配置和订单账本目前由所有已登录用户共享。在交易监控页新增或确认移除标的后，前端会立即通过鉴权接口将标的列表写入服务器配置，重启后仍保持一致；移除最后一个标的也受支持，历史交易记录不会随标的移除。界面中尚未保存的其他参数不会因此写入。Binance、OpenAI、DeepSeek 和 Qwen 凭据不会通过读取配置接口明文回传给前端；界面用掩码表示服务器已有凭据。点击“保存配置”会通过鉴权接口更新服务器配置。也可将凭据留空，并在启动后端前设置环境变量：
 
 ```powershell
 $env:BINANCE_API_KEY = "你的 API Key"

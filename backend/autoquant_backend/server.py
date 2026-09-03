@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+from autoquant_backend.auth import AuthService, Principal, UserStore
 from autoquant_backend.runtime import BackendRuntime
 
 
@@ -37,6 +38,7 @@ class AutoQuantHTTPServer(ThreadingHTTPServer):
         runtime: BackendRuntime,
         api_token: str,
         *,
+        auth_service: AuthService | None = None,
         max_connections: int = DEFAULT_MAX_CONNECTIONS,
         connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
     ) -> None:
@@ -50,6 +52,7 @@ class AutoQuantHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, AutoQuantRequestHandler)
         self.runtime = runtime
         self.api_token = api_token
+        self.auth = auth_service or AuthService()
 
     def get_request(self) -> tuple[Any, Any]:
         request, client_address = super().get_request()
@@ -111,15 +114,44 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("导入文件上传不完整")
         return body
 
-    def _authorized(self) -> bool:
-        token = self.server.api_token
-        if not token:
-            return self.client_address[0] in {"127.0.0.1", "::1"}
+    def _bearer_token(self) -> str:
         supplied = self.headers.get("Authorization", "")
         prefix = "Bearer "
-        return supplied.startswith(prefix) and hmac.compare_digest(
-            supplied[len(prefix) :], token
-        )
+        return supplied[len(prefix) :] if supplied.startswith(prefix) else ""
+
+    def _principal(self) -> Principal | None:
+        supplied = self._bearer_token()
+        service_token = self.server.api_token
+        if service_token and supplied and hmac.compare_digest(supplied, service_token):
+            return Principal(
+                user_id="service",
+                username="service-token",
+                display_name="服务令牌",
+                role="ADMIN",
+                auth_type="service_token",
+            )
+        if supplied:
+            principal = self.server.auth.authenticate_token(supplied)
+            if principal is not None:
+                return principal
+        if (
+            not self.server.auth.store.has_users()
+            and not service_token
+            and self.client_address[0] in {"127.0.0.1", "::1"}
+        ):
+            return Principal(
+                user_id="local-bootstrap",
+                username="local",
+                display_name="本机用户",
+                role="ADMIN",
+                auth_type="local_bootstrap",
+            )
+        return None
+
+    @staticmethod
+    def _require_admin(principal: Principal) -> None:
+        if not principal.is_admin:
+            raise PermissionError("仅管理员可执行此操作")
 
     def _send(self, status: HTTPStatus, payload: Any) -> None:
         body = json.dumps(
@@ -149,8 +181,73 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         if path == "/health" and self.command == "GET":
             return HTTPStatus.OK, {"status": "ok", "service": "autoquant"}
-        if not self._authorized():
+        auth = self.server.auth
+        if path == "/api/v1/auth/status" and self.command == "GET":
+            has_users = auth.store.has_users()
+            enabled = has_users or bool(self.server.api_token)
+            return HTTPStatus.OK, {
+                "enabled": enabled,
+                "setup_required": not has_users,
+                "local_setup_allowed": self.client_address[0] in {"127.0.0.1", "::1"},
+            }
+        if path == "/api/v1/auth/setup" and self.command == "POST":
+            if self.client_address[0] not in {"127.0.0.1", "::1"}:
+                return HTTPStatus.FORBIDDEN, {"error": "首位管理员只能在服务器本机初始化"}
+            payload = self._json_body()
+            user = auth.store.create(
+                str(payload.get("username", "")),
+                str(payload.get("password", "")),
+                display_name=str(payload.get("display_name", "")),
+                role="ADMIN",
+                require_empty=True,
+            )
+            result = auth.login(user.username, str(payload.get("password", "")))
+            return HTTPStatus.CREATED, result
+        if path == "/api/v1/auth/login" and self.command == "POST":
+            payload = self._json_body()
+            try:
+                result = auth.login(
+                    str(payload.get("username", "")),
+                    str(payload.get("password", "")),
+                )
+            except ValueError as exc:
+                return HTTPStatus.UNAUTHORIZED, {"error": str(exc)}
+            return HTTPStatus.OK, result
+
+        principal = self._principal()
+        if principal is None:
             return HTTPStatus.UNAUTHORIZED, {"error": "未授权"}
+
+        if path == "/api/v1/auth/me" and self.command == "GET":
+            return HTTPStatus.OK, principal.public()
+        if path == "/api/v1/auth/logout" and self.command == "POST":
+            if principal.auth_type == "session":
+                auth.logout(self._bearer_token())
+            return HTTPStatus.OK, {"logged_out": True}
+        if path == "/api/v1/auth/password" and self.command == "POST":
+            if principal.auth_type != "session":
+                raise ValueError("服务令牌和本机初始化身份不能修改密码")
+            payload = self._json_body()
+            auth.change_password(
+                principal.user_id,
+                str(payload.get("current_password", "")),
+                str(payload.get("password", "")),
+            )
+            return HTTPStatus.OK, {"changed": True, "login_required": True}
+        if path == "/api/v1/users":
+            self._require_admin(principal)
+            if self.command == "GET":
+                users = [user.public() for user in auth.store.list()]
+                return HTTPStatus.OK, {"items": users, "count": len(users)}
+            if self.command == "POST":
+                payload = self._json_body()
+                user = auth.store.create(
+                    str(payload.get("username", "")),
+                    str(payload.get("password", "")),
+                    display_name=str(payload.get("display_name", "")),
+                    role=str(payload.get("role", "OPERATOR")),
+                )
+                return HTTPStatus.CREATED, user.public()
 
         runtime = self.server.runtime
         if path == "/api/v1/config":
@@ -262,6 +359,52 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             )
 
         parts = [unquote(part) for part in path.split("/") if part]
+        if len(parts) >= 4 and parts[:3] == ["api", "v1", "users"]:
+            self._require_admin(principal)
+            user_id = parts[3]
+            if len(parts) == 4 and self.command == "PUT":
+                payload = self._json_body()
+                if "active" in payload and not isinstance(payload["active"], bool):
+                    raise ValueError("active 必须是布尔值")
+                target = auth.store.get(user_id)
+                if target is None:
+                    raise ValueError("用户不存在")
+                if principal.auth_type == "session" and principal.user_id == user_id:
+                    changes_own_access = (
+                        ("active" in payload and not payload["active"])
+                        or (
+                            "role" in payload
+                            and str(payload["role"]).strip().upper() != target.role
+                        )
+                    )
+                    if changes_own_access:
+                        raise ValueError("不能修改自己的角色或停用自己的账号")
+                user = auth.store.update(
+                    user_id,
+                    display_name=(
+                        str(payload["display_name"])
+                        if "display_name" in payload
+                        else None
+                    ),
+                    role=str(payload["role"]) if "role" in payload else None,
+                    active=bool(payload["active"]) if "active" in payload else None,
+                )
+                if not user.active:
+                    auth.revoke_user(user.user_id)
+                return HTTPStatus.OK, user.public()
+            if len(parts) == 4 and self.command == "DELETE":
+                if principal.auth_type == "session" and principal.user_id == user_id:
+                    raise ValueError("不能删除当前登录账号")
+                deleted = auth.store.delete(user_id)
+                auth.revoke_user(deleted.user_id)
+                return HTTPStatus.OK, {"deleted": True, "user_id": deleted.user_id}
+            if len(parts) == 5 and parts[4] == "password" and self.command == "POST":
+                if principal.auth_type == "session" and principal.user_id == user_id:
+                    raise ValueError("请使用修改当前密码功能")
+                payload = self._json_body()
+                auth.store.set_password(user_id, str(payload.get("password", "")))
+                auth.revoke_user(user_id)
+                return HTTPStatus.OK, {"changed": True}
         if (
             len(parts) == 6
             and parts[:4] == ["api", "v1", "backtest", "runs"]
@@ -299,6 +442,8 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
             status, payload = self._dispatch()
         except (KeyError, TypeError, ValueError) as exc:
             status, payload = HTTPStatus.BAD_REQUEST, {"error": str(exc)}
+        except PermissionError as exc:
+            status, payload = HTTPStatus.FORBIDDEN, {"error": str(exc)}
         except RuntimeError as exc:
             status, payload = HTTPStatus.CONFLICT, {"error": str(exc)}
         except Exception as exc:
@@ -323,16 +468,25 @@ def create_server(
     *,
     runtime: BackendRuntime | None = None,
     api_token: str | None = None,
+    user_store: UserStore | None = None,
     max_connections: int = DEFAULT_MAX_CONNECTIONS,
     connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
 ) -> AutoQuantHTTPServer:
     token = os.environ.get("AUTOQUANT_API_TOKEN", "") if api_token is None else api_token
-    if host not in {"127.0.0.1", "::1", "localhost"} and not token:
-        raise ValueError("监听非本机地址时必须设置 AUTOQUANT_API_TOKEN")
+    if user_store is not None:
+        store = user_store
+    elif runtime is not None:
+        store = UserStore(runtime.config_store.path.with_name("users.sqlite3"))
+    else:
+        store = UserStore()
+    if host not in {"127.0.0.1", "::1", "localhost"} and not token and not store.has_users():
+        raise ValueError("监听非本机地址时必须设置 AUTOQUANT_API_TOKEN 或先初始化管理员")
+    actual_runtime = runtime or BackendRuntime()
     return AutoQuantHTTPServer(
         (host, port),
-        runtime or BackendRuntime(),
+        actual_runtime,
         token,
+        auth_service=AuthService(store),
         max_connections=max_connections,
         connection_timeout=connection_timeout,
     )
