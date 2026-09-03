@@ -173,7 +173,11 @@ class PublicMarketContextCollector:
         if not provider_symbol:
             raise DecisionError(f"{symbol} 无法映射到 API 供应商交易代码")
         now_ms = int(time.time() * 1000)
-        end_time = now_ms - 1
+        # End at the latest completed UTC daily candle. Using the current
+        # instant would make Binance include today's open candle in limit=30;
+        # the closed-bar filter would then leave only 29 usable candles.
+        day_ms = 86_400_000
+        end_time = now_ms - now_ms % day_ms - 1
         # Omitting start_time makes provider APIs return the latest bars at or
         # before end_time instead of the first bars in a lookback range.
         bars = fetcher(

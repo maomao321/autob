@@ -77,7 +77,6 @@ class SymbolRunner:
         ):
             self.opening_decider = create_opening_decider(
                 config,
-                model_log_callback=lambda message: self._log("AI", message),
                 model_input_capture_callback=self._capture_ai_input,
                 model_output_capture_callback=self._capture_ai_output,
                 market_data_provider=self.provider,
@@ -553,17 +552,15 @@ class SymbolRunner:
             elapsed_ms=elapsed_ms,
         )
         level = "ERROR" if decision.fallback else "AI"
-        self._log(
-            level,
-            f"{decision.provider}/{decision.model or '-'} 开仓时机="
-            f"{action}，置信度={decision.confidence:.0%}，"
-            f"决策耗时={elapsed_ms}ms；"
-            f"{decision.summary}",
+        self._log_ai_decision_result(
+            level=level,
+            stage="开仓时机",
+            outcome=action,
+            confidence=decision.confidence,
+            provider=decision.provider,
+            model=decision.model,
+            elapsed_ms=elapsed_ms,
         )
-        if decision.factors:
-            self._log("AI", "时机依据：" + "；".join(decision.factors))
-        if decision.risks:
-            self._log("AI", "时机风险：" + "；".join(decision.risks))
         if decision.enter_now:
             return True
         message = f"大模型决定等待后续时机：{decision.summary}"
@@ -773,17 +770,39 @@ class SymbolRunner:
             raise RuntimeError("当前策略不支持大模型开仓方向过滤")
         setter(decision.direction, decision.summary)
         level = "ERROR" if decision.fallback else "AI"
+        self._log_ai_decision_result(
+            level=level,
+            stage="今日方向",
+            outcome=decision.direction.value,
+            confidence=decision.confidence,
+            provider=decision.provider,
+            model=decision.model,
+            elapsed_ms=elapsed_ms,
+        )
+
+    def _log_ai_decision_result(
+        self,
+        *,
+        level: str,
+        stage: str,
+        outcome: str,
+        confidence: float,
+        provider: str,
+        model: str,
+        elapsed_ms: int,
+    ) -> None:
+        provider_model = provider or self.config.app.ai_provider
+        if model:
+            provider_model += f"/{model}"
         self._log(
             level,
-            f"{decision.provider}/{decision.model or '-'} 今日方向="
-            f"{decision.direction.value}，置信度={decision.confidence:.0%}，"
-            f"决策耗时={elapsed_ms}ms；"
-            f"{decision.summary}",
+            "AI 决策｜"
+            f"阶段：{stage}｜"
+            f"结果：{outcome}｜"
+            f"置信度：{confidence:.2%}｜"
+            f"供应商/模型：{provider_model}｜"
+            f"耗时：{elapsed_ms} ms",
         )
-        if decision.factors:
-            self._log("AI", "主要依据：" + "；".join(decision.factors))
-        if decision.risks:
-            self._log("AI", "主要风险：" + "；".join(decision.risks))
 
     def _begin_ai_trace(self) -> None:
         with self._ai_trace_lock:
@@ -1549,4 +1568,3 @@ class SymbolRunner:
 
     def _log(self, level: str, message: str) -> None:
         self.log_callback(level, self.symbol, message)
-

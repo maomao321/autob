@@ -277,6 +277,7 @@ class AiDecisionTests(unittest.TestCase):
             self.assertEqual("1d", interval)
             self.assertIsNone(start_time)
             self.assertGreater(end_time, 0)
+            self.assertEqual(86_400_000 - 1, end_time % 86_400_000)
             self.assertEqual(30, limit)
             return source_bars
 

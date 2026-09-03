@@ -981,8 +981,16 @@ class SymbolRunnerTests(unittest.TestCase):
 
             self.assertEqual([], provider.orders)
             self.assertEqual([("AAPL", 0)], decider.calls)
-            self.assertTrue(any("今日方向=FLAT" in item[2] for item in logs))
-            self.assertTrue(any("决策耗时=" in item[2] for item in logs))
+            result_logs = [
+                message
+                for _level, _symbol, message in logs
+                if message.startswith("AI 决策｜")
+            ]
+            self.assertEqual(1, len(result_logs))
+            self.assertIn("阶段：今日方向｜结果：FLAT", result_logs[0])
+            self.assertIn("置信度：88.00%", result_logs[0])
+            self.assertIn("供应商/模型：CHATGPT/gpt-test", result_logs[0])
+            self.assertNotIn("新闻与走势相互冲突", result_logs[0])
 
     def test_ai_entry_timing_wait_blocks_candidate_order(self) -> None:
         logs = []
@@ -1014,11 +1022,22 @@ class SymbolRunnerTests(unittest.TestCase):
 
             self.assertEqual([], provider.orders)
             self.assertEqual(1, len(decider.entry_calls))
+            result_logs = [
+                message
+                for _level, _symbol, message in logs
+                if message.startswith("AI 决策｜")
+            ]
             self.assertTrue(
-                any("开仓时机=WAIT" in message for _, _, message in logs)
+                any(
+                    "阶段：开仓时机｜结果：WAIT" in message
+                    for message in result_logs
+                )
             )
             self.assertTrue(
-                any("决策耗时=" in message for _, _, message in logs)
+                any("置信度：86.00%" in message for message in result_logs)
+            )
+            self.assertFalse(
+                any("等待下一个信号" in message for message in result_logs)
             )
 
     def test_ai_entry_timing_enter_allows_candidate_order(self) -> None:
