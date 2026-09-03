@@ -752,7 +752,7 @@ class QtAppWidgetTests(unittest.TestCase):
                 window.tree.contextMenuPolicy(),
             )
 
-    def test_adding_symbol_persists_it_without_saving_other_ui_edits(self) -> None:
+    def test_fixed_futures_provider_normalizes_new_symbols(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(Path(directory) / "config.json")
             store.save(AppConfig(symbols=["AAPL"], ma_period=5))
@@ -769,9 +769,15 @@ class QtAppWidgetTests(unittest.TestCase):
                 window._add_symbols()
 
             persisted = store.load()
-            self.assertEqual(["AAPL", "NVDA"], persisted.symbols)
+            self.assertEqual(["AAPL", "NVDAUSDT"], persisted.symbols)
             self.assertEqual("100.00", persisted.buy_notional)
-            self.assertEqual(("AAPL", "NVDA"), window.tree.get_children())
+            self.assertEqual(("AAPL", "NVDAUSDT"), window.tree.get_children())
+            self.assertEqual("binance_futures", window.provider_var.get())
+            self.assertEqual(1, window.provider_combo.count())
+            self.assertEqual(
+                "binance_futures", window.provider_combo.itemText(0)
+            )
+            self.assertFalse(window.provider_combo.isEnabled())
             show_error_mock.assert_not_called()
 
     def test_adding_futures_symbols_appends_usdt_once(self) -> None:

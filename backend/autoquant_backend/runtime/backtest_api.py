@@ -16,11 +16,12 @@ from autoquant_shared.formatting import financial_text
 
 class BacktestRuntimeMixin:
     """Historical data and backtest APIs."""
+
     def start_historical_download(
         self, symbol: str, provider: str = ""
     ) -> dict[str, Any]:
         runner_config = self._runner_config()
-        provider_name = provider.strip().lower() or runner_config.app.provider
+        provider_name = "binance_futures"
         if provider_name != runner_config.app.provider:
             runner_config = replace(
                 runner_config,

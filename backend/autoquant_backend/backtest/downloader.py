@@ -30,6 +30,8 @@ class HistoricalDownloader:
             raise ValueError("回测标的不能为空")
         if self.provider_name != "binance_futures":
             raise ValueError("180 天 1 分钟历史下载当前仅支持 Binance Futures")
+        if not normalized.endswith("USDT"):
+            normalized += "USDT"
         if self.store.has_active_download(self.provider_name, normalized):
             raise ValueError(f"{normalized} 已有历史 K 线下载任务在执行")
         end_time = int(time.time() * 1000) - 1
@@ -157,6 +159,5 @@ class HistoricalDownloader:
         return self.store.count_bars(
             self.provider_name, symbol, interval, start_time, end_time
         )
-
 
 

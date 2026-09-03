@@ -64,6 +64,20 @@ class BackendRuntimeTests(unittest.TestCase):
         self.assertNotIn("server-key", str(payload))
         self.assertNotIn("server-secret", str(payload))
 
+    def test_backtest_download_forces_binance_futures_provider(self) -> None:
+        with patch(
+            "autoquant_backend.runtime.backtest_api.HistoricalDownloader"
+        ) as downloader_class:
+            downloader_class.return_value.start.return_value = "download-1"
+
+            result = self.runtime.start_historical_download("DRAM")
+
+        self.assertEqual("download-1", result["download_id"])
+        _store, provider_factory, provider_name = downloader_class.call_args.args
+        self.assertEqual("binance_futures", provider_name)
+        self.assertEqual("binance_futures", provider_factory().name)
+        downloader_class.return_value.start.assert_called_once_with("DRAM")
+
     def test_status_serializes_service_logs_after_runner_activity(self) -> None:
         self.runtime._on_log("INFO", "AAPL", "runner started")
 
@@ -640,10 +654,14 @@ class BackendHTTPTests(unittest.TestCase):
 
         self.assertEqual([], client.historical_downloads())
         self.assertEqual([], client.backtest_runs())
-        with self.assertRaisesRegex(
-            BackendClientError, "仅支持 Binance Futures"
-        ):
-            client.start_historical_download("AAPL")
+        with patch(
+            "autoquant_backend.runtime.backtest_api.HistoricalDownloader.start",
+            return_value="futures-download",
+        ) as start_download:
+            self.assertEqual(
+                "futures-download", client.start_historical_download("AAPL")
+            )
+        start_download.assert_called_once_with("AAPL")
         with self.assertRaisesRegex(BackendClientError, "请先完成"):
             client.start_backtest("AAPL", "five_minute_breakout")
 

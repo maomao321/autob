@@ -488,6 +488,22 @@ class BacktestTests(unittest.TestCase):
             self.assertEqual(1, result["five_minute_count"])
             self.assertEqual(1, result["one_minute_count"])
 
+    def test_historical_download_appends_usdt_to_short_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = BacktestStore(Path(directory) / "orders.sqlite3")
+            downloader = HistoricalDownloader(
+                store, lambda: object(), "binance_futures"
+            )
+
+            with patch(
+                "autoquant_backend.backtest.downloader.threading.Thread"
+            ):
+                download_id = downloader.start("dram")
+
+            download = store.get_download(download_id)
+            self.assertEqual("binance_futures", download["provider"])
+            self.assertEqual("DRAMUSDT", download["symbol"])
+
     def test_historical_download_resumes_after_last_persisted_bar(self) -> None:
         class CapturingProvider:
             def __init__(self) -> None:

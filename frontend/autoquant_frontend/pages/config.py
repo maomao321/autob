@@ -37,12 +37,20 @@ class ConfigPageMixin:
         for column in (1, 3, 5, 7):
             grid.setColumnStretch(column, 1)
 
+        self.provider_var.set("binance_futures")
+        self.provider_combo = self._combo(
+            self.provider_var, ["binance_futures"]
+        )
+        self.provider_combo.setEnabled(False)
+        self.provider_combo.setToolTip(
+            "当前版本固定使用 Binance Futures，Stocks 已禁用"
+        )
         self._grid_field(
             grid,
             0,
             0,
-            "API 供应商",
-            self._combo(self.provider_var, ["binance_stocks", "binance_futures"]),
+            "API 供应商（固定）",
+            self.provider_combo,
         )
         self._grid_field(grid, 0, 2, "交易模式", self._combo(self.mode_var, ["PAPER", "REAL"]))
         self._grid_field(grid, 0, 4, "Futures 杠杆倍数", self._line(self.leverage_var))
@@ -54,8 +62,8 @@ class ConfigPageMixin:
         grid.addWidget(self._button("检查 API 与标的", self._check_connection), 1, 6, 1, 2)
 
         warning = QLabel(
-            "默认 PAPER 只记录模拟订单。REAL 会真实下单；Stocks 只支持做多，"
-            "Futures 支持做多和做空，但仅支持单向持仓；持仓期间可按策略配置"
+            "默认 PAPER 只记录模拟订单。当前固定使用 Binance Futures，"
+            "支持做多和做空，但仅支持单向持仓；持仓期间可按策略配置"
             "同向加仓，仍禁止反向开仓。"
             "Futures 实盘下单前设置所选杠杆。“停止并平仓”会减掉全部程序持仓；"
             "未知订单会锁定实盘。"
