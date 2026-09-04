@@ -1,0 +1,116 @@
+name: Deploy backend to UCloud
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autoquant-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      SSH_HOST: ${{ secrets.UCLOUD_SSH_HOST }}
+      SSH_PORT: ${{ secrets.UCLOUD_SSH_PORT }}
+      SSH_USER: ${{ secrets.UCLOUD_SSH_USER }}
+      SSH_PRIVATE_KEY: ${{ secrets.UCLOUD_SSH_PRIVATE_KEY }}
+      SSH_KNOWN_HOSTS: ${{ secrets.UCLOUD_SSH_KNOWN_HOSTS }}
+
+    steps:
+      - name: Resolve trusted revision
+        id: revision
+        shell: bash
+        env:
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request_target" ]]; then
+            ref="${PR_MERGE_SHA}"
+            [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]
+          else
+            ref="master"
+          fi
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check out merged code
+        id: checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.revision.outputs.ref }}
+          persist-credentials: false
+
+      - name: Record release id
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="$(git rev-parse HEAD)"
+          [[ "${release_id}" =~ ^[0-9a-f]{40}$ ]]
+          echo "id=${release_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create backend release archive
+        shell: bash
+        env:
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          tar -czf "${RUNNER_TEMP}/autoquant-${RELEASE_ID}.tar.gz" \
+            pyproject.toml README.md backend shared
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?UCLOUD_SSH_HOST is required}"
+          : "${SSH_USER:?UCLOUD_SSH_USER is required}"
+          : "${SSH_PRIVATE_KEY:?UCLOUD_SSH_PRIVATE_KEY is required}"
+          : "${SSH_KNOWN_HOSTS:?UCLOUD_SSH_KNOWN_HOSTS is required}"
+          SSH_PORT="${SSH_PORT:-22}"
+          echo "SSH_PORT=${SSH_PORT}" >> "${GITHUB_ENV}"
+          install -m 700 -d "${HOME}/.ssh"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/id_deploy"
+          chmod 600 "${HOME}/.ssh/id_deploy"
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          chmod 600 "${HOME}/.ssh/known_hosts"
+
+      - name: Upload and deploy
+        shell: bash
+        env:
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          remote_dir="/tmp/autoquant-${RELEASE_ID}-${GITHUB_RUN_ID}"
+          ssh_args=(
+            -i "${HOME}/.ssh/id_deploy"
+            -p "${SSH_PORT}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+          scp_args=(
+            -i "${HOME}/.ssh/id_deploy"
+            -P "${SSH_PORT}"
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+          )
+          ssh "${ssh_args[@]}" "${SSH_USER}@${SSH_HOST}" \
+            "mkdir -m 700 '${remote_dir}'"
+          scp "${scp_args[@]}" \
+            "${RUNNER_TEMP}/autoquant-${RELEASE_ID}.tar.gz" \
+            "packaging/deploy/deploy.sh" \
+            "${SSH_USER}@${SSH_HOST}:${remote_dir}/"
+          ssh "${ssh_args[@]}" "${SSH_USER}@${SSH_HOST}" \
+            "bash '${remote_dir}/deploy.sh' --archive '${remote_dir}/autoquant-${RELEASE_ID}.tar.gz' --release '${RELEASE_ID}'; status=\$?; rm -rf -- '${remote_dir}'; exit \$status"

@@ -53,7 +53,7 @@ if (-not (Test-Path -LiteralPath $buildPython)) {
 }
 
 Invoke-Checked -Executable $buildPython -CommandArguments @("-m", "pip", "install", "--upgrade", "pip")
-Invoke-Checked -Executable $buildPython -CommandArguments @("-m", "pip", "install", "-e", ".", "pyinstaller>=6.10,<7")
+Invoke-Checked -Executable $buildPython -CommandArguments @("-m", "pip", "install", "-e", ".[desktop]", "pyinstaller>=6.10,<7")
 Invoke-Checked -Executable $buildPython -CommandArguments @("-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", $distPath, "--workpath", $workPath, "AutoQuant.spec")
 
 Write-Host "Build complete: $distPath\AutoQuant.exe"

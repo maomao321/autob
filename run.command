@@ -7,6 +7,7 @@ cd "$PROJECT_ROOT"
 source "$PROJECT_ROOT/packaging/macos_runtime.sh"
 autoquant_prepare_runtime \
     "$PROJECT_ROOT" \
-    "import autoquant_frontend, autoquant_shared, PySide6, openpyxl" || exit 1
+    "import autoquant_frontend, autoquant_shared, PySide6, openpyxl" \
+    "${PROJECT_ROOT}[desktop]" || exit 1
 
 exec "$AUTOQUANT_VENV_PYTHON" -m autoquant_frontend
