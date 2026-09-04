@@ -1,0 +1,32 @@
+[Unit]
+Description=AutoQuant trading backend
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=autoquant
+Group=autoquant
+WorkingDirectory=/opt/autoquant/current
+Environment=HOME=/home/autoquant
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTOQUANT_HOST=127.0.0.1
+Environment=AUTOQUANT_PORT=8765
+EnvironmentFile=-/etc/autoquant/autoquant.env
+ExecStart=/opt/autoquant/current/.venv/bin/python -m autoquant_backend
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/home/autoquant/.autoquant
+
+[Install]
+WantedBy=multi-user.target

@@ -51,6 +51,7 @@ autoquant_python_is_supported() {
 autoquant_prepare_runtime() {
     local project_root="$1"
     local import_check="$2"
+    local install_target="${3:-$project_root}"
     local bootstrap_python
     local venv_python="$project_root/.venv/bin/python"
 
@@ -100,7 +101,7 @@ autoquant_prepare_runtime() {
     if ! "$venv_python" -c "$import_check" >/dev/null 2>&1; then
         echo "[AutoQuant] 正在向 .venv 安装源码运行依赖..."
         if ! "$venv_python" -m pip install --upgrade pip setuptools wheel || \
-           ! "$venv_python" -m pip install -e "$project_root"; then
+           ! "$venv_python" -m pip install -e "$install_target"; then
             autoquant_show_error "依赖安装失败，请检查网络连接和上方的 pip 错误。"
             return 1
         fi

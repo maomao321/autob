@@ -6,15 +6,16 @@
 
 ## 安装和运行
 
-要求 Python 3.10 或更高版本。安装项目时会一并安装 PySide6 Qt 运行时。
+要求 Python 3.10 或更高版本。桌面端安装会一并安装 PySide6 Qt 运行时：
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install -e '.[desktop]'
 ```
 
 先在服务器启动后端：
 
 ```bash
+python3 -m pip install -e .
 autoquant-server --host 127.0.0.1 --port 8765
 ```
 
@@ -39,6 +40,10 @@ chmod +x run.command run-server.command
 首次启动会用 pyenv 当前选择的解释器创建 `.venv` 并安装依赖。如果已有 `.venv` 来自系统 Python 或其他解释器，启动器会将它保留为带时间戳的 `.venv.backup-*` 后再重建。也可以通过 `PYTHON_EXE=/完整路径/python ./run.command` 显式覆盖解释器。
 
 ### 远程服务器部署
+
+GitHub PR 合并至 `master` 后自动部署到 UCloud CentOS Stream 9 的配置见
+[`docs/deployment-ucloud.md`](docs/deployment-ucloud.md)。流程使用独立版本目录、systemd、
+健康检查与失败回滚；服务器业务数据不会包含在发布包中，也不会在版本切换时被覆盖。
 
 生产环境建议让后端继续监听 `127.0.0.1`，先从服务器本机创建首位管理员，再通过带 HTTPS 的反向代理或 SSH 隧道访问。不要把无 TLS 的交易接口直接暴露到公网。若确实使用 `--host 0.0.0.0`，服务会要求已有管理员或已设置 `AUTOQUANT_API_TOKEN`。前端也会默认拒绝连接非本机的明文 HTTP 地址；仅受信任内网临时调试可显式设置 `AUTOQUANT_ALLOW_INSECURE_HTTP=1`。
 

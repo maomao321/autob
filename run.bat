@@ -30,7 +30,7 @@ exit /b 1
 if not errorlevel 1 goto launch
 
 echo [AutoQuant] Installing source dependencies into .venv...
-".venv\Scripts\python.exe" -m pip install -e .
+".venv\Scripts\python.exe" -m pip install -e ".[desktop]"
 if errorlevel 1 goto dependency_error
 
 :launch

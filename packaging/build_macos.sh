@@ -24,7 +24,7 @@ fi
 
 cd "$PROJECT_ROOT"
 "$BUILD_PYTHON" -m pip install --upgrade pip
-"$BUILD_PYTHON" -m pip install -e . 'pyinstaller>=6.10,<7'
+"$BUILD_PYTHON" -m pip install -e '.[desktop]' 'pyinstaller>=6.10,<7'
 "$BUILD_PYTHON" -m PyInstaller \
     --noconfirm \
     --clean \

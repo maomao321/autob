@@ -9,9 +9,13 @@ description = "Binance Stocks quantitative trading backend and remote Qt fronten
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "websocket-client>=1.8,<2",
+]
+
+[project.optional-dependencies]
+desktop = [
     "openpyxl>=3.1,<4",
     "PySide6>=6.7,<7",
-    "websocket-client>=1.8,<2",
 ]
 
 [project.scripts]
