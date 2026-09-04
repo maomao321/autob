@@ -87,7 +87,7 @@ class UserHTTPTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
-        self.runtime.shutdown(timeout=0.1)
+        self.server.shutdown_runtimes(timeout=0.1)
         self.iterations.stop()
         self.temporary.cleanup()
 
@@ -143,6 +143,46 @@ class UserHTTPTests(unittest.TestCase):
         replacement = BackendClient(self.base_url, api_token="")
         replacement.login("admin", "new-password-2")
         self.assertEqual("admin", replacement.current_user()["username"])
+
+    def test_business_data_is_isolated_by_authenticated_user(self) -> None:
+        admin_client = BackendClient(self.base_url, api_token="")
+        admin_client.setup_admin("admin", "password-1")
+        admin_client.create_user("trader", "password-2")
+
+        admin_config = admin_client.load_config()
+        admin_config.symbols = ["MSFT"]
+        admin_client.save_config(admin_config)
+        self.runtime._on_log("INFO", "MSFT", "admin-only-log")
+
+        trader_client = BackendClient(self.base_url, api_token="")
+        trader_client.login("trader", "password-2")
+        trader_config = trader_client.load_config()
+
+        self.assertEqual(["AAPL"], trader_config.symbols)
+        self.assertNotIn(
+            "admin-only-log",
+            str(trader_client.request("GET", "/api/v1/status")),
+        )
+        trader_config.symbols = ["TSLA"]
+        trader_client.save_config(trader_config)
+        self.assertEqual(["MSFT"], admin_client.load_config().symbols)
+
+        users = self.server.auth.store.list()
+        trader = next(user for user in users if user.username == "trader")
+        trader_runtime = self.server.runtime_registry.runtime_for(
+            trader.user_id, auth_type="session"
+        )
+        self.assertNotEqual(
+            self.runtime.config_store.path, trader_runtime.config_store.path
+        )
+        self.assertNotEqual(self.runtime.ledger.path, trader_runtime.ledger.path)
+        with patch.dict(
+            "os.environ", {"BINANCE_API_KEY": "server-environment-key"}
+        ):
+            self.assertEqual("", trader_runtime._runner_config().api_key)
+            self.assertEqual(
+                "server-environment-key", self.runtime._runner_config().api_key
+            )
 
 
 if __name__ == "__main__":

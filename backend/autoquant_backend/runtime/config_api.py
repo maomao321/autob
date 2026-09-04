@@ -11,7 +11,6 @@ from autoquant_shared.config import (
     AppConfig,
     SECRET_SENTINEL,
     STRATEGY_CONFIG_FIELDS,
-    credential_or_environment,
 )
 from autoquant_shared.formatting import financial_text
 from autoquant_shared.models import Direction, RuntimeSnapshot
@@ -121,29 +120,30 @@ class ConfigRuntimeMixin:
                 synchronized[symbol] = payload
             self._snapshots = synchronized
 
-    @staticmethod
-    def _api_key(config: AppConfig) -> str:
-        return credential_or_environment(config.api_key, "BINANCE_API_KEY")
+    def _credential(self, configured_value: str, environment_name: str) -> str:
+        configured = str(configured_value).strip()
+        if configured or not self.allow_environment_credentials:
+            return configured
+        return os.environ.get(environment_name, "").strip()
 
-    @staticmethod
-    def _api_secret(config: AppConfig) -> str:
-        return credential_or_environment(config.api_secret, "BINANCE_API_SECRET")
+    def _api_key(self, config: AppConfig) -> str:
+        return self._credential(config.api_key, "BINANCE_API_KEY")
 
-    @staticmethod
-    def _openai_api_key(config: AppConfig) -> str:
-        return credential_or_environment(
+    def _api_secret(self, config: AppConfig) -> str:
+        return self._credential(config.api_secret, "BINANCE_API_SECRET")
+
+    def _openai_api_key(self, config: AppConfig) -> str:
+        return self._credential(
             config.openai_api_key, "OPENAI_API_KEY"
         )
 
-    @staticmethod
-    def _deepseek_api_key(config: AppConfig) -> str:
-        return credential_or_environment(
+    def _deepseek_api_key(self, config: AppConfig) -> str:
+        return self._credential(
             config.deepseek_api_key, "DEEPSEEK_API_KEY"
         )
 
-    @staticmethod
-    def _qwen_api_key(config: AppConfig) -> str:
-        return credential_or_environment(
+    def _qwen_api_key(self, config: AppConfig) -> str:
+        return self._credential(
             config.qwen_api_key, "DASHSCOPE_API_KEY"
         )
 

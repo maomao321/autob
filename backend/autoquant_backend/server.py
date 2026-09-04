@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from autoquant_backend.auth import AuthService, Principal, UserStore
-from autoquant_backend.runtime import BackendRuntime
+from autoquant_backend.runtime import BackendRuntime, UserRuntimeRegistry
 
 
 DEFAULT_MAX_CONNECTIONS = 32
@@ -39,6 +39,7 @@ class AutoQuantHTTPServer(ThreadingHTTPServer):
         api_token: str,
         *,
         auth_service: AuthService | None = None,
+        legacy_owner_id: str | None = None,
         max_connections: int = DEFAULT_MAX_CONNECTIONS,
         connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
     ) -> None:
@@ -51,8 +52,26 @@ class AutoQuantHTTPServer(ThreadingHTTPServer):
         self._connection_slots = threading.BoundedSemaphore(max_connections)
         super().__init__(server_address, AutoQuantRequestHandler)
         self.runtime = runtime
+        self.runtime_registry = UserRuntimeRegistry(
+            runtime, legacy_owner_id=legacy_owner_id
+        )
         self.api_token = api_token
         self.auth = auth_service or AuthService()
+
+    def restore_desired_runners(self) -> list[str]:
+        users = [user for user in self.auth.store.list() if user.active]
+        if not users:
+            return self.runtime.restore_desired_runners()
+        restored: list[str] = []
+        for user in users:
+            restored.extend(
+                f"{user.username}:{symbol}"
+                for symbol in self.runtime_registry.restore_user(user.user_id)
+            )
+        return restored
+
+    def shutdown_runtimes(self, timeout: float = 10.0) -> None:
+        self.runtime_registry.shutdown(timeout=timeout)
 
     def get_request(self) -> tuple[Any, Any]:
         request, client_address = super().get_request()
@@ -201,6 +220,7 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 role="ADMIN",
                 require_empty=True,
             )
+            self.server.runtime_registry.claim_legacy_runtime(user.user_id)
             result = auth.login(user.username, str(payload.get("password", "")))
             return HTTPStatus.CREATED, result
         if path == "/api/v1/auth/login" and self.command == "POST":
@@ -249,7 +269,9 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 )
                 return HTTPStatus.CREATED, user.public()
 
-        runtime = self.server.runtime
+        runtime = self.server.runtime_registry.runtime_for(
+            principal.user_id, auth_type=principal.auth_type
+        )
         if path == "/api/v1/config":
             if self.command == "GET":
                 return HTTPStatus.OK, runtime.public_config()
@@ -391,12 +413,14 @@ class AutoQuantRequestHandler(BaseHTTPRequestHandler):
                 )
                 if not user.active:
                     auth.revoke_user(user.user_id)
+                    self.server.runtime_registry.deactivate(user.user_id)
                 return HTTPStatus.OK, user.public()
             if len(parts) == 4 and self.command == "DELETE":
                 if principal.auth_type == "session" and principal.user_id == user_id:
                     raise ValueError("不能删除当前登录账号")
                 deleted = auth.store.delete(user_id)
                 auth.revoke_user(deleted.user_id)
+                self.server.runtime_registry.deactivate(deleted.user_id)
                 return HTTPStatus.OK, {"deleted": True, "user_id": deleted.user_id}
             if len(parts) == 5 and parts[4] == "password" and self.command == "POST":
                 if principal.auth_type == "session" and principal.user_id == user_id:
@@ -482,11 +506,18 @@ def create_server(
     if host not in {"127.0.0.1", "::1", "localhost"} and not token and not store.has_users():
         raise ValueError("监听非本机地址时必须设置 AUTOQUANT_API_TOKEN 或先初始化管理员")
     actual_runtime = runtime or BackendRuntime()
+    existing_users = store.list()
+    legacy_owner_id = (
+        min(existing_users, key=lambda user: (user.created_at, user.user_id)).user_id
+        if existing_users
+        else None
+    )
     return AutoQuantHTTPServer(
         (host, port),
         actual_runtime,
         token,
         auth_service=AuthService(store),
+        legacy_owner_id=legacy_owner_id,
         max_connections=max_connections,
         connection_timeout=connection_timeout,
     )
@@ -502,7 +533,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     server = create_server(args.host, args.port)
-    restored = server.runtime.restore_desired_runners()
+    restored = server.restore_desired_runners()
     if restored:
         print("已恢复运行: " + ", ".join(restored))
 
@@ -520,7 +551,7 @@ def main() -> None:
         server.serve_forever(poll_interval=0.5)
     finally:
         server.server_close()
-        server.runtime.shutdown()
+        server.shutdown_runtimes()
 
 
 if __name__ == "__main__":

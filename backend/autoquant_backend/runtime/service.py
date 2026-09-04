@@ -42,6 +42,7 @@ class BackendRuntime(
         ledger: OrderLedger | None = None,
         desired_state_path: Path | None = None,
         log_capacity: int = 5000,
+        allow_environment_credentials: bool = True,
     ) -> None:
         self.config_store = config_store or ConfigStore()
         self.ledger = ledger or OrderLedger()
@@ -53,6 +54,7 @@ class BackendRuntime(
         self.desired_state_path = desired_state_path or default_config_path().with_name(
             "running.json"
         )
+        self.allow_environment_credentials = allow_environment_credentials
         self._lock = threading.RLock()
         self._config_lock = threading.RLock()
         self._futures_market_lock = threading.RLock()
